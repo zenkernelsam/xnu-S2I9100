@@ -275,7 +275,7 @@ ios7leo_installd_fault(thread_t thread, const abort_information_context_t *ctx,
 #include "IOS7LeoAppFault057.h"
 #endif
 
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 /*
  * BRING-UP (J1): report a per-fault line only once per distinct page so a
  * progressing fault walk is visible on the console without flooding it.
@@ -442,7 +442,7 @@ void sleh_abort(void *context, int reason)
 
                 /*
 
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
                 {
                     static unsigned int j1sr_abk = 0;
                     if (j1sr_abk < 30) { j1sr_abk++;
@@ -461,7 +461,7 @@ void sleh_abort(void *context, int reason)
                              : (VM_PROT_READ), FALSE, THREAD_UNINT, NULL,
                              vm_map_trunc_page(0));
 
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
                 if (code == KERN_SUCCESS) {
                     /* Bring-up (J1): the mapping is present in the active page
                      * table (L1/L2 valid) yet the CPU keeps taking a
@@ -633,7 +633,7 @@ void sleh_abort(void *context, int reason)
                  */
                 map = thread->map;
 
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
                 {
                     static unsigned int uda_total = 0;
                     uda_total++;
@@ -647,7 +647,7 @@ void sleh_abort(void *context, int reason)
                 }
 #endif
 
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
                 {
                     static unsigned int u_far = ~0u, u_pc = 0, u_fsr = 0, u_cnt = 0;
                     if (dfar == u_far && arm_ctx->pc == u_pc && dfsr == u_fsr) {
@@ -661,7 +661,7 @@ void sleh_abort(void *context, int reason)
                 }
 #endif
 
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
                 {
                     static unsigned int j1sr_abu = 0;
                     if (j1sr_abu < 30) { j1sr_abu++;
@@ -681,7 +681,7 @@ void sleh_abort(void *context, int reason)
                              (dfsr & 0x800) ? (VM_PROT_READ | VM_PROT_WRITE)
                              : (VM_PROT_READ), FALSE, THREAD_UNINT, NULL,
                              vm_map_trunc_page(0));
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
                 if (code == KERN_SUCCESS) {
                     /* Same stale-TLB workaround as the kernel data-abort path:
                      * the mapping is present (probe: active page table, valid

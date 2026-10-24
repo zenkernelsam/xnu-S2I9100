@@ -1,5 +1,5 @@
 /* HTC HD2 integration/publication changes: Garysss123, 2026-10-04. Original license notices are preserved. */
-#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 /* Real Type2A controller reports through the original iOS7 IOHIDLib queue.
  * PL050, synthetic contacts, buttons and userland routing helpers are absent. */
 #include <IOKit/IOService.h>
@@ -234,7 +234,7 @@ int IOHIDEventService::delayMicroseconds(void *,uint32_t microseconds)
 }
 bool IOHIDEventService::publishProperties(void)
 {
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
  setName("IOS7J1Touch");setProperty("HIDServiceSupport",true);
  setProperty("IOS7LabBackend","Samsung J1 touch stub native HID queue (no-input)");
  setProperty("PrimaryUsagePage",13,32);setProperty("PrimaryUsage",4,32);
@@ -270,7 +270,7 @@ bool IOHIDEventService::start(IOService *provider)
  lock=IOLockAlloc();queue=new IOS7LeoHIDQueue;
  if(!lock || !queue || !queue->initWithCapacity(4096))return false;
  queueMemory=queue->getMemoryDescriptor();if(!queueMemory)return false;
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
  /* J1: no touch controller mapped yet; publish HID service with no-input
   * transport so SpringBoard GUI shows. Swipe wired later. */
  state.ready=1; state.stage=7;
@@ -356,7 +356,7 @@ void IOHIDEventService::poll(void)
   if(!queue->sane() || !queue->enqueue(&pendingPacket,sizeof(pendingPacket))){leo_touch_inc(&queueFailures);publishSnapshot();IOLockUnlock(lock);return;}
   commitPacket();
  }
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
  /* J1 stub: no controller yet, no input, keep service alive for GUI. */
  IOLockUnlock(lock); return;
 #else

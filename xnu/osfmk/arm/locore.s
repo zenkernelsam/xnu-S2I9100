@@ -141,6 +141,31 @@ mmu_reinitialize:
     orr     r8, r7, r6
     str     r8, [r5]
 #endif
+#ifdef BOARD_CONFIG_EXYNOS4210_I9100
+    /* I9100: identity-map S3C UART (1MB @0x13800000, same offset window as
+     * J1 — UART2 lives at 0x13820000 on both SoCs) and panel FB
+     * (2MB @0x5E000000, the uniLoader scratch framebuffer) so early
+     * physical console/pixels work under the boot tables.
+     * r6=rw section template, r4=TTB. */
+    LoadConstantToReg(0x13800000, r7)
+    mov     r7, r7, lsr#20
+    add     r5, r4, r7, lsl#2
+    mov     r7, r7, lsl#20
+    orr     r8, r7, r6
+    str     r8, [r5]
+    LoadConstantToReg(0x5E000000, r7)
+    mov     r7, r7, lsr#20
+    add     r5, r4, r7, lsl#2
+    mov     r7, r7, lsl#20
+    orr     r8, r7, r6
+    str     r8, [r5]
+    LoadConstantToReg(0x5E100000, r7)
+    mov     r7, r7, lsr#20
+    add     r5, r4, r7, lsl#2
+    mov     r7, r7, lsl#20
+    orr     r8, r7, r6
+    str     r8, [r5]
+#endif
 
     mov     r7, pc, lsr#20
     add     r5, r4, r7, lsl#2   /* Make the TTE offset */

@@ -4516,7 +4516,7 @@ kauth_cred_unref_hashlocked(kauth_cred_t *credp)
 void
 kauth_cred_unref(kauth_cred_t *credp)
 {
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	/* TEMP DIAG: bounded try + print on contention, then normal block.
 	 * Shows whether hangs sit on this mutex without changing semantics. */
 	boolean_t _got = FALSE;
@@ -4532,7 +4532,7 @@ kauth_cred_unref(kauth_cred_t *credp)
 #else
 	KAUTH_CRED_HASH_LOCK();
 #endif
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	kprintf("J1EXEC cred locked\n");
 #endif
 	kauth_cred_unref_hashlocked(credp);

@@ -1,4 +1,4 @@
-#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 /* Leo adaptation of proven original iOS7 CPU surface/discovery wire. */
 #include <IOKit/IOService.h>
 #include <IOKit/IOUserClient.h>
@@ -9,7 +9,7 @@
 #include <IOKit/IOTimerEventSource.h>
 #include <libkern/OSAtomic.h>
 #include "IOS7LabSurfaceGeometry.h"
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 /* J1 backend: direct-FB present/ready/completed (see pe_exynos3475_j1.c). */
 extern "C" {
 int ios7j1_display_ready(void);
@@ -212,7 +212,7 @@ extern "C" uint32_t ios7leo_graphics_event_take(LeoGraphicsEvent *out,uint32_t *
     *out=leo_graphics_events[leo_graphics_state.events_taken++];leo_graphics_unlock();return 1;
 }
 
-#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 static IOLock *primaryLock;
 static IOMemoryDescriptor *primaryPixels;
 static IOBufferMemoryDescriptor *primaryControl;
@@ -1563,7 +1563,7 @@ void ios7leo_register_display(IOService *platform)
         IOLog("Leo display registration failed; no provider published\n");return;
     }
     surfaces->setName("IOCoreSurfaceRoot");
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     surfaces->setProperty("IOS7LabBackend","J1 owned BGRA CPU surface / direct FB RGB565");
     display->setName("IOS7J1FB");display->setProperty("IOS7LabBackend","Samsung J1 DECON direct RGB565 480x800");
     surfaces->registerService();display->registerService();

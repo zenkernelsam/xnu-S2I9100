@@ -348,6 +348,25 @@ void arm_vm_init(uint32_t mem_limit, boot_args * args)
             l1[devs[idx]] = (devs[idx] << 20) | 0xC02;
     }
 #endif
+#ifdef BOARD_CONFIG_EXYNOS4210_I9100
+    /* Same seed as J1 but with i9100 device windows: 0x138 = S3C UART2
+     * (0x13820000), 0x104 = ext GIC (0x10480000/0x10490000) + IRQ combiner
+     * (0x10440000), 0x100 = MCT (0x10050000) + CMU/PMU/ChipID, 0x125 =
+     * SDHCI (0x12510000..0x12540000). FB covers the 2MB scratch window at
+     * 0x5E000000 (uniLoader-owned framebuffer). */
+    {
+        volatile unsigned int *l1 =
+            (volatile unsigned int *)phys_to_virt(cpu_ttb);
+        int idx;
+        const unsigned int devs[] = { 0x138, 0x104, 0x100, 0x125 };
+
+        for (idx = 0; idx < 2; idx++)
+            l1[0x5E0 + idx] = ((0x5E000000u + idx * 0x100000u) & ~0xFFFFFu)
+                              | 0x402;
+        for (idx = 0; idx < 4; idx++)
+            l1[devs[idx]] = (devs[idx] << 20) | 0xC02;
+    }
+#endif
 
     identityBaseVA = gVirtBase;
     identityCachePA = cpu_ttb + L1_SIZE;    /* After the first initial TTB. */

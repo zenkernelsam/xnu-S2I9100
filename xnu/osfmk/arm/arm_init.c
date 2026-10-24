@@ -70,8 +70,11 @@ void arm_processor_identify(void)
 extern unsigned int ios7leo_read_fpsid(void);
 extern unsigned int ios7leo_read_mvfr0(void);
 #endif
-#ifdef BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
 #include <pexpert/arm/j1_entry.h>
+#endif
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+#include <pexpert/arm/i9100_entry.h>
 #endif
 void arm_init(boot_args * args)
 {
@@ -88,7 +91,7 @@ void arm_init(boot_args * args)
 #ifdef BOARD_CONFIG_QSD8250_LEO
     ios7leo_checkpoint(args,6);
 #endif
-#ifdef BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     ios7j1_checkpoint(args,6);
 #endif
 
@@ -138,7 +141,7 @@ void arm_init(boot_args * args)
 #ifdef BOARD_CONFIG_QSD8250_LEO
     ios7leo_checkpoint(args,7);
 #endif
-#ifdef BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     ios7j1_checkpoint(args,7);
 #endif
 
@@ -174,7 +177,7 @@ void arm_init(boot_args * args)
     ios7leo_checkpoint(args,8);
     ios7leo_forget_early_maps();
 #endif
-#ifdef BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     ios7j1_checkpoint(args,8);
     ios7j1_forget_early_maps();
 #endif
@@ -194,7 +197,7 @@ void arm_init(boot_args * args)
     /* Continue through the original kernel boot; this screen is not userspace. */
     ios7leo_kernel_continuing();
 #endif
-#ifdef BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     ios7j1_checkpoint(args,10);
     ios7j1_kernel_continuing();
 #endif
@@ -246,13 +249,13 @@ void arm_init(boot_args * args)
      * VFP/float initialization. 
      */
     init_vfp();
-#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     {
         unsigned int fpsid, mvfr0, cpacr;
         __asm__ volatile("mrc p15,0,%0,c1,c0,2" : "=r"(cpacr));
         if ((cpacr & 0xf00000U) != 0xf00000U || (cpacr & (1U << 30)))
             panic("J1/Leo VFP access unavailable CPACR=%08x", cpacr);
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
         /* J1 Cortex-A7 has VFPv4-D32; the kernel is built -msoft-float so
          * vmrs is not encodable here. CPACR access check above suffices;
          * VFP context init runs separately in init_vfp(). */

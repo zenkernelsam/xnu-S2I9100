@@ -24,7 +24,7 @@ bool AppleARMPE::init(OSDictionary * propTable)
 }
 
 extern const IORegistryPlane *gIODTPlane;
-#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 extern void ios7leo_register_sd(IOService *platform);
 extern void ios7leo_register_display(IOService *platform);
 extern void ios7leo_prepare_root_file();
@@ -86,15 +86,19 @@ bool AppleARMPE::start(IOService * provider)
     ios7lab_register_hid_touch(this);
     ios7lab_register_sd(this);
 #endif
-#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     ios7leo_register_display(this);
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
     ios7leo_prepare_root_file();
+#endif
 #if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
     ios7j1_register_sd(this);
-#else
+#elif defined(BOARD_CONFIG_QSD8250_LEO)
     ios7leo_prepare_log_reader(); /* optional owned logger before rawmedia publication */
     ios7leo_register_sd(this);
 #endif
+    /* EXYNOS4210_I9100: no SD/media provider yet — the SDHCI IOKit backend
+     * and root-file registration land with the storage milestone. */
     ios7leo_register_hid_touch(this);
 #endif
     return true;

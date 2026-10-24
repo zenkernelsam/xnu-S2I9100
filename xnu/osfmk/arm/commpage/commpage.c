@@ -54,7 +54,7 @@ void commpage_update_active_cpus(void)
 
     /* Lock the lock and update the global page value */
     simple_lock(&commpage_active_cpus_lock);
-#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
     /* Original iOS7 libdispatch sizes its heap from LOGICAL_CPUS at +0x36.
      * This reference machine runs exactly one present/active physical CPU. */
     assert(processor_avail_count == 1);
@@ -96,12 +96,14 @@ void commpage_populate(void)
     /* Update CPU count */
     simple_lock_init(&commpage_active_cpus_lock, 0);
     commpage_update_active_cpus();
-#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
 #if BOARD_CONFIG_QSD8250_LEO
     ml_cpu_info_t cpu_info;
     ml_cpu_get_info(&cpu_info);
     assert(cpu_info.cache_line_size > 0 && cpu_info.cache_line_size <= UINT16_MAX);
     *(uint16_t*)(_COMM_PAGE_BASE_ADDRESS + 0x26) = (uint16_t)cpu_info.cache_line_size;
+#elif BOARD_CONFIG_EXYNOS4210_I9100
+    *(uint16_t*)(_COMM_PAGE_BASE_ADDRESS + 0x26) = 32; /* Cortex-A9 cache-line bytes. */
 #else
     *(uint16_t*)(_COMM_PAGE_BASE_ADDRESS + 0x26) = 64; /* Cortex-A8 cache-line bytes. */
 #endif

@@ -56,7 +56,7 @@ EnterARM(init_vfp)
 #endif
     bx      lr
 
-#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 /* Actual privileged feature-register reads; no simulated capability values. */
 EnterARM(ios7leo_read_fpsid)
     vmrs    r0, fpsid

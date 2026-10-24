@@ -13,7 +13,9 @@ DATAFILES = \
         leo_entry.h \
         leo_handoff.h \
         j1_entry.h \
-        j1_handoff.h
+        j1_handoff.h \
+        i9100_entry.h \
+        i9100_handoff.h
 
 INSTALL_MD_LIST	= ${DATAFILES}
 

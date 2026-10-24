@@ -397,7 +397,7 @@ done:
 #endif
 /* IOS7LEO_VM_END */
 /* IOS7J1_VM_BEGIN */
-#if BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
 #include <mach/vm_statistics.h>
 /* Original iOS7 ARM32 trap-10 passes a 64-bit size in r2:r3 and the flags
  * in r4, but this port typedefs mach_vm_size_t as 32-bit (iOS 4.3 ABI), so
@@ -442,7 +442,7 @@ done:
 int
 _kernelrpc_mach_vm_allocate_trap(struct _kernelrpc_mach_vm_allocate_trap_args *args)
 {
-#if BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
     return j1_vm_allocate((struct j1_vm_allocate_wire *)args);
 #endif
 

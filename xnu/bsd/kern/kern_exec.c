@@ -986,17 +986,17 @@ grade:
 		}
 		task_set_dyld_info(task, load_result.all_image_info_addr,
 		    load_result.all_image_info_size);
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 		kprintf("J1EXEC dyldinfo done\n");
 #endif
 	}
     
 	/* Avoid immediate VM faults back into kernel */
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	kprintf("J1EXEC prefault begin\n");
 #endif
 	exec_prefault_data(p, imgp, &load_result);
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	kprintf("J1EXEC prefault done\n");
 #endif
 
@@ -1005,7 +1005,7 @@ grade:
 	}
 	/* Set the entry point */
 	thread_setentrypoint(thread, load_result.entry_point);
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	kprintf("J1EXEC entry set\n");
 #endif
 
@@ -1022,7 +1022,7 @@ grade:
 	 * already active.  MAY BLOCK!
 	 */
 	_aio_exec( p );
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	kprintf("J1EXEC aio done\n");
 #endif
 
@@ -1153,7 +1153,7 @@ grade:
 	if (imgp->ip_px_sa != NULL) {
 		psa = (struct _posix_spawnattr *) imgp->ip_px_sa;
 		if (psa->psa_flags & POSIX_SPAWN_START_SUSPENDED) {
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 			kprintf("J1EXEC child suspended\n");
 #endif
 			proc_lock(p);
@@ -1246,7 +1246,7 @@ if (!spawn)
 	}
 
 bad:
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	kprintf("J1EXEC imgact return err=%d\n", error);
 #endif
 	return(error);
@@ -2066,7 +2066,7 @@ posix_spawn(proc_t ap, struct posix_spawn_args *uap, int32_t *retval)
 	}
 #endif
 	error = exec_activate_image(imgp);
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	kprintf("J1EXEC activate=%d spawn=%d\n", error,
 		(imgp->ip_flags & IMGPF_SPAWN) ? 1 : 0);
 #endif
@@ -2478,7 +2478,7 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 #endif
 
 	error = exec_activate_image(imgp);
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	kprintf("J1EXEC activate=%d spawn=%d\n", error,
 		(imgp->ip_flags & IMGPF_SPAWN) ? 1 : 0);
 #endif
@@ -2489,7 +2489,7 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 #endif
 
 	kauth_cred_unref(&context.vc_ucred);
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	kprintf("J1EXEC cred_unref done\n");
 #endif
 
@@ -2498,15 +2498,15 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 		error = ENOEXEC;
 
 	if (error == 0) {
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 		kprintf("J1EXEC resettextvp begin\n");
 #endif
 		exec_resettextvp(p, imgp);
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 		kprintf("J1EXEC resettextvp done\n");
 #endif
 		error = check_for_signature(p, imgp);
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 		kprintf("J1EXEC sigcheck done err=%d\n", error);
 #endif
 	}	
@@ -2520,7 +2520,7 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 	if (imgp->ip_scriptlabelp)
 		mac_vnode_label_free(imgp->ip_scriptlabelp);
 #endif
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	kprintf("J1EXEC post-free\n");
 #endif
 	if (!error) {
@@ -2543,7 +2543,7 @@ exit_with_error:
 	if (bufp != NULL) {
 		FREE(bufp, M_TEMP);
 	}
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	kprintf("J1EXEC execve return err=%d\n", error);
 #endif
 #if BOARD_CONFIG_ARMPBA8

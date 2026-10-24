@@ -113,7 +113,7 @@ undef_from_kernel:
  * Call the software interrupt handler.
  */
 EnterARM(fleh_swi)
-#if !(BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if !(BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100)
     cmn     r12, #3
     beq     swi_trap_tb
 #endif
@@ -159,7 +159,7 @@ leo_frontier_entry_skip:
     ldmfd   sp!, {r0,r1}
 leo_frontier_entry_done:
 #endif
-#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
     /* Original iOS ARMv7's -3 fallback returns the actual 64-bit clock.
      * Use the normal saved-state/kernel-stack path and restore through
      * swi_exit64, preserving both r0 and r1. */
@@ -261,7 +261,7 @@ swi_trap_tb:
     /* Fast return */
     movs    pc, lr
 
-#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
 ios7lab_timebase:
     blx     _mach_absolute_time
     b       swi_exit64
@@ -552,7 +552,7 @@ irq_restore_kernel:
     ldr     r0, [r12, MACHINE_THREAD_PREEMPT_COUNT]
 
     /* Preempt thread if necessary */
-#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     cmp     r0, #0
 #endif
     bne     restore_kernel_context

@@ -147,7 +147,7 @@ static void machine_conf(void)
 {
     machine_info.memory_size = (typeof(machine_info.memory_size)) mem_size;
     machine_info.max_mem = (typeof(machine_info.max_mem)) max_mem;
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     /*
      * J1 bring-up (platform-specific, Exynos 3475):
      * mc/commpage size per-CPU arrays from ml_get_max_cpus() (mcache.c:181,

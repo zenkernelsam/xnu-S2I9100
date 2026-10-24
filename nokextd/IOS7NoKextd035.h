@@ -3,8 +3,8 @@
 /* Scoped to the actual LEO/J1XLTE conditional translation units. This explicit
  * source prefix follows generated numeric feature preincludes; command-line
  * -D alone would not override an inherited no_kextd.h defining zero. */
-#if !defined(BOARD_CONFIG_QSD8250_LEO) && !defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
-#error IOS7NoKextd035 requires the LEO/J1XLTE compilation target
+#if !defined(BOARD_CONFIG_QSD8250_LEO) && !defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) && !defined(BOARD_CONFIG_EXYNOS4210_I9100)
+#error IOS7NoKextd035 requires the LEO/J1XLTE/I9100 compilation target
 #endif
 #ifdef NO_KEXTD
 #undef NO_KEXTD

@@ -192,7 +192,7 @@ _cnputc(char c)
 	extern void ios7leo_log_putc(char);
 	ios7leo_log_putc(c); /* try-only RAM producer, no SD or scheduling */
 #endif
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	{
 	extern void ios7j1_debug_putc(char);
 	extern void ios7j1_fast_putc(char);

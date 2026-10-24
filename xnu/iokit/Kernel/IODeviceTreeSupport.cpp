@@ -296,7 +296,7 @@ int IODTGetDefault(const char *key, void *infoAddr, unsigned int infoSize )
     OSData			*defaultObj;
     unsigned int		defaultSize;
 
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     /* Early boot (sched_init etc.) runs before the registry/plane exist;
      * report "no default" so callers use their built-in defaults. */
     if (gIODTPlane == 0)

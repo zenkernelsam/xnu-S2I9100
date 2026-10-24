@@ -404,7 +404,7 @@ bsd_init(void)
 
 #define bsd_init_kprintf(x...) // kprintf("bsd_init: " x)
 
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	{ extern void ios7j1_stage(unsigned int); ios7j1_stage(0x0001); }
 #endif
 
@@ -804,11 +804,11 @@ bsd_init(void)
 	timeout(lightning_bolt, 0, hz);
 
 	bsd_init_kprintf("calling bsd_autoconf\n");
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	{ extern void j1_klog(const char *); j1_klog("J1BSD init: calling bsd_autoconf\n"); }
 #endif
 	bsd_autoconf();
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	{ extern void j1_klog(const char *); j1_klog("J1BSD init: bsd_autoconf returned\n"); }
 #endif
 
@@ -872,20 +872,20 @@ bsd_init(void)
 #endif
 
 		bsd_init_kprintf("vfs_mountroot\n");
-#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
         printf("J1 boot: vfs_mountroot begin\n");
 #else
         printf("Leo boot: vfs_mountroot begin\n");
 #endif
         err = vfs_mountroot();
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
         printf("J1 boot: vfs_mountroot returned errno=%d\n", err);
 #else
         printf("Leo boot: vfs_mountroot returned errno=%d\n", err);
 #endif
         if (err == 0 && mountlist.tqh_first)
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
             printf("J1 boot: root mount readonly=%u\n",
 #else
             printf("Leo boot: root mount readonly=%u\n",
@@ -1072,13 +1072,13 @@ kern_return_t
 bsd_autoconf(void)
 {
 	kprintf("bsd_autoconf: calling kminit\n");
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	extern void j1_klog(const char *);
 	{ extern void ios7j1_stage(unsigned int); ios7j1_stage(0x0003); }
 	j1_klog("J1BSD autoconf: kminit begin\n");
 #endif
 	kminit();
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	{ extern void ios7j1_stage(unsigned int); ios7j1_stage(0x0004); }
 	j1_klog("J1BSD autoconf: kminit done\n");
 	j1_klog("J1BSD autoconf: pseudo_inits begin\n");
@@ -1093,7 +1093,7 @@ bsd_autoconf(void)
 	    for (pi = pseudo_inits; pi->ps_func; pi++)
 		(*pi->ps_func) (pi->ps_count);
 	}
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	j1_klog("J1BSD autoconf: pseudo_inits done\n");
 	j1_klog("J1BSD autoconf: IOKitBSDInit begin\n");
 #endif

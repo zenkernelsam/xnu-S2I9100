@@ -2156,7 +2156,7 @@ StartAgain: ;
 		if (override_nx(map, alias) && cur_protection)
 		        cur_protection |= VM_PROT_EXECUTE;
 
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 		/* ckpt11: skip vm_map_pmap_enter for submaps. Dropping this
 		 * guard REGRESSES real hardware to a stall at J1SDRW rd#94209
 		 * (ckpt10, exact same signature) while QEMU still reaches

@@ -47,6 +47,11 @@
 #define __ARM_PROCESSOR_CLASS_CORTEX_A8__ 1
 #endif
 
+/* I9100 Exynos4210 Cortex-A9: ARMv7-A, reuse A8-compatible path for bring-up. */
+#ifdef BOARD_CONFIG_EXYNOS4210_I9100
+#define __ARM_PROCESSOR_CLASS_CORTEX_A8__ 1
+#endif
+
 /* ARMv7 Cortex-A8 platforms. */
 
 #ifdef BOARD_CONFIG_S5L8920X

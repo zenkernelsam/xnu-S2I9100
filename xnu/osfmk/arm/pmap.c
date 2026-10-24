@@ -202,7 +202,7 @@ uint32_t virt_begin, virt_end;  /* Virtual Address Space. */
 uint32_t avail_start, vm_first_phys;
 vm_page_t commpage;
 
-#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
 /* PC lab compatibility alias for original iOS 7 ARMv7 userspace. */
 #define IOS7LAB_COMMPAGE_ALIAS 0xFFFF4000U
 #endif
@@ -1689,7 +1689,7 @@ retry:
     OSAddAtomic(1,&map->pm_stats.resident_count);pmap_ledger_credit(map,task_ledgers.phys_mem,PAGE_SIZE);
     leo_mapping_wire(entry,wired);if(managed)leo_physical_wire_refresh(pn);
     *pte=leo_pte_build(map,va,pn,prot,wired);if(managed)UNLOCK_PVH(pn);
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     /* J1: freshly paged-in executable user pages may hold stale I-cache
      * lines (PIO-filled, never executed). Clean D + invalidate I so the
      * first userspace fetch sees real code, not garbage. */
@@ -2863,7 +2863,7 @@ void pmap_create_sharedpage(void)
      * Memset it.
      */
     memset((void *) _COMM_PAGE_BASE_ADDRESS, 0x00, PAGE_SIZE);
-#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
     /* Retain the control ABI at 0x40000000 and expose the same data read-only
      * at the address used by the original iOS 7 dyld. Offset 0x90 remains
      * zero: Cortex-A8 must take mach_absolute_time's syscall fallback,
@@ -3258,7 +3258,7 @@ kern_return_t pmap_enter_options(pmap_t pmap, vm_map_offset_t va, ppnum_t pa, vm
 
         if (va == _COMM_PAGE_BASE_ADDRESS)
             template_pte |= L2_ACCESS_USER;
-#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
         if (pmap == kernel_pmap && va == IOS7LAB_COMMPAGE_ALIAS)
             template_pte |= L2_ACCESS_USER | L2_ACCESS_APX | L2_NX_BIT;
 #endif
@@ -3452,7 +3452,7 @@ kern_return_t pmap_enter_options(pmap_t pmap, vm_map_offset_t va, ppnum_t pa, vm
      */
     if (va == _COMM_PAGE_BASE_ADDRESS)
         template_pte |= L2_ACCESS_USER;
-#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
     if (pmap == kernel_pmap && va == IOS7LAB_COMMPAGE_ALIAS)
         template_pte |= L2_ACCESS_USER | L2_ACCESS_APX | L2_NX_BIT;
 #endif
@@ -3464,7 +3464,7 @@ kern_return_t pmap_enter_options(pmap_t pmap, vm_map_offset_t va, ppnum_t pa, vm
 
     *(uint32_t *) pte = template_pte;
     pte_sync(pte);
-#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     /* J1: a freshly faulted executable page may hold stale I-cache lines
      * (PIO-filled, never executed). pte_sync above only cleans D for the
      * walker. Sync D + invalidate I via the linear map so the first fetch
