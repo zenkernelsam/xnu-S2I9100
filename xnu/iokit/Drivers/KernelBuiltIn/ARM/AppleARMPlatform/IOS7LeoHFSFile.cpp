@@ -1,4 +1,4 @@
-#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 /* Real readonly SD-backed file media. Original009 PAL/adapter are reused intact. */
 #include <IOKit/storage/IOBlockStorageDevice.h>
 #include <IOKit/storage/IOBlockStorageDriver.h>
@@ -131,7 +131,7 @@ IOService *IOS7LeoHFSFile::probe(IOService *provider,SInt32 *)
  if(!media||!media->isWhole())return 0;
  IOBlockStorageDriver *driver=OSDynamicCast(IOBlockStorageDriver,media->getProvider());
  IOService *device=driver?driver->getProvider():0;
- return (device->metaCast("IOS7LeoSDCC2")||device->metaCast("IOS7J1SDMMC"))?this:0;
+ return (device->metaCast("IOS7LeoSDCC2")||device->metaCast("IOS7J1SDMMC")||device->metaCast("IOS7I9100SD"))?this:0;
 }
 IOReturn IOS7LeoHFSFile::readPhysical(UInt64 lba,UInt8 bytes[512])
 {

@@ -1,6 +1,6 @@
 /* I9100 Exynos4210 single-core XNU IRQ/timebase: the SoC MCT global timer
  * (global free-running comparator 0) as the tick source, delivered through
- * the external GIC on INTID 35 (SPI 3 + 32) — QEMU's exynos4210 board IRQ
+ * the external GIC on INTID 89 (EXT_GIC_ID_MCT_G0) — QEMU's exynos4210 board IRQ
  * table splits MCT_G0 straight to the ext-GIC input (EXT_GIC_ID_MCT_G0),
  * matching the <0 3 0> pin in Linux's exynos4210.dtsi.  The ARM generic
  * timer (CP15 CNTP) is not used on Cortex-A9 here (same constraint as J1:
@@ -136,7 +136,7 @@ void I9100_interrupt_init(void)
         write_reg(i9100_gic_dist, I9100_GIC_DIST_ENABLE_CLEAR + i*4, 0xffffffffU);
         write_reg(i9100_gic_dist, I9100_GIC_DIST_PENDING_CLEAR + i*4, 0xffffffffU);
     }
-    /* MCT global comparator 0 line (I9100_MCT_IRQ, INTID 35): mid priority,
+    /* MCT global comparator 0 line (I9100_MCT_IRQ, INTID 89): mid priority,
      * level triggered, routed to CPU0.  The target write is a no-op on the
      * uniprocessor GIC (RAZ/WI) but required on real hardware. */
     write_reg(i9100_gic_dist, I9100_GIC_DIST_PRI + (irq/4)*4,

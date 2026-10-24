@@ -402,7 +402,7 @@ bsd_init(void)
 	boolean_t       netboot = FALSE;
 #endif
 
-#define bsd_init_kprintf(x...) // kprintf("bsd_init: " x)
+#define bsd_init_kprintf(x...) kprintf("bsd_init: " x)
 
 #if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	{ extern void ios7j1_stage(unsigned int); ios7j1_stage(0x0001); }

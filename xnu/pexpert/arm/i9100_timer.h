@@ -3,11 +3,11 @@
 #define IOS7LAB_I9100_TIMER_H
 #include <mach/mach_types.h>
 #define I9100_MCT_HZ 24000000U
-/* Exynos 4210 MCT global comparator 0: the SoC model splits it straight to
- * the external GIC (EXT_GIC_ID_MCT_G0), same pin Linux's exynos4210.dtsi
- * lists as SPI 3 -> INTID 35. Combiner group-1-bit-4 also sees it but the
- * direct ext-GIC path needs no combiner programming under QEMU smdkc210. */
-#define I9100_MCT_IRQ 35U /* SPI 3 + 32. */
+/* Exynos 4210 MCT global comparator 0: QEMU smdkc210 splits it to the
+ * external GIC via EXT_GIC_ID_MCT_G0 = 89 (ext_gic_irq[57] -> GIC pin 57
+ * -> INTID 32+57 = 89); it ALSO feeds combiner group-1-bit-4 in parallel.
+ * Earlier value 35 was a misread of the dtsi combiner spec. */
+#define I9100_MCT_IRQ 89U /* EXT_GIC_ID_MCT_G0 direct ext-GIC line. */
 #define I9100_MCT_WRITE_DELAY_TICKS 64U
 #define I9100_MCT_MIN_MATCH_TICKS (I9100_MCT_WRITE_DELAY_TICKS+4U)
 struct I9100TimerSnapshot {

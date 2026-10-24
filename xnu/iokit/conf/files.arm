@@ -55,3 +55,6 @@ iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7LeoHIDTouch.cpp optional io
 # J1 Exynos3475 SDMMC (DW-MMC PIO) block device
 iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7J1SDMMC.cpp optional iokitcpp
 iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/j1_sdmmc.c standard
+# I9100 Exynos4210 SDHCI PIO block device
+iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100SD.cpp optional iokitcpp
+iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_sdhci.c standard
