@@ -29,3 +29,8 @@ _memcpy       _memcpy417
 _memset       _memset13
 _memset       _memset93
 _memset       _memset188
+
+# LLVM >= 14 emits sized-memcpy calls as _memcpy.<N>; only sizes not
+# defined by any kernel object need an alias (aliasing a defined name
+# produces duplicate-symbol errors). Extend as needed.
+_memcpy       _memcpy.412
