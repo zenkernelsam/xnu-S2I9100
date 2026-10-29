@@ -1719,6 +1719,7 @@ get_macho_vnode(
 	NDINIT(ndp, LOOKUP, OP_OPEN, FOLLOW | LOCKLEAF, UIO_SYSSPACE, CAST_USER_ADDR_T(path), ctx);
 
 	if ((error = namei(ndp)) != 0) {
+		kprintf("J1EXEC namei fail=%d path=%s\n", error, path ? path : "(null)");
 		if (error == ENOENT) {
 			error = LOAD_ENOENT;
 		} else {

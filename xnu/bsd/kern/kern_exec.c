@@ -1325,8 +1325,11 @@ exec_activate_image(struct image_params *imgp)
 		   UIO_SYSSPACE, CAST_USER_ADDR_T(imgp->ip_strings), imgp->ip_vfs_context);
 again:
 	error = namei(&nd);
-	if (error)
+	if (error) {
+		kprintf("J1EXEC exec-namei fail=%d path=%s\n", error,
+			imgp->ip_strings ? (char *)imgp->ip_strings : "(null)");
 		goto bad_notrans;
+	}
 	imgp->ip_ndp = &nd;	/* successful namei(); call nameidone() later */
 	imgp->ip_vp = nd.ni_vp;	/* if set, need to vnode_put() at some point */
 
@@ -2067,8 +2070,10 @@ posix_spawn(proc_t ap, struct posix_spawn_args *uap, int32_t *retval)
 #endif
 	error = exec_activate_image(imgp);
 #if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
-	kprintf("J1EXEC activate=%d spawn=%d\n", error,
-		(imgp->ip_flags & IMGPF_SPAWN) ? 1 : 0);
+	kprintf("J1EXEC activate=%d spawn=%d name=%s\n", error,
+		(imgp->ip_flags & IMGPF_SPAWN) ? 1 : 0,
+		imgp->ip_ndp ? imgp->ip_ndp->ni_cnd.cn_nameptr :
+		(imgp->ip_vp && imgp->ip_vp->v_name ? imgp->ip_vp->v_name : "??"));
 #endif
 #if BOARD_CONFIG_ARMPBA8
 	if (ios7lab_preferences_spawn)
@@ -2479,8 +2484,10 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 
 	error = exec_activate_image(imgp);
 #if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
-	kprintf("J1EXEC activate=%d spawn=%d\n", error,
-		(imgp->ip_flags & IMGPF_SPAWN) ? 1 : 0);
+	kprintf("J1EXEC activate=%d spawn=%d name=%s\n", error,
+		(imgp->ip_flags & IMGPF_SPAWN) ? 1 : 0,
+		imgp->ip_ndp ? imgp->ip_ndp->ni_cnd.cn_nameptr :
+		(imgp->ip_vp && imgp->ip_vp->v_name ? imgp->ip_vp->v_name : "??"));
 #endif
 #if BOARD_CONFIG_ARMPBA8
 	if (ios7lab_exec_trace)

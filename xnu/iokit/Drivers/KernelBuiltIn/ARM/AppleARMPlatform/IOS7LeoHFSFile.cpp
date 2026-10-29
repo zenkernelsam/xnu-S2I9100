@@ -253,7 +253,7 @@ bool IOS7LeoHFSFile::start(IOService *provider)
  work=(fl32_work *)IOMalloc(sizeof(*work));extents=(fl32_extent *)IOMalloc(sizeof(*extents)*LEO_EXTENT_CAP);
  if(!mutex||!bounce||!work||!extents){phase(StorageFailed,0,kIOReturnNoMemory);return false;}
  fl32_io io={this,read512,rawSectors};
- fl32_limits limits={131072U,128U,939524096ULL};
+ fl32_limits limits={131072U,128U,1605410816ULL};
  phase(LocatingFile);int result=fl32_locate(&io,&limits,work,extents,LEO_EXTENT_CAP,&image);
  if(result!=FL32_OK){phase(StorageFailed,result,(IOReturn)work->backend_error);ios7leo_root_file_status();return false;}
  if(image.magic!=FL32_IMAGE_MAGIC||image.file_bytes!=limits.expected_file_bytes||
