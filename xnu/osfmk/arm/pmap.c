@@ -2810,10 +2810,6 @@ vm_page_t pmap_grab_page(pmap_t pmap)
     OSAddAtomic(1, &inuse_ptepages_count);
     OSAddAtomic(1, &alloc_ptepages_count);
 
-#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
-    kdb_printf("pmap_grab_page: pmap=%p ppn=0x%x lr=%p\n",
-               pmap, page->phys_page, __builtin_return_address(0));
-#endif
 
     return page;
 }

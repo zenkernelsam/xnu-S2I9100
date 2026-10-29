@@ -832,49 +832,63 @@ void sleh_abort(void *context, int reason)
                                     pmap_find_phys(map->pmap,
                                     (addr64_t)((unsigned)arm_ctx->pc
                                                & ~0xfffU)));
-                            /* descend sub-maps to real entry, dump obj chain */
+                            /* descend sub-maps for pc AND lr */
                             {
-                                vm_map_entry_t fe3 = (vm_map_entry_t)0;
-                                vm_map_t m3 = map;
-                                vm_map_address_t a3 =
-                                    (vm_map_address_t)
-                                    ((unsigned)arm_ctx->pc & ~1U);
-                                int sub = 0;
-                                while (sub < 4 &&
-                                       vm_map_lookup_entry(m3, a3, &fe3) &&
-                                       fe3) {
-                                    kprintf("JCRASH ent%d va=%08x "
-                                            "[%08x-%08x] off=%llx sub=%d\n",
-                                            sub, (unsigned)a3,
-                                            (unsigned)fe3->vme_start,
-                                            (unsigned)fe3->vme_end,
-                                            (unsigned long long)fe3->offset,
-                                            fe3->is_sub_map);
-                                    if (!fe3->is_sub_map) break;
-                                    a3 = (a3 - fe3->vme_start) + fe3->offset;
-                                    m3 = fe3->object.sub_map;
-                                    sub++;
-                                }
-                                if (fe3 && !fe3->is_sub_map) {
-                                    vm_object_t o3 = fe3->object.vm_object;
-                                    int depth = 0;
-                                    while (o3 && depth < 5) {
-                                        kprintf("JCRASH obj%d=%p int=%d "
-                                                "pager=%p poff=%llx "
-                                                "shdw=%p shoff=%llx "
-                                                "ref=%d res=%u\n",
-                                                depth, o3, o3->internal,
-                                                o3->pager,
+                                unsigned probe2[2] = {
+                                    (unsigned)arm_ctx->pc & ~1U,
+                                    (unsigned)arm_ctx->lr & ~1U };
+                                const char *pn2[2] = { "pc", "lr" };
+                                int pi;
+                                for (pi = 0; pi < 2; pi++) {
+                                    vm_map_entry_t fe3 = (vm_map_entry_t)0;
+                                    vm_map_t m3 = map;
+                                    vm_map_address_t a3 = probe2[pi];
+                                    int sub = 0;
+                                    while (sub < 4 &&
+                                           vm_map_lookup_entry(m3, a3,
+                                                               &fe3) && fe3) {
+                                        kprintf("JCRASH %s ent%d va=%08x "
+                                                "[%08x-%08x] off=%llx sub=%d\n",
+                                                pn2[pi], sub, (unsigned)a3,
+                                                (unsigned)fe3->vme_start,
+                                                (unsigned)fe3->vme_end,
                                                 (unsigned long long)
-                                                o3->paging_offset,
-                                                o3->shadow,
-                                                (unsigned long long)
-                                                o3->vo_shadow_offset,
-                                                o3->ref_count,
-                                                o3->resident_page_count);
-                                        o3 = o3->shadow;
-                                        depth++;
+                                                fe3->offset,
+                                                fe3->is_sub_map);
+                                        if (!fe3->is_sub_map) break;
+                                        a3 = (a3 - fe3->vme_start) +
+                                             fe3->offset;
+                                        m3 = fe3->object.sub_map;
+                                        sub++;
                                     }
+                                    if (fe3 && !fe3->is_sub_map) {
+                                        vm_object_t o3 =
+                                            fe3->object.vm_object;
+                                        int depth = 0;
+                                        while (o3 && depth < 4) {
+                                            kprintf("JCRASH %s obj%d=%p "
+                                                    "int=%d pager=%p "
+                                                    "poff=%llx shdw=%p\n",
+                                                    pn2[pi], depth, o3,
+                                                    o3->internal, o3->pager,
+                                                    (unsigned long long)
+                                                    o3->paging_offset,
+                                                    o3->shadow);
+                                            o3 = o3->shadow;
+                                            depth++;
+                                        }
+                                    }
+                                }
+                                /* instructions at lr-8 and pc */
+                                {
+                                    unsigned short lw[8];
+                                    if (copyin((user_addr_t)
+                                               (probe2[1] - 8),
+                                               (char *)lw, 16) == 0)
+                                        kprintf("JCRASH lrinsn=%04x %04x "
+                                                "%04x %04x %04x %04x\n",
+                                                lw[0], lw[1], lw[2], lw[3],
+                                                lw[4], lw[5]);
                                 }
                             }
                             /* dump 16 bytes at PC inside its phys page */

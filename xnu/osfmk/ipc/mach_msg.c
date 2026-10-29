@@ -799,9 +799,43 @@ mach_msg_trap(
 	struct mach_msg_overwrite_trap_args *args)
 {
 	kern_return_t kr;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+	mach_port_name_t rport = MACH_PORT_NULL;
+	mach_port_name_t lport = MACH_PORT_NULL;
+	mach_msg_id_t mid = -1;
+	char pn[17]; pn[0] = 0;
+	int pid = proc_selfpid();
+	if (pid > 1 && args->msg) {
+		mach_msg_header_t h;
+		if (copyin((user_addr_t)args->msg, (char *)&h,
+			   sizeof h) == 0) {
+			rport = h.msgh_remote_port;
+			lport = h.msgh_local_port;
+			mid = h.msgh_id;
+		}
+		proc_name(pid, pn, sizeof pn);
+	}
+#endif
 	args->rcv_msg = (mach_vm_address_t)0;
 
  	kr = mach_msg_overwrite_trap(args);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+	if (pid > 1) {
+		kprintf("MMTRAP pid=%d(%s) opt=%x snd=%u rcv=%u "
+			"rport=%x lport=%x rname=%x id=%d kr=%x\n",
+			pid, pn, (unsigned)args->option,
+			(unsigned)args->send_size, (unsigned)args->rcv_size,
+			(unsigned)rport, (unsigned)lport,
+			(unsigned)args->rcv_name, mid, (unsigned)kr);
+		if (rport == MACH_PORT_NULL) {
+			arm_saved_state_t *us =
+				(arm_saved_state_t *)current_thread()->machine.uss;
+			kprintf("MMNULL pid=%d upc=%08x ulr=%08x sp=%08x\n",
+				pid, (unsigned)us->pc, (unsigned)us->lr,
+				(unsigned)us->sp);
+		}
+	}
+#endif
 	return kr;
 }
  

@@ -199,6 +199,12 @@ ipc_task_init(
 
 		task->itk_bootstrap =
 			ipc_port_copy_send(parent->itk_bootstrap);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+		if (IP_VALID(parent->itk_bootstrap) ||
+		    IP_VALID(task->itk_bootstrap))
+			kprintf("BPINH %p->%p %p->%p\n", parent, task,
+				parent->itk_bootstrap, task->itk_bootstrap);
+#endif
 
 		task->itk_seatbelt =
 			ipc_port_copy_send(parent->itk_seatbelt);
@@ -854,6 +860,10 @@ task_get_special_port(
 
 	    case TASK_BOOTSTRAP_PORT:
 		port = ipc_port_copy_send(task->itk_bootstrap);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+		kprintf("BPGET task=%p itkbs=%p ->port=%p pid=%d\n",
+			task, task->itk_bootstrap, port, proc_selfpid());
+#endif
 		break;
 
 	    case TASK_SEATBELT_PORT:
@@ -942,11 +952,21 @@ task_set_special_port(
 
 #if CONFIG_MACF_MACH
        if (mac_task_check_service(current_task(), task, "set_special_port")) {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+	       if (which == TASK_BOOTSTRAP_PORT)
+		       kprintf("BPSET DENIED task=%p port=%p pid=%d\n",
+			       task, port, proc_selfpid());
+#endif
                itk_unlock(task);
                return KERN_NO_ACCESS;
        }
 #endif
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+	if (which == TASK_BOOTSTRAP_PORT)
+		kprintf("BPSET task=%p old=%p new=%p pid=%d\n",
+			task, *whichp, port, proc_selfpid());
+#endif
 	old = *whichp;
 	*whichp = port;
 	itk_unlock(task);
