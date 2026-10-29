@@ -2034,6 +2034,20 @@ vm_offset_t io_map_spec(vm_map_offset_t phys_addr, vm_size_t size, unsigned int 
  */
 boolean_t pmap_next_page(ppnum_t * addrp)
 {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    /* uniLoader owns a 2MB scratch framebuffer at phys 0x5E000000 (the
+     * console text path writes pixels there all boot). Those frames must
+     * never enter the managed pool, or every console print scribbles over
+     * whatever vm_page the allocator parked on them (observed: UBC shared-
+     * cache pages overwritten with 0xFF000000/0xFFFFFFFF pixel data). */
+    if (first_avail >= 0x5E000000 && first_avail < 0x5E200000) {
+        kprintf("pmap_next_page: reserving uniLoader FB window 0x5e000000-0x5e1fffff\n");
+        while (first_avail >= 0x5E000000 && first_avail < 0x5E200000) {
+            first_avail += PAGE_SIZE;
+            avail_remaining--;
+        }
+    }
+#endif
     if (first_avail >= avail_end) {
         kprintf("pmap_next_page: ran out of possible pages, last page was 0x%08x", first_avail);
         return FALSE;

@@ -14,6 +14,7 @@
 #include "IOS7LabStoragePersonalities.h"
 extern "C" {
 #include <mach/mach_time.h>
+addr64_t kvtophys(vm_offset_t va);
 }
 class IOS7I9100SD : public IOBlockStorageDevice {
  OSDeclareDefaultStructors(IOS7I9100SD)
@@ -118,6 +119,19 @@ IOReturn IOS7I9100SD::doAsyncReadWrite(IOMemoryDescriptor *buffer,UInt64 block,U
  IOStorageCompletion saved=*completion;UInt64 completed=0;IOReturn result=kIOReturnSuccess;
  uint8_t *tmp=(uint8_t*)IOMalloc((unsigned)(count*512U));
  if(!tmp)return kIOReturnNoMemory;
+ {
+  /* CORRUPTION PROBE: log tmp VA and the physical frame its PTE actually
+   * targets; PIO writes land wherever this points. */
+  addr64_t tp=kvtophys((vm_offset_t)(uintptr_t)tmp);
+  addr64_t te=(bytes>1)?kvtophys((vm_offset_t)(uintptr_t)(tmp+bytes-1)):tp;
+  unsigned tv=(unsigned)(uintptr_t)tmp;
+  if((tv>=0x7ffff000U&&tv<0xc0000000U)||
+     (tp<0x80000000ULL&&tp>=0x5d000000ULL)||
+     (te<0x80000000ULL&&te>=0x5d000000ULL))
+   IOLog("I9100SDTMP blk=%llu n=%llu tmp=%p kvp0=%llx kvpN=%llx\n",
+         (unsigned long long)block,(unsigned long long)count,
+         tmp,(unsigned long long)tp,(unsigned long long)te);
+ }
  IOLockLock(mutex);
  {
   int rc=i9100_sd_read_multi(&card,block,tmp,(uint32_t)count);

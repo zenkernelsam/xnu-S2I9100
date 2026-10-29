@@ -2634,6 +2634,11 @@ retry:
 
 	retval = MapFileBlockC(hfsmp, (FCB *)fp, ap->a_size, ap->a_foffset,
 	                       ap->a_bpn, &bytesContAvail);
+	if (cp->c_fileid == 0xf969)
+		printf("BMAP cnid=%x fo=%llx size=%zx -> bpn=%llx run=%zx ret=%x\n",
+		       (unsigned)cp->c_fileid, (unsigned long long)ap->a_foffset,
+		       ap->a_size, (unsigned long long)(retval?-1:*ap->a_bpn),
+		       bytesContAvail, retval);
 	if (syslocks) {
 		hfs_systemfile_unlock(hfsmp, lockflags);
 		syslocks = 0;

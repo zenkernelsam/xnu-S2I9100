@@ -1164,6 +1164,191 @@ void sleh_undef(arm_saved_state_t * state)
                arm_ctx->pc, arm_ctx->cpsr);
         printf("dyld_all_image_info_addr: 0x%08x   dyld_all_image_info_size: 0x%08x\n",
             thread->task->all_image_info_addr, thread->task->all_image_info_size);
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        {
+            extern boolean_t vm_map_lookup_entry(vm_map_t, vm_map_address_t, vm_map_entry_t *);
+            unsigned addrs[3] = { (unsigned)arm_ctx->pc, (unsigned)arm_ctx->lr, (unsigned)arm_ctx->sp };
+            const char *names[3] = { "pc", "lr", "sp" };
+            int ai;
+            for (ai = 0; ai < 3; ai++) {
+                vm_map_entry_t fe = (vm_map_entry_t)0;
+                unsigned a = addrs[ai] & ~1U;
+                if (vm_map_lookup_entry(map, (vm_map_address_t)a, &fe) && fe)
+                    kprintf("JUNDEF %s=%08x entry=[%08x-%08x] off=%llx obj=%p pager=%p\n",
+                            names[ai], a,
+                            (unsigned)fe->vme_start, (unsigned)fe->vme_end,
+                            (unsigned long long)fe->offset,
+                            fe->object.vm_object,
+                            fe->object.vm_object ? fe->object.vm_object->pager : 0);
+                else
+                    kprintf("JUNDEF %s=%08x unmapped\n", names[ai], a);
+            }
+            {
+                extern void *vm_shared_region_get(task_t);
+                extern kern_return_t vm_shared_region_start_address(void *, unsigned long long *);
+                extern void vm_shared_region_deallocate(void *);
+                void *srg = vm_shared_region_get(thread->task);
+                unsigned long long sa = 0;
+                if (srg && vm_shared_region_start_address(srg, &sa) == KERN_SUCCESS && sa) {
+                    vm_map_entry_t fe3 = (vm_map_entry_t)0;
+                    if (vm_map_lookup_entry(map, (vm_map_address_t)sa, &fe3) && fe3)
+                        kprintf("JUNDEF cache@[%x] entry=[%08x-%08x] off=%llx obj=%p\n",
+                                (unsigned)sa,
+                                (unsigned)fe3->vme_start, (unsigned)fe3->vme_end,
+                                (unsigned long long)fe3->offset, fe3->object.vm_object);
+                    else
+                        kprintf("JUNDEF cache@[%x] unmapped in this process\n", (unsigned)sa);
+                    {
+                        unsigned char cw[16];
+                        if (copyin((user_addr_t)sa, (char *)cw, 16) == 0)
+                            kprintf("JUNDEF cachehdr=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                                    cw[0],cw[1],cw[2],cw[3],cw[4],cw[5],cw[6],cw[7]);
+                        else
+                            kprintf("JUNDEF cachehdr @%x copyin fail\n", (unsigned)sa);
+                    }
+                    {
+                        char want[128]; unsigned char ih[8];
+                        memset(want, 0, sizeof(want));
+                        if (copyin((user_addr_t)arm_ctx->r[0], want, sizeof(want)-1) == 0) {
+                            const char *tag = "Library not loaded: ";
+                            char *wp = want;
+                            while (*wp && strncmp(wp, tag, 20) != 0) wp++;
+                            if (*wp) {
+                                char *e;
+                                wp += 20;
+                                for (e = wp; *e && *e != '\n' && *e != '\r' && *e != '\t' && *e != ' '; e++) ;
+                                *e = '\0';
+                                if (copyin((user_addr_t)(sa+0x18), (char *)ih, 8) == 0) {
+                                    unsigned ioff = *(unsigned *)ih;
+                                    unsigned icnt = *(unsigned *)(ih+4);
+                                    unsigned i, found = 0, tblfail = 0, pfail = 0, dumped = 0, pgd = 0;
+                                    for (i = 0; i < icnt && i < 2048; i++) {
+                                        unsigned char ent[32]; char ps[128];
+                                        if (copyin((user_addr_t)(sa+ioff+i*32), (char *)ent, 32) != 0) {
+                                            tblfail++; break;
+                                        }
+                                        {
+                                            unsigned pfo = *(unsigned *)&ent[24];
+                                            if (!pfo || pfo > 0x10000000) continue;
+                                            memset(ps, 0, sizeof(ps));
+                                            if (copyin((user_addr_t)(sa+pfo), ps, sizeof(ps)-1) != 0) {
+                                                pfail++; continue;
+                                            }
+                                            if (dumped < 6 && (i < 3 || ps[0] == 0 || ps[0] != '/')) {
+                                                unsigned hexb[8]; int hb;
+                                                vm_map_entry_t fe4 = (vm_map_entry_t)0;
+                                                for (hb = 0; hb < 8; hb++) hexb[hb] = ((unsigned char *)ps)[hb];
+                                                kprintf("JUNDEF img[%u] pfo=%x addr=%llx str=<%s> hex=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                                                        i, pfo, *(unsigned long long *)ent, ps,
+                                                        hexb[0],hexb[1],hexb[2],hexb[3],hexb[4],hexb[5],hexb[6],hexb[7]);
+                                                {
+                                                    extern ppnum_t pmap_find_phys(pmap_t, addr64_t);
+                                                    extern unsigned long gPhysBase, gVirtBase;
+                                                    ppnum_t pn = pmap_find_phys(map->pmap, (addr64_t)(sa+pfo));
+                                                    kprintf("JUNDEF   findphys va=%x pn=%x\n", (unsigned)(sa+pfo), (unsigned)pn);
+                                                    if (pn) {
+                                                        unsigned char *kvb = (unsigned char *)(((vm_offset_t)pn << PAGE_SHIFT) - gPhysBase + gVirtBase);
+                                                        unsigned char *kv = kvb + ((unsigned)(sa+pfo) & 0xfff);
+                                                        kprintf("JUNDEF   kv=%p pg=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                                                                kv, kv[0],kv[1],kv[2],kv[3],kv[4],kv[5],kv[6],kv[7]);
+                                                        if (!pgd && (ps[0] == 0 || ps[0] != 47)) { pgd = 1;
+                                                            int po;
+                                                            for (po = 0; po < 4096; po += 32)
+                                                                kprintf("PGD %04x %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                                                                        po,
+                                                                        kvb[po+0],kvb[po+1],kvb[po+2],kvb[po+3],kvb[po+4],kvb[po+5],kvb[po+6],kvb[po+7],
+                                                                        kvb[po+8],kvb[po+9],kvb[po+10],kvb[po+11],kvb[po+12],kvb[po+13],kvb[po+14],kvb[po+15],
+                                                                        kvb[po+16],kvb[po+17],kvb[po+18],kvb[po+19],kvb[po+20],kvb[po+21],kvb[po+22],kvb[po+23],
+                                                                        kvb[po+24],kvb[po+25],kvb[po+26],kvb[po+27],kvb[po+28],kvb[po+29],kvb[po+30],kvb[po+31]);
+                                                        }
+                                                    }
+                                                }
+                                                if (vm_map_lookup_entry(map, (vm_map_address_t)(sa+pfo), &fe4) && fe4) {
+                                                    kprintf("JUNDEF   va=%x ent=[%x-%x] off=%llx sub=%d obj=%p pager=%p\n",
+                                                            (unsigned)(sa+pfo), (unsigned)fe4->vme_start,
+                                                            (unsigned)fe4->vme_end, (unsigned long long)fe4->offset,
+                                                            fe4->is_sub_map,
+                                                            fe4->object.vm_object,
+                                                            (!fe4->is_sub_map && fe4->object.vm_object) ? fe4->object.vm_object->pager : 0);
+                                                    if (fe4->is_sub_map && fe4->object.sub_map) {
+                                                        vm_map_entry_t fe5 = (vm_map_entry_t)0;
+                                                        vm_map_address_t sva = (vm_map_address_t)(sa+pfo) - fe4->vme_start + (vm_map_address_t)fe4->offset;
+                                                        if (vm_map_lookup_entry(fe4->object.sub_map, sva, &fe5) && fe5)
+                                                            kprintf("JUNDEF     sub-ent=[%x-%x] off=%llx sub=%d obj=%p pager=%p\n",
+                                                                    (unsigned)fe5->vme_start, (unsigned)fe5->vme_end,
+                                                                    (unsigned long long)fe5->offset, fe5->is_sub_map,
+                                                                    fe5->object.vm_object,
+                                                                    (!fe5->is_sub_map && fe5->object.vm_object) ? fe5->object.vm_object->pager : 0);
+                                                        else
+                                                            kprintf("JUNDEF     sub-map NO-ENTRY @%x\n", (unsigned)sva);
+                                                        {
+                                                            vm_map_entry_t it;
+                                                            int ne = 0;
+                                                            for (it = fe4->object.sub_map->hdr.links.next;
+                                                                 it != vm_map_to_entry(fe4->object.sub_map) && ne < 12;
+                                                                 it = it->vme_next, ne++)
+                                                                kprintf("JUNDEF     submap[%d]=[%x-%x] off=%llx sub=%d obj=%p\n",
+                                                                        ne, (unsigned)it->vme_start, (unsigned)it->vme_end,
+                                                                        (unsigned long long)it->offset, it->is_sub_map,
+                                                                        it->object.vm_object);
+                                                        }
+                                                    }
+                                                } else
+                                                    kprintf("JUNDEF   va=%x NO-ENTRY\n", (unsigned)(sa+pfo));
+                                                dumped++;
+                                            }
+                                            if (strncmp(ps, wp, 100) == 0) {
+                                                found = 1;
+                                                kprintf("JUNDEF LOOKUP HIT img[%u] addr=%llx pfo=%x\n",
+                                                        i, *(unsigned long long *)ent, pfo);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    kprintf("JUNDEF LOOKUP want=\"%s\" icnt=%u found=%u tblfail=%u pfail=%u\n",
+                                            wp, icnt, found, tblfail, pfail);
+                                } else
+                                    kprintf("JUNDEF LOOKUP imgtable hdr copyin fail\n");
+                            }
+                        }
+                    }
+                } else {
+                    kprintf("JUNDEF no shared region (srg=%p sa=%x)\n", srg, (unsigned)sa);
+                }
+                if (srg) vm_shared_region_deallocate(srg);
+            }
+            {
+                unsigned short iw[8];
+                if (copyin((user_addr_t)(arm_ctx->pc & ~1U), (char *)iw, 16) == 0)
+                    kprintf("JUNDEF insn=%04x %04x %04x %04x %04x %04x %04x %04x\n",
+                            iw[0], iw[1], iw[2], iw[3], iw[4], iw[5], iw[6], iw[7]);
+            }
+            {
+                char msg[128];
+                int ri;
+                for (ri = 0; ri < 4; ri++) {
+                    memset(msg, 0, sizeof(msg));
+                    if (copyin((user_addr_t)arm_ctx->r[ri], msg, sizeof(msg)-1) == 0 &&
+                        msg[0] >= 0x20 && msg[0] < 0x7f)
+                        kprintf("JUNDEF r%d-str=\"%s\"\n", ri, msg);
+                }
+                {
+                    unsigned stk[16]; int si, hit=0;
+                    if (copyin((user_addr_t)arm_ctx->sp, (char *)stk, sizeof(stk)) == 0)
+                        for (si = 0; si < 16 && hit < 4; si++) {
+                            unsigned v = stk[si];
+                            if (v < 0x10000 || v >= 0x40000000) continue;
+                            memset(msg, 0, sizeof(msg));
+                            if (copyin((user_addr_t)v, msg, sizeof(msg)-1) == 0 &&
+                                msg[0] >= 0x20 && msg[0] < 0x7f) {
+                                kprintf("JUNDEF sp+%d=%08x-str=\"%s\"\n", si*4, v, msg);
+                                hit++;
+                            }
+                        }
+                }
+            }
+        }
+#endif
 /* IOS7LEO_DYLD_BEGIN */
 #if defined(BOARD_CONFIG_QSD8250_LEO)
         }

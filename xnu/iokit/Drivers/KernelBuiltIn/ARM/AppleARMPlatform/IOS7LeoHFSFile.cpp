@@ -157,7 +157,23 @@ int IOS7LeoHFSFile::readImageBase(void *cookie,uint64_t logical,uint8_t out[512]
 {
  IOS7LeoHFSFile *file=(IOS7LeoHFSFile *)cookie;uint64_t physical=0;uint32_t run=0;
  if(fl32_translate(&file->image,file->extents,LEO_EXTENT_CAP,logical,&physical,&run)!=FL32_OK)return (int)kIOReturnBadArgument;
- return (int)file->readPhysical(physical,out);
+ int rc=(int)file->readPhysical(physical,out);
+ /* TEMP forensic: dyld shared cache occupies block-device sectors
+  * [0x266DB0, 0x2FD838) of ROOTFS.HFS. Expected physical is linear from
+  * 0x1AC458: phys = 0x1AC458 + (logical - 0x266DB0). Report only anomalies. */
+ if(logical>=0x266DB0 && logical<0x2FD838) {
+  static unsigned n, bad;
+  ++n;
+  uint64_t exp=0x1AC458+(logical-0x266DB0);
+  if(rc||physical!=exp||
+     (out[0]==0&&out[1]==0&&out[2]==0&&out[3]==0xff)) {
+   ++bad;
+   IOLog("LEOBAD log=%lx phys=%lx exp=%lx run=%x rc=%x n=%u d=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+    (unsigned long)logical,(unsigned long)physical,(unsigned long)exp,(unsigned)run,(unsigned)rc,n,
+    out[0],out[1],out[2],out[3],out[4],out[5],out[6],out[7]);
+  }
+ }
+ return rc;
 }
 int IOS7LeoHFSFile::readCacheMedia(void *cookie)
 {
@@ -265,6 +281,8 @@ bool IOS7LeoHFSFile::start(IOService *provider)
  IOSimpleLockUnlockEnableInterrupt(statusLock,saved);phase(ValidatedHFS);
  IOLog("Leo file: validated %s bytes=%llu extents=%u HFS=%04x version=%u BASE_SD_RO=1 COW_RW=1 VOLATILE=1\n",LEO_ROOT_FILE,
   (unsigned long long)image.file_bytes,(unsigned)image.extent_count,(unsigned)image.hfs_signature,(unsigned)image.hfs_version);
+ for(unsigned ei=0;ei<image.extent_count&&ei<16;ei++)
+  IOLog("LEOEXT[%u] log=%llx phys=%llx n=%x\n",ei,(unsigned long long)extents[ei].logical_lba,(unsigned long long)extents[ei].physical_lba,(unsigned)extents[ei].sectors);
  ios7leo_root_file_status();
  IOLog("Leo root-file registerService begin validated=1 COWready=%u\n",(unsigned)cowReady);
  registerService();
@@ -288,6 +306,7 @@ static IOReturn cowResult(leo_cow *cow,int result)
  if(result==LEO_COW_IO)return (IOReturn)cow->backend_error;
  return kIOReturnBadArgument;
 }
+static struct{UInt64 pa;UInt8 b[8];UInt8 flagged;} lxcTab[600];static int lxcN;
 IOReturn IOS7LeoHFSFile::doAsyncReadWrite(IOMemoryDescriptor *buffer,UInt64 block,UInt64 count,
  IOStorageAttributes *attributes,IOStorageCompletion *completion)
 {
@@ -297,11 +316,33 @@ IOReturn IOS7LeoHFSFile::doAsyncReadWrite(IOMemoryDescriptor *buffer,UInt64 bloc
  if(attributes&&(attributes->options||attributes->reserved0032||attributes->reserved0064))return kIOReturnUnsupported;
  IOStorageCompletion saved=*completion;UInt64 completed=0;IOReturn result=kIOReturnSuccess;UInt8 bytes[512];bool wrote=false,backendFailed=false;
  IOLockLock(mutex);if(faulted){IOLockUnlock(mutex);return kIOReturnNotReady;}
+ for(int i=0;i<lxcN;i++)if(!lxcTab[i].flagged){volatile UInt8 *pm=(volatile UInt8*)(uintptr_t)(lxcTab[i].pa+0x40000000ULL);
+  bool dif=false;for(int k=0;k<8;k++)if(pm[k]!=lxcTab[i].b[k]){dif=true;break;}
+  if(dif){lxcTab[i].flagged=1;
+   IOLog("LXC pa=%llx exp=%02x%02x%02x%02x%02x%02x%02x%02x cur=%02x%02x%02x%02x%02x%02x%02x%02x at blk=%llx\n",
+    (unsigned long long)lxcTab[i].pa,lxcTab[i].b[0],lxcTab[i].b[1],lxcTab[i].b[2],lxcTab[i].b[3],
+    lxcTab[i].b[4],lxcTab[i].b[5],lxcTab[i].b[6],lxcTab[i].b[7],
+    pm[0],pm[1],pm[2],pm[3],pm[4],pm[5],pm[6],pm[7],(unsigned long long)block);}}
  if(direction==kIODirectionOut){int cr=leo_cow_prepare_write(&cow,block,count);backendFailed=cr==LEO_COW_IO;result=cowResult(&cow,cr);}
  for(UInt64 index=0;result==kIOReturnSuccess&&index<count;++index){
   if(direction==kIODirectionIn){
    int cr=leo_cow_read_sector(&cow,block+index,bytes);backendFailed=cr==LEO_COW_IO;result=cowResult(&cow,cr);
+   UInt64 lb=block+index;addr64_t dpa=0;
+   if(result==kIOReturnSuccess){IOByteCount wl=0;dpa=buffer->getPhysicalSegment(completed,&wl);
+    if((lb>=0x2a7000&&lb<0x2a8100)||(lb>=0x1d9000&&lb<0x1da000)){
+     IOLog("LRD blk=%llx d=%02x%02x%02x%02x%02x%02x%02x%02x\n",(unsigned long long)lb,
+      bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7]);}
+    IOLog("LWR blk=%llx dst=%llx\n",(unsigned long long)lb,(unsigned long long)dpa);}
    if(result==kIOReturnSuccess&&buffer->writeBytes((IOByteCount)completed,bytes,512)!=512)result=kIOReturnUnderrun;
+   else if(dpa&&lb>=0x2a7000&&lb<0x2a8100){UInt8 rb[8];
+    if(buffer->readBytes((IOByteCount)completed,rb,8)==8)
+     IOLog("LRD blk=%llx rb=%02x%02x%02x%02x%02x%02x%02x%02x\n",(unsigned long long)lb,
+      rb[0],rb[1],rb[2],rb[3],rb[4],rb[5],rb[6],rb[7]);
+    volatile UInt8 *pm=(volatile UInt8*)(uintptr_t)(dpa+0x40000000ULL);
+    IOLog("LRD blk=%llx pm=%02x%02x%02x%02x%02x%02x%02x%02x\n",(unsigned long long)lb,
+     pm[0],pm[1],pm[2],pm[3],pm[4],pm[5],pm[6],pm[7]);
+    if((completed&0xfff)==0&&lxcN<600){lxcTab[lxcN].pa=dpa;
+     for(int k=0;k<8;k++)lxcTab[lxcN].b[k]=pm[k];lxcN++;}}
   }else{
    if(buffer->readBytes((IOByteCount)completed,bytes,512)!=512)result=kIOReturnUnderrun;
    else{result=cowResult(&cow,leo_cow_write_prepared_sector(&cow,block+index,bytes));if(result==kIOReturnSuccess)wrote=true;}

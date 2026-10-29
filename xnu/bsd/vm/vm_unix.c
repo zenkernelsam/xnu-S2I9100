@@ -1157,6 +1157,11 @@ shared_region_check_np(
 		 current_thread(), p->p_pid, p->p_comm,
 		 (uint64_t)uap->start_address, (uint64_t)start_address, error));
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+	kprintf("SRCHK pid=%d(%s) start=%llx err=%d\n",
+		p->p_pid, p->p_comm, (uint64_t)start_address, error);
+#endif
+
 	return error;
 }
 
@@ -1601,6 +1606,10 @@ shared_region_map_and_slide_np(
 		}
 	}
 done:
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+	kprintf("SRMAP pid=%d(%s) fd=%d cnt=%u slide=%x kr=%d\n",
+		p->p_pid, p->p_comm, uap->fd, mappings_count, slide, kr);
+#endif
 	return kr;
 }
 
