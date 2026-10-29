@@ -963,7 +963,7 @@ vfs_rootmountalloc_internal(struct vfstable *vfsp, const char *devname)
 	mp->mnt_vtable = vfsp;
 	mp->mnt_op = vfsp->vfc_vfsops;
 	mp->mnt_flag = MNT_RDONLY | MNT_ROOTFS;
-#if defined(BOARD_CONFIG_QSD8250_LEO)
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     {
         extern int ios7leo_cow_root_writable(unsigned,unsigned);
         if(ios7leo_cow_root_writable((unsigned)major(rootdev),(unsigned)minor(rootdev))) {

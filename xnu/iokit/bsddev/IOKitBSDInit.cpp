@@ -60,7 +60,7 @@ extern dev_t mdevlookup(int devid);
 extern void mdevremoveall(void);
 extern void di_root_ramfile(IORegistryEntry * entry);
 
-#if defined(BOARD_CONFIG_QSD8250_LEO)
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
 extern "C" void ios7leo_root_file_status(void);
 extern "C" void ios7leo_root_file_selected(const char *, unsigned, unsigned);
 #endif
@@ -612,7 +612,7 @@ kern_return_t IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
     else
 	IOLog("\n");
 
-#if defined(BOARD_CONFIG_QSD8250_LEO)
+#if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     if (service && mjr && iostr) {
         OSString *tag = OSDynamicCast(OSString, service->getProperty("IOS7LeoRootFile"));
         if (tag && tag->isEqualTo("IOS7/ROOTFS.HFS"))
