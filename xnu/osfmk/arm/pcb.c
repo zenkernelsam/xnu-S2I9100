@@ -301,6 +301,19 @@ void machine_stack_attach(thread_t thread, vm_offset_t stack)
 
     kprintf("machine_stack_attach: setting stack %p for thread %p\n", stack, thread);
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100) && defined(I9100_PAGE_TRACE)
+    /* BRING-UP (i9100): record stack phys range to catch the pmap-L1
+     * phys double-allocation seen in the field. */
+    {
+        unsigned int pg;
+        for (pg = 0; pg < kernel_stack_size / PAGE_SIZE; pg++) {
+            kdb_printf("machine_stack_attach: th=%p stpg%u va=0x%x pa=0x%x\n",
+                    thread, pg, stack + (pg << PAGE_SHIFT),
+                    kvtophys(stack + (pg << PAGE_SHIFT)));
+        }
+    }
+#endif
+
     uint32_t *kstack = (uint32_t *) STACK_IKS(stack);
 
     thread->kernel_stack = stack;
@@ -331,6 +344,12 @@ vm_offset_t machine_stack_detach(thread_t thread)
     assert(thread != NULL);
 
     kprintf("machine_stack_detach: killing stack for thread %p\n", thread);
+
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100) && defined(I9100_PAGE_TRACE)
+    if (thread->kernel_stack)
+        kdb_printf("machine_stack_detach: th=%p stva=0x%x pa=0x%x\n",
+                thread, thread->kernel_stack, kvtophys(thread->kernel_stack));
+#endif
 
     stack = thread->kernel_stack;
     thread->kernel_stack = 0;

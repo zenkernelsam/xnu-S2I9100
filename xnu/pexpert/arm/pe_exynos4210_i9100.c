@@ -348,6 +348,7 @@ static void i9f_blank_line(volatile unsigned int *fb, unsigned int y)
         for (x = 0; x < 480; x++) row[x] = 0xFF000000U;
     }
 }
+extern addr64_t kvtophys(vm_offset_t);
 void ios7j1_fast_putc(char c)
 {
     volatile unsigned int *fb = i9100_pixels;
@@ -360,6 +361,17 @@ void ios7j1_fast_putc(char c)
         i9f_remapped = 1;
     }
     if (!fb) return;
+    /* Guard: if the fb mapping was torn out of kernel_pmap, every console
+     * print would fault inside this routine and recursively abort the
+     * abort handler (observed livelock: DFAR=fb VA, DFSR=0x807).
+     * Verify the PTE on every call; on loss, self-disable so the
+     * UART sink keeps working. */
+    if (pmap_initialized && kvtophys((vm_offset_t)fb) == 0) {
+        i9100_panel_console_enabled = 0;
+        i9100_pixels = 0;
+        kdb_printf("J9FB: panel console va=%p lost mapping; disabling\n", (void*)fb);
+        return;
+    }
     if (!i9f_wiped) {
         unsigned int i, n = 480U * 800U;
         for (i = 0; i < n; i++) fb[i] = 0xFF000000U;

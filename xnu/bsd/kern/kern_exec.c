@@ -2488,6 +2488,23 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 		(imgp->ip_flags & IMGPF_SPAWN) ? 1 : 0,
 		imgp->ip_ndp ? imgp->ip_ndp->ni_cnd.cn_nameptr :
 		(imgp->ip_vp && imgp->ip_vp->v_name ? imgp->ip_vp->v_name : "??"));
+	if (error == 0 && imgp->ip_startargv && imgp->ip_endargv &&
+	    imgp->ip_endargv > imgp->ip_startargv &&
+	    imgp->ip_endargv <= imgp->ip_strendp && imgp->ip_argc > 0) {
+		char *ac = (char *)imgp->ip_startargv;
+		char *ae = (char *)imgp->ip_endargv;
+		int ai;
+		for (ai = 0; ai < imgp->ip_argc && ai < 8 && ac < ae; ai++) {
+			char ab[96];
+			int al = 0;
+			while (ac < ae && *ac && al < (int)sizeof(ab) - 1)
+				ab[al++] = *ac++;
+			ab[al] = 0;
+			if (ac < ae && *ac) { while (ac < ae && *ac) ac++; }
+			kprintf("J1ARGV [%d]=%s\n", ai, ab);
+			if (ac < ae) ac++;
+		}
+	}
 #endif
 #if BOARD_CONFIG_ARMPBA8
 	if (ios7lab_exec_trace)

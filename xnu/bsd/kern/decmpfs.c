@@ -1848,7 +1848,7 @@ decmpfs_fetch_uncompressed_data_Type4(vnode_t vp, vfs_context_t ctx, decmpfs_hea
 		goto out;
 	}
 	nchunks = (hdr->uncompressed_size + TYPE4_CHUNK - 1) / TYPE4_CHUNK;
-	kprintf("T4ENTER off=%lld sz=%ld usize=%llu nvec=%d\n",
+	if (0) kprintf("T4ENTER off=%lld sz=%ld usize=%llu nvec=%d\n",
 		(long long)offset, (long)size, hdr->uncompressed_size, nvec);
 	if (!nchunks) {
 		err = EINVAL;
@@ -1974,7 +1974,7 @@ decmpfs_fetch_uncompressed_data_Type4(vnode_t vp, vfs_context_t ctx, decmpfs_hea
 	if (bytes_read)
 		*bytes_read = produced;
 	if (produced || err)
-		kprintf("T4FETCH off=%lld sz=%ld prod=%llu b0=%02x%02x%02x%02x\n",
+		if (0) kprintf("T4FETCH off=%lld sz=%ld prod=%llu b0=%02x%02x%02x%02x\n",
 			(long long)offset, (long)size, produced,
 			((uint8_t*)vec[0].buf)[0], ((uint8_t*)vec[0].buf)[1],
 			((uint8_t*)vec[0].buf)[2], ((uint8_t*)vec[0].buf)[3]);

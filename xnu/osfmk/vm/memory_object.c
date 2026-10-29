@@ -485,9 +485,13 @@ MACRO_BEGIN								\
 	memory_object_t		pager;					\
 									\
 	if (object == slide_info.slide_object) {					\
-		panic("Objects with slid pages not allowed\n");		\
-	}								\
-				                   			\
+		/* The shared-region slide object has no vnode pager	\
+		 * semantics: its pages are read-only cache contents	\
+		 * fixup-tracked per task, never written back.  During	\
+		 * unmount/reclaim msync, just let the pages be freed	\
+		 * instead of panicking (upstream panics here). */	\
+		kdb_printf("J11: skipping pager-out for slide object %p\n", object); \
+	} else								\
 	if ((pager = (object)->pager) != MEMORY_OBJECT_NULL) {		\
 		vm_object_paging_begin(object);				\
 		vm_object_unlock(object);				\

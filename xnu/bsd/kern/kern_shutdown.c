@@ -116,6 +116,10 @@ boot(int paniced, int howto, char *command)
 	struct proc *p = current_proc();	/* XXX */
 	int hostboot_option=0;
 
+	kdb_printf("JBOOT: boot(pid=%d %s paniced=%d howto=0x%x)\n",
+		   p ? p->p_pid : -1, p ? p->p_comm : "?",
+		   paniced, howto);
+
 	if (!OSCompareAndSwap(0, 1, &system_inshutdown)) {
 		if ( (howto&RB_QUICK) == RB_QUICK)
 			goto force_reboot;

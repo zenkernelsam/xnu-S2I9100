@@ -4533,7 +4533,7 @@ kauth_cred_unref(kauth_cred_t *credp)
 	KAUTH_CRED_HASH_LOCK();
 #endif
 #if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
-	kprintf("J1EXEC cred locked\n");
+	{ static unsigned _cl; if (((++_cl)&0x3ff)==1) kprintf("J1EXEC cred locked #%u\n", _cl); }
 #endif
 	kauth_cred_unref_hashlocked(credp);
 	KAUTH_CRED_HASH_UNLOCK();

@@ -326,6 +326,23 @@ void sleh_abort(void *context, int reason)
     if (reason == SLEH_ABORT_TYPE_DATA_ABORT) {
         dfsr = arm_ctx->fsr;
         dfar = arm_ctx->far;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        /*
+         * BRING-UP (i9100): dump the first aborts so we can see the
+         * faulting kernel VA + which thread/stack is involved when
+         * the abort-livelock begins.
+         */
+        {
+            static int abt_seen;
+            if (abt_seen < 40) {
+                abt_seen++;
+                kdb_printf("SLEH-ABT#%d pc=0x%x far=0x%x fsr=0x%x cpsr=0x%x th=%p kstk=0x%x uss=%p\n",
+                           abt_seen, arm_ctx->pc, dfar, dfsr, arm_ctx->cpsr,
+                           thread, thread ? thread->kernel_stack : 0,
+                           thread ? (vm_offset_t)thread->machine.uss : 0);
+            }
+        }
+#endif
 #if BOARD_CONFIG_QSD8250_LEO
         if((arm_ctx->cpsr&0x1fU)==0x10U) {
             ios7leo037_data_entry(&leo037_data_snapshot,arm_ctx,thread);
@@ -637,7 +654,7 @@ void sleh_abort(void *context, int reason)
                 {
                     static unsigned int uda_total = 0;
                     uda_total++;
-                    if (j1_uda_pg_once((unsigned)dfar >> 12))
+                    if (0 && j1_uda_pg_once((unsigned)dfar >> 12))
                         printf("UDA: far=%08x page=%08x pc=%08x lr=%08x fsr=%08x cpsr=%08x\n",
                             (unsigned)dfar, (unsigned)(dfar & ~0xfffu),
                             (unsigned)arm_ctx->pc, (unsigned)arm_ctx->lr,
@@ -758,6 +775,131 @@ void sleh_abort(void *context, int reason)
                            arm_ctx->lr, arm_ctx->pc, arm_ctx->cpsr);
                     printf("dyld_all_image_info_addr: 0x%08x   dyld_all_image_info_size: 0x%08x\n",
                             thread->task->all_image_info_addr, thread->task->all_image_info_size);
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+                    {
+                        extern boolean_t vm_map_lookup_entry(vm_map_t, vm_map_address_t, vm_map_entry_t *);
+                        unsigned addrs[3] = { (unsigned)arm_ctx->pc, (unsigned)arm_ctx->lr, (unsigned)arm_ctx->sp };
+                        const char *names[3] = { "pc", "lr", "sp" };
+                        int ai;
+                        for (ai = 0; ai < 3; ai++) {
+                            vm_map_entry_t fe = (vm_map_entry_t)0;
+                            unsigned a = addrs[ai] & ~1U;
+                            if (vm_map_lookup_entry(map, (vm_map_address_t)a, &fe) && fe)
+                                kprintf("JCRASH %s=%08x entry=[%08x-%08x] off=%llx obj=%p pager=%p\n",
+                                        names[ai], a,
+                                        (unsigned)fe->vme_start, (unsigned)fe->vme_end,
+                                        (unsigned long long)fe->offset,
+                                        fe->object.vm_object,
+                                        fe->object.vm_object ? fe->object.vm_object->pager : 0);
+                            else
+                                kprintf("JCRASH %s=%08x unmapped\n", names[ai], a);
+                        }
+                        {
+                            unsigned short iw[4];
+                            if (copyin((user_addr_t)(arm_ctx->pc & ~1U), (char *)iw, 8) == 0)
+                                kprintf("JCRASH insn=%04x %04x %04x %04x\n",
+                                        iw[0], iw[1], iw[2], iw[3]);
+                        }
+                        {
+                            extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+                            /* file offset 0xc127442 = real launch_data_free;
+                             * VA that SHOULD map it through this entry: */
+                            vm_map_entry_t fe2 = (vm_map_entry_t)0;
+                            if (vm_map_lookup_entry(map,
+                                (vm_map_address_t)((unsigned)arm_ctx->pc
+                                                   & ~1U), &fe2) && fe2) {
+                                unsigned trueva =
+                                    (unsigned)fe2->vme_start +
+                                    (0xc127442U -
+                                     (unsigned)fe2->offset);
+                                kprintf("JCRASH trueva=%08x pp=%x\n",
+                                        trueva & ~0xfffU,
+                                        pmap_find_phys(map->pmap,
+                                        (addr64_t)(trueva & ~0xfffU)));
+                                {
+                                    unsigned short jw[8];
+                                    if (copyin((user_addr_t)trueva,
+                                               (char *)jw, 16) == 0)
+                                        kprintf("JCRASH trueinsn=%04x "
+                                                "%04x %04x %04x %04x %04x "
+                                                "%04x %04x\n",
+                                                jw[0], jw[1], jw[2], jw[3],
+                                                jw[4], jw[5], jw[6], jw[7]);
+                                }
+                            }
+                            kprintf("JCRASH phys pc=%08x pp=%x\n",
+                                    (unsigned)arm_ctx->pc & ~0xfffU,
+                                    pmap_find_phys(map->pmap,
+                                    (addr64_t)((unsigned)arm_ctx->pc
+                                               & ~0xfffU)));
+                            /* descend sub-maps to real entry, dump obj chain */
+                            {
+                                vm_map_entry_t fe3 = (vm_map_entry_t)0;
+                                vm_map_t m3 = map;
+                                vm_map_address_t a3 =
+                                    (vm_map_address_t)
+                                    ((unsigned)arm_ctx->pc & ~1U);
+                                int sub = 0;
+                                while (sub < 4 &&
+                                       vm_map_lookup_entry(m3, a3, &fe3) &&
+                                       fe3) {
+                                    kprintf("JCRASH ent%d va=%08x "
+                                            "[%08x-%08x] off=%llx sub=%d\n",
+                                            sub, (unsigned)a3,
+                                            (unsigned)fe3->vme_start,
+                                            (unsigned)fe3->vme_end,
+                                            (unsigned long long)fe3->offset,
+                                            fe3->is_sub_map);
+                                    if (!fe3->is_sub_map) break;
+                                    a3 = (a3 - fe3->vme_start) + fe3->offset;
+                                    m3 = fe3->object.sub_map;
+                                    sub++;
+                                }
+                                if (fe3 && !fe3->is_sub_map) {
+                                    vm_object_t o3 = fe3->object.vm_object;
+                                    int depth = 0;
+                                    while (o3 && depth < 5) {
+                                        kprintf("JCRASH obj%d=%p int=%d "
+                                                "pager=%p poff=%llx "
+                                                "shdw=%p shoff=%llx "
+                                                "ref=%d res=%u\n",
+                                                depth, o3, o3->internal,
+                                                o3->pager,
+                                                (unsigned long long)
+                                                o3->paging_offset,
+                                                o3->shadow,
+                                                (unsigned long long)
+                                                o3->vo_shadow_offset,
+                                                o3->ref_count,
+                                                o3->resident_page_count);
+                                        o3 = o3->shadow;
+                                        depth++;
+                                    }
+                                }
+                            }
+                            /* dump 16 bytes at PC inside its phys page */
+                            {
+                                ppnum_t pp = pmap_find_phys(map->pmap,
+                                    (addr64_t)((unsigned)arm_ctx->pc
+                                               & ~0xfffU));
+                                if (pp) {
+                                    unsigned char *kv =
+                                        (unsigned char *)phys_to_virt(
+                                            (unsigned long)pp * 4096UL)
+                                        + ((unsigned)arm_ctx->pc & 0xfffU);
+                                    kprintf("JCRASH pgbytes="
+                                            "%02x%02x%02x%02x%02x%02x"
+                                            "%02x%02x%02x%02x%02x%02x"
+                                            "%02x%02x%02x%02x\n",
+                                            kv[0], kv[1], kv[2], kv[3],
+                                            kv[4], kv[5], kv[6], kv[7],
+                                            kv[8], kv[9], kv[10], kv[11],
+                                            kv[12], kv[13], kv[14], kv[15]);
+                                }
+                            }
+                        }
+                    }
+#endif
                 } else {
                     /*
                      * Retry execution of instruction.

@@ -2810,6 +2810,11 @@ vm_page_t pmap_grab_page(pmap_t pmap)
     OSAddAtomic(1, &inuse_ptepages_count);
     OSAddAtomic(1, &alloc_ptepages_count);
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    kdb_printf("pmap_grab_page: pmap=%p ppn=0x%x lr=%p\n",
+               pmap, page->phys_page, __builtin_return_address(0));
+#endif
+
     return page;
 }
 
@@ -2830,6 +2835,10 @@ void pmap_destroy_page(ppnum_t pa)
 
     vm_object_unlock(pmap_object);
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    kdb_printf("pmap_destroy_page: pa=0x%x wired=%d lr=%p\n",
+               pa << PAGE_SHIFT, VM_PAGE_WIRED(m), __builtin_return_address(0));
+#endif
     VM_PAGE_FREE(m);
     kprintf("Freed page for PA %x\n", pa << PAGE_SHIFT);
 
@@ -3061,6 +3070,33 @@ void pmap_expand_ttb(pmap_t map, vm_offset_t expansion_size)
              */
             ret = cpm_allocate(expansion_size, &pages, 0, ((expansion_size / map->pm_l1_size) - 1), FALSE, KMA_LOMEM);
             assert(ret == KERN_SUCCESS);
+
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+            /*
+             * BRING-UP (i9100): hunt for the phys double-allocation that
+             * sprayed exception frames into a live L1.  Log every page in
+             * the run with its owner state; also verify contiguity because
+             * vm_page_verify_contiguous is compiled out in RELEASE.
+             */
+            {
+                vm_page_t mp;
+                unsigned int idx = 0;
+                ppnum_t prev = 0;
+                for (mp = pages; mp; mp = (vm_page_t) mp->pageq.next) {
+                    if (0) kdb_printf("pmap_expand_ttb: pmap=%p l1pg%u ppn=0x%x free=%d wired=%d tbl=%d obj=%p\n",
+                            map, idx, mp->phys_page, mp->free,
+                            VM_PAGE_WIRED(mp), mp->tabled, mp->object);
+                    if (idx && mp->phys_page != prev + 1)
+                        panic("pmap_expand_ttb: non-contiguous L1 run ppn 0x%x after 0x%x",
+                              mp->phys_page, prev);
+                    prev = mp->phys_page;
+                    idx++;
+                }
+                if (idx != (expansion_size >> PAGE_SHIFT))
+                    panic("pmap_expand_ttb: short L1 run %u pages want %u",
+                          idx, expansion_size >> PAGE_SHIFT);
+            }
+#endif
 
             /*
              * We got the new contiguous block.
@@ -3938,6 +3974,9 @@ pmap_t pmap_create(ledger_t ledger, vm_map_size_t size, __unused boolean_t is_64
     our_pmap->pm_l1_phys = new_l1->phys_page << PAGE_SHIFT;
     our_pmap->pm_l1_virt = phys_to_virt(new_l1->phys_page << PAGE_SHIFT);
     bzero((void *)phys_to_virt(new_l1->phys_page << PAGE_SHIFT), PAGE_SIZE);
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100) && defined(I9100_PAGE_TRACE)
+    kdb_printf("pmap_create: pmap=%p l1phys=0x%x\n", our_pmap, our_pmap->pm_l1_phys);
+#endif
 
     /*
      * New pmaps have 4096 bytes of TTB area.
@@ -4125,6 +4164,10 @@ void pmap_deallocate_l1(pmap_t pmap)
      * If the pmap is expanded past 0x1000, we must use cpm_deallocate.
      */
     if (pmap->pm_l1_size > 0x1000) {
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100) && defined(I9100_PAGE_TRACE)
+        kdb_printf("pmap_deallocate_l1: pmap=%p l1phys=0x%x l1size=0x%x SKIP-EXPANDED\n",
+                   pmap, ttb_base, pmap->pm_l1_size);
+#endif
         /*
          * xxx todo 
          */
@@ -4208,6 +4251,10 @@ void pmap_destroy(pmap_t pmap)
         return;
     }
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100) && defined(I9100_PAGE_TRACE)
+    kdb_printf("pmap_destroy: pmap=%p l1phys=0x%x l1size=0x%x\n",
+            pmap, pmap->pm_l1_phys, pmap->pm_l1_size);
+#endif
     /*
      * Free the associated objects with the pmap first.
      */
