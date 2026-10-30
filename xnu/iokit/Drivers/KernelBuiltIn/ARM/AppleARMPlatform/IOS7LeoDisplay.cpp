@@ -381,6 +381,16 @@ static IOReturn ios7lab_present_owned_scanout(uint32_t id)
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
     static int i9100Zcopy=-1;
     if(i9100Zcopy<0){int v=1;PE_parse_boot_argn("i9100zcopy",&v,sizeof(v));i9100Zcopy=v;}
+    if(bytes&&length>=64){
+        static unsigned int pixsumLogs;
+        if(pixsumLogs++<16){
+            const uint32_t *w=(const uint32_t *)bytes;
+            uint32_t sum=0;
+            for(uint32_t i=0;i<length;i+=16384)sum^=w[i>>2]^i;
+            IOLog("IOS7LAB present-pixsum id=%u first=%08x mid=%08x last=%08x xor=%08x len=%u\n",
+                  id,w[0],w[(length/2)>>2],w[(length-4)>>2],sum,length);
+        }
+    }
     int didPhys=0;
     if(bytes&&i9100Zcopy&&surfDesc){
         IOByteCount seglen=0;
@@ -930,6 +940,7 @@ class IOS7LabFramebufferClient : public IOUserClient {
     IOLock *transactionLock;
     uint32_t nextTransaction;
     uint32_t activeTransaction;
+    uint32_t pendingSwapSurface;
     /* Private diagnostic state only: no exported/wire/vtable ABI change. */
     struct SwapMetadataState {
         uint64_t sampleInterval, lastSample, lastCompleted;
@@ -1008,6 +1019,7 @@ bool IOS7LabFramebufferClient::initWithTask(task_t task, void *security,
 {
     transactionLock = 0;
     nextTransaction = activeTransaction = 0;
+    pendingSwapSurface = 0;
     bzero(&swapMetadata, sizeof(swapMetadata));
     bzero(&waitMetadata, sizeof(waitMetadata));
     AbsoluteTime metadataInterval;
@@ -1393,9 +1405,73 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
         uint32_t words[0x138 / 4];
         static unsigned int captures;
         if (args->scalarInputCount || !args->structureInput ||
-            args->structureInputSize != sizeof(words) ||
             args->scalarOutputCount || args->structureOutputSize)
             return kIOReturnBadArgument;
+        if (args->structureInputSize == 216) {
+            /* iOS6 SwapEnd wire format (54 words, observed on the i9100 lab):
+             * word0=transaction, word1=rect-count, word2=surfaceID, then
+             * damage rects/dims/masks.  Accept only a full-frame submission
+             * in a currently owned surface, same contract as the iOS7 path. */
+            uint32_t w6[216 / 4];
+            memcpy(w6, args->structureInput, sizeof(w6));
+            uint32_t surf6 = pendingSwapSurface ? pendingSwapSurface : w6[2];
+            note->transaction = w6[0]; note->surface = surf6;
+            uint64_t metadataBegin = mach_absolute_time();
+            IOLockLock(transactionLock);
+            bool valid = activeTransaction && w6[0] == activeTransaction;
+            if (valid) activeTransaction = 0;
+            IOLockUnlock(transactionLock);
+            static unsigned int shortLogs;
+            if (shortLogs++ < 8)
+                IOLog("IOS7LAB framebuffer swap6 valid-transaction=%u transaction=%u surface=%u dims=%ux%u masks=%x,%x\n",
+                      (unsigned)valid, w6[0], surf6, w6[6], w6[7], w6[28], w6[46]);
+            if (!valid) {
+                note->reason = IOS7LabSwapMetaTransaction;
+                return kIOReturnBadArgument;
+            }
+            if (!surf6 || w6[6] != leoWidth || w6[7] != leoHeight) {
+                note->reason = IOS7LabSwapMetaLayout;
+                return kIOReturnUnsupported;
+            }
+            if (!ios7lab_primary_ready()) {
+                note->reason = IOS7LabSwapMetaPrimaryReady;
+                return kIOReturnNoMemory;
+            }
+            uint64_t metadataBackendBegin = mach_absolute_time();
+            note->backend = true;
+            IOReturn displayed6 = ios7lab_present_owned_scanout(surf6);
+            uint64_t metadataEnd = mach_absolute_time();
+            if (displayed6 != kIOReturnSuccess) {
+                note->reason = IOS7LabSwapMetaBackend;
+                return displayed6;
+            }
+            IOLockLock(transactionLock);
+            ScanoutCompletion *c6 = &completions[w6[0] % 32];
+            c6->transaction = w6[0];
+            c6->surface = surf6;
+            c6->completed = true;
+            IOLockUnlock(transactionLock);
+            static unsigned int presented6;
+            if (presented6++ < 24)
+                IOLog("IOS7LAB framebuffer presented transaction=%u surface=%u iOS6-lab %s\n",
+                      w6[0], w6[2], "BGRA-to-realRGB565-conversion");
+            note->reason = IOS7LabSwapMetaCompleted;
+            return kIOReturnSuccess;
+        }
+        if (args->structureInputSize != sizeof(words)) {
+            static unsigned int shortDumps;
+            if (args->structureInputSize <= sizeof(words) && shortDumps++ < 4) {
+                uint32_t shortWords[0x138 / 4];
+                bzero(shortWords, sizeof(shortWords));
+                memcpy(shortWords, args->structureInput, args->structureInputSize);
+                IOLog("IOS7LAB framebuffer swap-short bytes=%u words=",
+                      (unsigned)args->structureInputSize);
+                for (unsigned i = 0; i < args->structureInputSize / 4; ++i)
+                    IOLog("%08x%s", shortWords[i],
+                          i + 1 == args->structureInputSize / 4 ? "\n" : ",");
+            }
+            return kIOReturnBadArgument;
+        }
         memcpy(words, args->structureInput, sizeof(words));
         note->transaction=words[6];note->surface=words[7];
         uint64_t metadataBegin = mach_absolute_time();
@@ -1545,15 +1621,85 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
     }
     if (selector == 9 && args->scalarInput && args->scalarInputCount == 2 &&
         !args->structureInputSize && !args->scalarOutputCount && !args->structureOutputSize) {
-        LeoVsyncAction action={LEO_VSYNC_CALLBACK,MACH_PORT_NULL,0,
-            (io_user_reference_t)args->scalarInput[1],(io_user_reference_t)args->scalarInput[0],0};
+        /* iOS7 passes {refcon, callback}; the iOS6 lab passes
+         * {callback, object}. The callback is a shared-cache text address
+         * (>=0x30000000); the refcon/object is a heap pointer below it. */
+        uint64_t a = args->scalarInput[0], b = args->scalarInput[1];
+        bool aIsCode = a >= 0x30000000ULL && a < 0x40000000ULL;
+        bool bIsCode = b >= 0x30000000ULL && b < 0x40000000ULL;
+        io_user_reference_t cb = bIsCode && !aIsCode ? (io_user_reference_t)b :
+                                 aIsCode ? (io_user_reference_t)a : (io_user_reference_t)b;
+        io_user_reference_t rc = cb == (io_user_reference_t)a ? (io_user_reference_t)b
+                                                              : (io_user_reference_t)a;
+        LeoVsyncAction action={LEO_VSYNC_CALLBACK,MACH_PORT_NULL,0,cb,rc,0};
         IOReturn result=vsyncWorkLoop->runAction(&IOS7LabFramebufferClient::vsyncWorkAction,this,&action);
         note->reason=result==kIOReturnNotOpen?LEO_GRAPHICS_REASON_CLOSED:
             result==kIOReturnSuccess?LEO_GRAPHICS_REASON_NONE:LEO_GRAPHICS_REASON_TIMER;
         return result;
     }
-    if (args->scalarInputCount || args->structureInputSize || args->structureOutputSize)
+    if (args->scalarInputCount || args->structureInputSize || args->structureOutputSize) {
+        /* iOS6 lab compat: benign calls observed on the boot path get
+         * graceful answers instead of kIOReturnUnsupported, which aborts
+         * the client display setup. */
+        if (selector == 2 && args->scalarInputCount == 2 && !args->structureInputSize &&
+            !args->structureOutputSize && !args->scalarOutputCount) {
+            /* kern_SwapSurface(surface,flags): record pending surface. */
+            pendingSwapSurface = (uint32_t)args->scalarInput[0];
+            static unsigned int s2logs;
+            if (s2logs++ < 8)
+                IOLog("IOS7LAB framebuffer swap-surface surface=%u flags=%u\n",
+                      (uint32_t)args->scalarInput[0], (uint32_t)args->scalarInput[1]);
+            return kIOReturnSuccess;
+        }
+        if (selector == 7 && !args->scalarInputCount && args->scalarOutput &&
+            args->scalarOutputCount == 1) {
+            /* kern_GetID: main display id. */
+            args->scalarOutput[0] = 1;
+            return kIOReturnSuccess;
+        }
+        if (selector == 15 && args->scalarInputCount == 2 && !args->structureInputSize &&
+            !args->structureOutputSize && args->scalarOutput && args->scalarOutputCount == 1) {
+            args->scalarOutput[0] = 0;
+            return kIOReturnSuccess;
+        }
+        if (selector == 14 && !args->scalarInputCount && args->scalarOutput &&
+            args->scalarOutputCount == 1) {
+            args->scalarOutput[0] = 0;
+            return kIOReturnSuccess;
+        }
+        if ((selector == 19 || selector == 22 || selector == 33 || selector == 20 ||
+             selector == 10 || selector == 11 || selector == 12 || selector == 13 ||
+             selector == 16 || selector == 17 || selector == 23 || selector == 25) &&
+            args->scalarInputCount <= 2 && !args->structureInputSize &&
+            !args->scalarOutputCount && !args->structureOutputSize) {
+            static unsigned int setterLogs;
+            if (setterLogs++ < 16)
+                IOLog("IOS7LAB framebuffer iOS6-setter selector=%u value=%u\n",
+                      selector, args->scalarInputCount ? (uint32_t)args->scalarInput[0] : 0);
+            return kIOReturnSuccess;
+        }
+        if (selector == 27 && !args->scalarInputCount && !args->scalarOutputCount &&
+            args->structureOutput && args->structureOutputSize >= 3072) {
+            /* kern_GetGammaTable: identity 256-entry R/G/B ramp. */
+            uint32_t *gamma = (uint32_t *)args->structureOutput;
+            for (unsigned i = 0; i < 768; ++i)
+                gamma[i] = (i & 0xffU) * 0x010101U;
+            static bool gammaLogged;
+            if (!gammaLogged) { gammaLogged = true;
+                IOLog("IOS7LAB framebuffer gamma-table identity ramp out=%u\n",
+                      (unsigned)args->structureOutputSize); }
+            return kIOReturnSuccess;
+        }
+        static unsigned int scalarDumps;
+        if (args->scalarInput && scalarDumps++ < 8) {
+            IOLog("IOS7LAB framebuffer unsupported-scalars selector=%u count=%u values=",
+                  selector, args->scalarInputCount);
+            for (unsigned i = 0; i < args->scalarInputCount && i < 8; ++i)
+                IOLog("%08llx%s", (unsigned long long)args->scalarInput[i],
+                      i + 1 == args->scalarInputCount || i + 1 == 8 ? "\n" : ",");
+        }
         return kIOReturnUnsupported;
+    }
     if (selector == 4 && args->scalarOutput && args->scalarOutputCount == 1) {
         IOLockLock(transactionLock);
         if (activeTransaction) {

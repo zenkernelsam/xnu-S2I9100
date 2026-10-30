@@ -2114,6 +2114,12 @@ posix_spawn(proc_t ap, struct posix_spawn_args *uap, int32_t *retval)
 		(imgp->ip_flags & IMGPF_SPAWN) ? 1 : 0,
 		imgp->ip_ndp ? imgp->ip_ndp->ni_cnd.cn_nameptr :
 		(imgp->ip_vp && imgp->ip_vp->v_name ? imgp->ip_vp->v_name : "??"));
+	{
+		extern void i9100_dump_thread_states(void);
+		static int thrDumps;
+		if (error == 0 && p->p_pid >= 60 && thrDumps++ < 16)
+			i9100_dump_thread_states();
+	}
 #endif
 #if BOARD_CONFIG_ARMPBA8
 	if (ios7lab_preferences_spawn)
@@ -2558,6 +2564,14 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 			if (ac < ae) ac++;
 		}
 	}
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+	{
+		extern void i9100_dump_thread_states(void);
+		static int thrDumps;
+		if (error == 0 && p->p_pid >= 60 && thrDumps++ < 16)
+			i9100_dump_thread_states();
+	}
+#endif
 #endif
 #if BOARD_CONFIG_ARMPBA8
 	if (ios7lab_exec_trace)

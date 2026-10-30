@@ -1398,3 +1398,29 @@ void sleh_undef(arm_saved_state_t * state)
      */
     return;
 }
+
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+extern queue_head_t tasks;
+decl_lck_mtx_data(extern,tasks_threads_lock)
+void i9100_dump_thread_states(void)
+{
+    task_t task;
+    lck_mtx_lock(&tasks_threads_lock);
+    queue_iterate(&tasks, task, task_t, tasks) {
+        if (task == kernel_task) continue;
+        int pid = task->bsd_info ? proc_pid((struct proc *)task->bsd_info) : -1;
+        if (pid <= 0) continue;
+        kprintf("J1TASK pid=%d nthreads=%d\n", pid, task->thread_count);
+        thread_t th;
+        queue_iterate(&task->threads, th, thread_t, task_threads) {
+            arm_saved_state_t *iss = th->machine.iss;
+            kprintf("J1THR pid=%d th=%x st=%x wq=%x ev=%llx pc=%x lr=%x\n",
+                pid, (unsigned)(uintptr_t)th, th->state,
+                (unsigned)(uintptr_t)th->wait_queue,
+                (unsigned long long)th->wait_event,
+                iss ? iss->pc : 0, iss ? iss->lr : 0);
+        }
+    }
+    lck_mtx_unlock(&tasks_threads_lock);
+}
+#endif
