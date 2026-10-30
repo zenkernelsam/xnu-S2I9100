@@ -805,7 +805,13 @@ mach_msg_trap(
 	mach_msg_id_t mid = -1;
 	char pn[17]; pn[0] = 0;
 	int pid = proc_selfpid();
-	if (pid > 1 && args->msg) {
+	static int mm_gate = -1;
+	if (mm_gate < 0) {
+		int v = 0;
+		PE_parse_boot_argn("i9100mmtrap", &v, sizeof(v));
+		mm_gate = v;
+	}
+	if (mm_gate && pid >= 1 && pid <= 4 && args->msg) {
 		mach_msg_header_t h;
 		if (copyin((user_addr_t)args->msg, (char *)&h,
 			   sizeof h) == 0) {
@@ -820,7 +826,7 @@ mach_msg_trap(
 
  	kr = mach_msg_overwrite_trap(args);
 #if BOARD_CONFIG_EXYNOS4210_I9100
-	if (pid > 1) {
+	if (mm_gate && pid >= 1 && pid <= 4) {
 		kprintf("MMTRAP pid=%d(%s) opt=%x snd=%u rcv=%u "
 			"rport=%x lport=%x rname=%x id=%d kr=%x\n",
 			pid, pn, (unsigned)args->option,

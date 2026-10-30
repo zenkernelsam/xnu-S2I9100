@@ -442,6 +442,22 @@ void unix_syscall(arm_saved_state_t * state)
 #endif
     error = (*(callp->sy_call)) (p, (void *) uthread->uu_arg, &(uthread->uu_rval[0]));
     AUDIT_SYSCALL_EXIT(code, p, uthread, error);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    {
+        static unsigned int sysc_seen;
+        char pn[17]; pn[0] = 0;
+        proc_name(p->p_pid, pn, sizeof pn);
+        int is_fips = !strncmp(pn, "cc_fips_test", 12);
+        if ((is_fips && sysc_seen < 140) ||
+            (error && p->p_pid <= 8 && sysc_seen < 140)) {
+            sysc_seen++;
+            printf("SYSC %s[%d] call=%u err=%d a0=%08x a1=%08x rv=%08x,%08x\n",
+                   pn, p->p_pid, code, error,
+                   (unsigned)uthread->uu_arg[0], (unsigned)uthread->uu_arg[1],
+                   (unsigned)uthread->uu_rval[0], (unsigned)uthread->uu_rval[1]);
+        }
+    }
+#endif
 #if BOARD_CONFIG_ARMPBA8
     if (lab_syslog_io_index)
         printf("IOS7LAB SYSLOGIO EXIT call=%u pid=%d code=%u error=%d result0=%08x result1=%08x\n",

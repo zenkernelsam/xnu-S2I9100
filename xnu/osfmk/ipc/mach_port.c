@@ -1053,6 +1053,34 @@ mach_port_set_context(
 	ipc_port_t port;
 	kern_return_t kr;
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+	{
+		static unsigned mpsc_seen;
+		int which;
+		if (mpsc_seen < 10) { mpsc_seen++; which = 1; } else which = 0;
+		if (which)
+			kprintf("MPSC sp=%p name=%08x ctx=%016llx\n",
+				space, (unsigned)name, (unsigned long long)context);
+		if (space == IS_NULL) {
+			if (which) kprintf("MPSC fail IS_NULL\n");
+			return KERN_INVALID_TASK;
+		}
+		if (!MACH_PORT_VALID(name)) {
+			if (which) kprintf("MPSC fail !VALID name=%08x\n", (unsigned)name);
+			return KERN_INVALID_RIGHT;
+		}
+		kr = ipc_port_translate_receive(space, name, &port);
+		if (kr != KERN_SUCCESS) {
+			if (which) kprintf("MPSC fail xlate name=%08x kr=%x\n",
+				(unsigned)name, kr);
+			return kr;
+		}
+		port->ip_context = context;
+		ip_unlock(port);
+		if (which) kprintf("MPSC ok name=%08x\n", (unsigned)name);
+		return KERN_SUCCESS;
+	}
+#endif
 	if (space == IS_NULL)
 		return KERN_INVALID_TASK;
 

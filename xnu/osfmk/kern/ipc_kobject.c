@@ -373,26 +373,25 @@ ipc_kobject_server(
     uint32_t leo_service_token=ios7leo_frontier_service_begin(leo_req_id,request->ikm_header->msgh_size,request->ikm_header->msgh_bits,ptr?(uint32_t)(uintptr_t)ptr->routine:0,leo_req_selector);
 #endif
 #if IOS7_COMPAT_PLATFORM
-    if (ptr && request->ikm_header->msgh_id == 4813 &&
-        ios7_compat_vmabi_enabled()) {
+    /* Wire-format adapters are userland-ABI, independent of the vmabi
+     * policy toggle: iOS6 armv7 clients send the same 64-bit-padded
+     * requests as iOS7, so these shims must run even with ios7lab_vmabi=0. */
+    if (ptr && request->ikm_header->msgh_id == 4813) {
         lab_remap64 = ios7lab_remap_request32((unsigned char *)request->ikm_header,
                                             request->ikm_header->msgh_size);
         if (lab_remap64) reply_size += 4;
     }
-    if (ptr && request->ikm_header->msgh_id == 4811 &&
-        ios7_compat_vmabi_enabled()) {
+    if (ptr && request->ikm_header->msgh_id == 4811) {
         lab_named_map64 = ios7lab_named_map_request32((unsigned char *)request->ikm_header,
                                                      request->ikm_header->msgh_size);
         if (lab_named_map64) reply_size += 4;
     }
-    if (ptr && (request->ikm_header->msgh_id == 3228 || request->ikm_header->msgh_id == 3229) &&
-        ios7_compat_vmabi_enabled()) {
+    if (ptr && (request->ikm_header->msgh_id == 3228 || request->ikm_header->msgh_id == 3229)) {
         lab_context64 = ios7lab_context_request((unsigned char *)request->ikm_header,
                                               request->ikm_header->msgh_size);
         if (lab_context64 == 1) reply_size += 4;
     }
-    if (ptr && request->ikm_header->msgh_id == 2865 &&
-        ios7_compat_vmabi_enabled()) {
+    if (ptr && request->ikm_header->msgh_id == 2865) {
         lab_iokit64 = ios7lab_iokit_request32((unsigned char *)request->ikm_header,
                                             request->ikm_header->msgh_size);
         if (lab_iokit64) {

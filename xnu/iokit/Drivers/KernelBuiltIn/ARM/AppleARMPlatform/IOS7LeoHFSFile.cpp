@@ -307,6 +307,14 @@ static IOReturn cowResult(leo_cow *cow,int result)
  return kIOReturnBadArgument;
 }
 static struct{UInt64 pa;UInt8 b[8];UInt8 flagged;} lxcTab[600];static int lxcN;
+static int i9100iolog=-1;
+static bool iologOn(void)
+{
+ if(i9100iolog<0){int v=0;
+  extern int PE_parse_boot_argn(const char *,void *,int);
+  PE_parse_boot_argn("i9100iolog",&v,sizeof(v));i9100iolog=v?1:0;}
+ return i9100iolog>0;
+}
 IOReturn IOS7LeoHFSFile::doAsyncReadWrite(IOMemoryDescriptor *buffer,UInt64 block,UInt64 count,
  IOStorageAttributes *attributes,IOStorageCompletion *completion)
 {
@@ -316,7 +324,8 @@ IOReturn IOS7LeoHFSFile::doAsyncReadWrite(IOMemoryDescriptor *buffer,UInt64 bloc
  if(attributes&&(attributes->options||attributes->reserved0032||attributes->reserved0064))return kIOReturnUnsupported;
  IOStorageCompletion saved=*completion;UInt64 completed=0;IOReturn result=kIOReturnSuccess;UInt8 bytes[512];bool wrote=false,backendFailed=false;
  IOLockLock(mutex);if(faulted){IOLockUnlock(mutex);return kIOReturnNotReady;}
- for(int i=0;i<lxcN;i++)if(!lxcTab[i].flagged){volatile UInt8 *pm=(volatile UInt8*)(uintptr_t)(lxcTab[i].pa+0x40000000ULL);
+ const bool iol=iologOn();
+ if(iol)for(int i=0;i<lxcN;i++)if(!lxcTab[i].flagged){volatile UInt8 *pm=(volatile UInt8*)(uintptr_t)(lxcTab[i].pa+0x40000000ULL);
   bool dif=false;for(int k=0;k<8;k++)if(pm[k]!=lxcTab[i].b[k]){dif=true;break;}
   if(dif){lxcTab[i].flagged=1;
    IOLog("LXC pa=%llx exp=%02x%02x%02x%02x%02x%02x%02x%02x cur=%02x%02x%02x%02x%02x%02x%02x%02x at blk=%llx\n",
@@ -328,13 +337,13 @@ IOReturn IOS7LeoHFSFile::doAsyncReadWrite(IOMemoryDescriptor *buffer,UInt64 bloc
   if(direction==kIODirectionIn){
    int cr=leo_cow_read_sector(&cow,block+index,bytes);backendFailed=cr==LEO_COW_IO;result=cowResult(&cow,cr);
    UInt64 lb=block+index;addr64_t dpa=0;
-   if(result==kIOReturnSuccess){IOByteCount wl=0;dpa=buffer->getPhysicalSegment(completed,&wl);
+   if(result==kIOReturnSuccess&&iol){IOByteCount wl=0;dpa=buffer->getPhysicalSegment(completed,&wl);
     if((lb>=0x2a7000&&lb<0x2a8100)||(lb>=0x1d9000&&lb<0x1da000)){
      IOLog("LRD blk=%llx d=%02x%02x%02x%02x%02x%02x%02x%02x\n",(unsigned long long)lb,
       bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7]);}
     IOLog("LWR blk=%llx dst=%llx\n",(unsigned long long)lb,(unsigned long long)dpa);}
    if(result==kIOReturnSuccess&&buffer->writeBytes((IOByteCount)completed,bytes,512)!=512)result=kIOReturnUnderrun;
-   else if(dpa&&lb>=0x2a7000&&lb<0x2a8100){UInt8 rb[8];
+   else if(iol&&dpa&&lb>=0x2a7000&&lb<0x2a8100){UInt8 rb[8];
     if(buffer->readBytes((IOByteCount)completed,rb,8)==8)
      IOLog("LRD blk=%llx rb=%02x%02x%02x%02x%02x%02x%02x%02x\n",(unsigned long long)lb,
       rb[0],rb[1],rb[2],rb[3],rb[4],rb[5],rb[6],rb[7]);

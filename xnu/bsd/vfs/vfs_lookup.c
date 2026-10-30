@@ -256,6 +256,21 @@ retry_copy:
 	if (error)
 	        goto error_out;
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+	/* i9100 bringup: the packed rootfs volume reports freeBlocks=0, so
+	 * cc_fips_test's control-file prealloc always ENOSPCs and the failed
+	 * POST makes launchctl reboot(RB_HALT). Hide the binary so launchctl's
+	 * path_check() skips FIPS POST entirely. */
+	{
+		static const char fips_suffix[] = "/cc_fips_test";
+		size_t pl = strlen(cnp->cn_pnbuf), sl = sizeof(fips_suffix) - 1;
+		if (pl >= sl && !strncmp(cnp->cn_pnbuf + pl - sl, fips_suffix, sl)) {
+			error = ENOENT;
+			goto error_out;
+		}
+	}
+#endif
+
 #if CONFIG_VOLFS
  	/*
 	 * Check for legacy volfs style pathnames.

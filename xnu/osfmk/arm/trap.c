@@ -1120,23 +1120,19 @@ void sleh_undef(arm_saved_state_t * state)
          * dyld's faulting one. I really just need to redo all of the VFP detection
          * code, which will happen one day... I just hate myself for this.
          */
-        if(instruction != 0xfedeffe7)
+        if(instruction != 0xfedeffe7 && !thread->machine.vfp_enable)
         {
             /*
-             * NEON instruction.
+             * NEON instruction (lazy VFP enable; a second undef at the same
+             * spot with VFP already on is a real undefined instruction).
              */
             thread->machine.vfp_dirty = 0;
-            if (!thread->machine.vfp_enable) {
-                /*
-                 * Enable VFP.
-                 */
-                vfp_enable_exception(TRUE);
-                vfp_context_load(&thread->machine.vfp_regs);
-                /*
-                 * Continue user execution.
-                 */
-                thread->machine.vfp_enable = TRUE;
-            }
+            vfp_enable_exception(TRUE);
+            vfp_context_load(&thread->machine.vfp_regs);
+            /*
+             * Continue user execution.
+             */
+            thread->machine.vfp_enable = TRUE;
             return;
         }
 
@@ -1165,6 +1161,11 @@ void sleh_undef(arm_saved_state_t * state)
         printf("dyld_all_image_info_addr: 0x%08x   dyld_all_image_info_size: 0x%08x\n",
             thread->task->all_image_info_addr, thread->task->all_image_info_size);
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        {
+            extern void i9100_trap_dump(void);
+            static unsigned trhist_dumped;
+            if (trhist_dumped < 2) { trhist_dumped++; i9100_trap_dump(); }
+        }
         {
             extern boolean_t vm_map_lookup_entry(vm_map_t, vm_map_address_t, vm_map_entry_t *);
             unsigned addrs[3] = { (unsigned)arm_ctx->pc, (unsigned)arm_ctx->lr, (unsigned)arm_ctx->sp };

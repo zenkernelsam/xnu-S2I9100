@@ -723,8 +723,44 @@ uint32_t ios7leo_frontier_take(uint8_t *payload,uint32_t maximum,uint32_t *lost,
  * mach_syscall_trace
  */
 extern const char *mach_syscall_name_table[];
+#if BOARD_CONFIG_EXYNOS4210_I9100
+int i9100_trapno[32], i9100_trapret[32], i9100_trappid[32], i9100_msgid[32], i9100_msgrmt[32];
+unsigned i9100_trap_n;
+extern int proc_pid(void *p);
+void i9100_trap_dump(void)
+{
+    unsigned n = i9100_trap_n, start = n > 32 ? n - 32 : 0;
+    for (; start < n; start++) {
+        unsigned i = start & 31;
+        printf("TRHIST pid=%d trap=%d ret=%08x msgid=%d rmt=%08x\n",
+               i9100_trappid[i], i9100_trapno[i], (unsigned)i9100_trapret[i],
+               i9100_msgid[i], (unsigned)i9100_msgrmt[i]);
+    }
+}
+#endif
 void mach_syscall_trace(arm_saved_state_t * state)
 {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    {
+        int32_t tr = (int32_t)state->r[12];
+        thread_t th = current_thread();
+        void *bi = (th && th->task) ? th->task->bsd_info : NULL;
+        if (bi && tr < 0 && tr > -130) {
+            unsigned i = i9100_trap_n++ & 31;
+            i9100_trappid[i] = proc_pid(bi);
+            i9100_trapno[i] = tr;
+            i9100_trapret[i] = state->r[0];
+            i9100_msgid[i] = 0; i9100_msgrmt[i] = 0;
+            if (tr == -31 && state->r[2]) {
+                unsigned hdr[6];
+                if (copyin((user_addr_t)state->r[0], hdr, sizeof(hdr)) == 0) {
+                    i9100_msgid[i] = (int)hdr[5];
+                    i9100_msgrmt[i] = (int)hdr[2];
+                }
+            }
+        }
+    }
+#endif
 #if BOARD_CONFIG_ARMPBA8
     static unsigned int lab_time_logs = 0;
     if ((int32_t)state->r[12] == -3 && lab_time_logs++ < 6)
