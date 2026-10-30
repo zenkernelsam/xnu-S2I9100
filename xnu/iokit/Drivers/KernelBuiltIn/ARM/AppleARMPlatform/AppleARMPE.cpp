@@ -50,6 +50,7 @@ void AppleARMPE::registerNVRAMController(IONVRAMController * caller)
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 extern "C" int i9100_smp_init(void);
+extern "C" void i9100_fimd_selftest(void);
 extern "C" void i9100_smp_report(void);
 #endif
 
@@ -120,6 +121,12 @@ bool AppleARMPE::start(IOService * provider)
             (void) i9100_smp_init();
             i9100_smp_report();
         }
+    }
+    {
+        extern int PE_parse_boot_argn(const char *, void *, int);
+        int fimd_arg = 0;
+        if (PE_parse_boot_argn("i9100fimdtest", &fimd_arg, sizeof(fimd_arg)) && fimd_arg)
+            i9100_fimd_selftest();
     }
 #endif
     return true;

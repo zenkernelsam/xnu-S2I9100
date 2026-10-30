@@ -16,6 +16,10 @@ int ios7j1_display_ready(void);
 int ios7j1_display_present(const unsigned char *px,unsigned int bytes,unsigned int row,
                            unsigned int fmt,unsigned long long *seq);
 int ios7j1_display_completed(unsigned long long seq);
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+/* i9100-only: FIMD window-0 phys scanout (VIDW00ADD0B0/B1). */
+int i9100_display_present_phys(uint32_t phys,uint32_t bytes,unsigned long long *seq);
+#endif
 }
 #define ios7leo_display_ready ios7j1_display_ready
 #define ios7leo_display_present(px,bytes,row,fmt,seq) ios7j1_display_present((const unsigned char*)(px),(bytes),(row),(fmt),(unsigned long long*)(seq))
@@ -365,15 +369,30 @@ static IOReturn ios7lab_present_owned_scanout(uint32_t id)
     IOS7LabOffscreenSurface retired;bzero(&retired,sizeof(retired));
     IOLockLock(primaryLock);
     const uint8_t *bytes=0;uint32_t length=0,row=0,format=0;
-    if(id==primarySurfaceID && primaryKernelPixels){bytes=(const uint8_t *)primaryKernelPixels->getAddress();length=primaryBytes;row=leoRow;format=0x42475241U;}
+    IOMemoryDescriptor *surfDesc=0;
+    if(id==primarySurfaceID && primaryKernelPixels){bytes=(const uint8_t *)primaryKernelPixels->getAddress();length=primaryBytes;row=leoRow;format=0x42475241U;surfDesc=primaryPixels;}
     else for(unsigned i=0;i<IOS7LAB_MAX_OFFSCREEN;i++){
         IOS7LabOffscreenSurface *v=&offscreenSurfaces[i];
         if(v->id==id && (v->references||id==activeScanoutSurfaceID) && v->kernelPixels && v->width==leoWidth && v->height==leoHeight){
-            bytes=(const uint8_t *)v->kernelPixels->getAddress();length=v->allocationSize;row=v->rowBytes;format=v->pixelFormat;break;
+            bytes=(const uint8_t *)v->kernelPixels->getAddress();length=v->allocationSize;row=v->rowBytes;format=v->pixelFormat;surfDesc=v->pixels;break;
         }
     }
     uint64_t completed=0;
-    if(bytes)result=ios7leo_display_present(bytes,length,row,format,&completed)?kIOReturnSuccess:kIOReturnIOError;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    static int i9100Zcopy=-1;
+    if(i9100Zcopy<0){int v=1;PE_parse_boot_argn("i9100zcopy",&v,sizeof(v));i9100Zcopy=v;}
+    int didPhys=0;
+    if(bytes&&i9100Zcopy&&surfDesc){
+        IOByteCount seglen=0;
+        uint32_t surfPhys=(uint32_t)surfDesc->getPhysicalSegment(0,&seglen);
+        if(surfPhys&&seglen>=1536000U&&
+           i9100_display_present_phys(surfPhys,(uint32_t)seglen,&completed)){
+            didPhys=1;result=kIOReturnSuccess;
+        }
+    }
+    if(bytes&&!didPhys)
+#endif
+    result=ios7leo_display_present(bytes,length,row,format,&completed)?kIOReturnSuccess:kIOReturnIOError;
     if(result==kIOReturnSuccess){
         uint32_t previous=activeScanoutSurfaceID;activeScanoutSurfaceID=id;scanoutSequence=completed;
         if(previous!=id)for(unsigned i=0;i<IOS7LAB_MAX_OFFSCREEN;i++){

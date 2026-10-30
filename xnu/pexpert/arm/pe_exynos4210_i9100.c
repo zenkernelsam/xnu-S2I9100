@@ -192,7 +192,109 @@ int ios7j1_display_present(const uint8_t *px,uint32_t bytes,uint32_t row,
  i9100_panel_console_enabled=0;
  return 1;
 }
-int ios7j1_display_completed(uint64_t s){ return s && s<i9100_graphics_seq; }
+/* Zero-copy FIMD scanout: point window 0 at the IOSurface's physical
+ * backing instead of memcpy'ing the frame into the scratch FB at
+ * 0x5E000000.  VIDW00ADD0B0/B1 are shadow registers — hardware latches
+ * them at the next VSYNC while ENVID runs (uniLoader already has the
+ * pipeline live: VIDCON0 ENVID|ENVID_F, WINCON0 32BPP_A888). */
+#define I9100_FIMD_BASE          0x11C00000U
+#define I9100_FIMD_VIDCON1       0x0004U
+#define I9100_FIMD_VIDW00ADD0B0  0x00A0U
+#define I9100_FIMD_VIDW00ADD0B1  0x00D0U
+#define I9100_FIMD_MAP_BYTES     0x20000U
+#define I9100_FIMD_VSTATUS_SHIFT 14U              /* VIDCON1[15:14] */
+
+static volatile uint32_t *i9100_fimd;
+static uint64_t i9100_fimd_frames;        /* observed VSYNC edges */
+static uint64_t i9100_fimd_commit_frame;  /* frames at last phys present */
+static int i9100_fimd_pending;            /* a phys frame awaits its VSYNC */
+static int i9100_fimd_last_vst = -1;
+static unsigned i9100_fimd_polls;         /* stall guard while pending */
+
+static void i9100_fimd_watch(void)
+{
+ int vst;
+ if(!i9100_fimd) return;
+ vst=(int)((i9100_fimd[I9100_FIMD_VIDCON1/4]>>I9100_FIMD_VSTATUS_SHIFT)&3);
+ if(vst==0&&i9100_fimd_last_vst!=0) i9100_fimd_frames++;  /* VSYNC entry */
+ i9100_fimd_last_vst=vst;
+}
+
+int i9100_display_present_phys(uint32_t phys,uint32_t bytes,uint64_t *seq)
+{
+ if(!phys||!seq) return 0;
+ if(!ios7j1_display_ready()) return 0;   /* geometry + fatal gate */
+ if(!i9100_fimd){
+  i9100_fimd=(volatile uint32_t *)ml_io_map(I9100_FIMD_BASE,I9100_FIMD_MAP_BYTES);
+  if(!i9100_fimd) return 0;
+ }
+ /* Window buffer must live in DRAM and cover the whole panel frame. */
+ if(phys<0x40000000U||phys+1536000U>0x80000000U||bytes<1536000U) return 0;
+ i9100_fimd_watch();
+ i9100_fimd[I9100_FIMD_VIDW00ADD0B0/4]=phys;
+ i9100_fimd[I9100_FIMD_VIDW00ADD0B1/4]=phys+1536000U;
+ __sync_synchronize();
+ i9100_fimd_commit_frame=i9100_fimd_frames;
+ i9100_fimd_pending=1;
+ i9100_fimd_polls=0;
+ *seq=i9100_graphics_seq++;
+ if(!i9100_graphics_seq) i9100_graphics_seq=1;
+ i9100_panel_console_enabled=0;
+ return 1;
+}
+
+int ios7j1_display_completed(uint64_t s)
+{
+ if(!s||s>=i9100_graphics_seq) return 0;
+ /* A phys-presented frame completes once FIMD actually latched the new
+  * window buffers — i.e. one VSYNC edge after commit.  Copy-path frames
+  * are complete immediately (no pending flag set). */
+ if(i9100_fimd&&i9100_fimd_pending){
+  i9100_fimd_watch();
+  if(i9100_fimd_frames<=i9100_fimd_commit_frame){
+   /* QEMU does not always pulse VSTATUS; after ~512 fence polls just
+    * retire the frame rather than stall the compositor. */
+   if(++i9100_fimd_polls<512) return 0;
+  }
+  i9100_fimd_pending=0;
+ }
+ return 1;
+}
+
+/* Boot-arg `i9100fimdtest=1` smoke probe (QEMU has no panel — proves
+ * the FIMD mapping, VIDW writes and the VSTATUS heartbeat that the
+ * phys present path's completion logic rides on). */
+void i9100_fimd_selftest(void)
+{
+ uint32_t vc0,wc0,b0,b1;
+ unsigned i,ticks=0;
+ if(!i9100_fimd){
+  i9100_fimd=(volatile uint32_t *)ml_io_map(I9100_FIMD_BASE,I9100_FIMD_MAP_BYTES);
+  if(!i9100_fimd){ i9100_puts("FIMDTEST map FAIL\n"); return; }
+ }
+ vc0=i9100_fimd[0]; wc0=i9100_fimd[0x20/4];
+ b0=i9100_fimd[I9100_FIMD_VIDW00ADD0B0/4];
+ b1=i9100_fimd[I9100_FIMD_VIDW00ADD0B1/4];
+ i9100_puts("FIMDTEST vidcon0="); i9100_puthex(vc0);
+ i9100_puts(" wincon0="); i9100_puthex(wc0);
+ i9100_puts(" add0b0="); i9100_puthex(b0);
+ i9100_puts(" add0b1="); i9100_puthex(b1);
+ i9100_puts("\n");
+ /* Point window 0 at the scratch FB (what it already scans — safe). */
+ i9100_fimd[I9100_FIMD_VIDW00ADD0B0/4]=0x5E000000U;
+ i9100_fimd[I9100_FIMD_VIDW00ADD0B1/4]=0x5E000000U+1536000U;
+ __sync_synchronize();
+ /* ~100ms of VSTATUS sampling; count VSYNC entries. */
+ for(i=0;i<400;i++){
+  i9100_fimd_watch();
+  if(i9100_fimd_last_vst==0) ticks++;
+  volatile unsigned d; for(d=0;d<25000;d++);
+ }
+ i9100_puts("FIMDTEST frames="); i9100_puthex((unsigned)i9100_fimd_frames);
+ i9100_puts(" vst_ticks="); i9100_puthex(ticks);
+ i9100_puts(" add0b0_now="); i9100_puthex(i9100_fimd[I9100_FIMD_VIDW00ADD0B0/4]);
+ i9100_puts("\n");
+}
 
 static int i9100_video_ok(const boot_args *a)
 {
