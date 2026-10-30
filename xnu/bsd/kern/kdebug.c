@@ -2421,6 +2421,14 @@ stack_snapshot2(pid_t pid, user_addr_t tracebuf, uint32_t tracebuf_size, uint32_
 	}
 
 	istate = ml_set_interrupts_enabled(FALSE);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+	/* KDP bkpt path is not wired on this platform; a TRAP_DEBUGGER here
+	 * would panic the kernel (ReportCrash calls this for every crashed
+	 * daemon).  Fail the snapshot instead so the caller moves on. */
+	ml_set_interrupts_enabled(istate);
+	error = ENOTSUP;
+	goto error_exit;
+#endif
 /* Preload trace parameters*/	
 	kdp_snapshot_preflight(pid, stackshot_snapbuf, tracebuf_size, flags, dispatch_offset);
 

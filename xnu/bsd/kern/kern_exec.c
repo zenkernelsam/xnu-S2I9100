@@ -1466,13 +1466,22 @@ exec_handle_port_actions(struct image_params *imgp, short psa_flags)
 	errno_t ret = 0;
 	int i;
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+	kprintf("J1PACT pid=%d alloc=%d count=%d flags=%x\n",
+		p->p_pid, pacts->pspa_alloc, pacts->pspa_count,
+		(unsigned short)psa_flags);
+#endif
 	for (i = 0; i < pacts->pspa_count; i++) {
 		act = &pacts->pspa_actions[i];
+#if BOARD_CONFIG_EXYNOS4210_I9100
+		kprintf("J1PACT  i=%d type=%d mask=%x port=%x beh=%d flv=%d which=%d\n",
+			i, (int)act->port_type, act->mask, act->new_port,
+			(int)act->behavior, (int)act->flavor, act->which);
+#endif
 #if IOS7_COMPAT_PLATFORM
         {
-            if (ios7_compat_vmabi_enabled()) {
 #if BOARD_CONFIG_ARMPBA8
-                if (p->p_pid < 32)
+            if (ios7_compat_vmabi_enabled() && p->p_pid < 32)
                     printf("IOS7LAB spawn_port pid=%d index=%d type=%d port=%x which=%d flags=%x\n",
                            p->p_pid, i, act->port_type, act->new_port, act->which, (unsigned short)psa_flags);
 #endif
@@ -1486,7 +1495,6 @@ exec_handle_port_actions(struct image_params *imgp, short psa_flags)
 #endif
                     continue;
                 }
-            }
         }
 #endif
 
@@ -1784,6 +1792,9 @@ posix_spawn(proc_t ap, struct posix_spawn_args *uap, int32_t *retval)
 	boolean_t spawn_no_exec = FALSE;
 	boolean_t proc_transit_set = TRUE;
 	boolean_t exec_done = FALSE;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+	int i9100_spawn_stage = 0;
+#endif
 #if BOARD_CONFIG_ARMPBA8
 	char *ios7lab_spawn_path = NULL;
 	size_t ios7lab_spawn_path_size = 0;
@@ -1846,8 +1857,12 @@ posix_spawn(proc_t ap, struct posix_spawn_args *uap, int32_t *retval)
 			px_args.port_actions_size = px_args32.port_actions_size;
 			px_args.port_actions = CAST_USER_ADDR_T(px_args32.port_actions);
 		}
-		if (error)
+		if (error) {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+			i9100_spawn_stage = 5;
+#endif
 			goto bad;
+		}
 
 		if (px_args.attr_size != 0) {
 #if BOARD_CONFIG_ARMPBA8
@@ -1860,8 +1875,12 @@ posix_spawn(proc_t ap, struct posix_spawn_args *uap, int32_t *retval)
 			 * This could lose some of the port_actions pointer, 
 			 * but we already have it from px_args. 
 			 */
-			if ((error = copyin(px_args.attrp, &px_sa, sizeof(px_sa))) != 0)
+			if ((error = copyin(px_args.attrp, &px_sa, sizeof(px_sa))) != 0) {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+				i9100_spawn_stage = 6;
+#endif
 			goto bad;
+			}
 
 			imgp->ip_px_sa = &px_sa;
 		}
@@ -1871,6 +1890,9 @@ posix_spawn(proc_t ap, struct posix_spawn_args *uap, int32_t *retval)
 			if (px_args.file_actions_size < PSF_ACTIONS_SIZE(1) ||
 				px_args.file_actions_size > PSF_ACTIONS_SIZE(maxfa)) {
 				error = EINVAL;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+				i9100_spawn_stage = 11;
+#endif
 				goto bad;
 			}
 			MALLOC(px_sfap, _posix_spawn_file_actions_t, px_args.file_actions_size, M_TEMP, M_WAITOK);
@@ -1881,14 +1903,21 @@ posix_spawn(proc_t ap, struct posix_spawn_args *uap, int32_t *retval)
 			imgp->ip_px_sfa = px_sfap;
 
 			if ((error = copyin(px_args.file_actions, px_sfap, 
-							px_args.file_actions_size)) != 0)
+							px_args.file_actions_size)) != 0) {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+				i9100_spawn_stage = 7;
+#endif
 				goto bad;
+			}
 		}
 		if (px_args.port_actions_size != 0) {
 			/* Limit port_actions to one page of data */
 			if (px_args.port_actions_size < PS_PORT_ACTIONS_SIZE(1) ||
 				px_args.port_actions_size > PAGE_SIZE) {
 				error = EINVAL;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+				i9100_spawn_stage = 12;
+#endif
 				goto bad;
 			}
 
@@ -1901,8 +1930,12 @@ posix_spawn(proc_t ap, struct posix_spawn_args *uap, int32_t *retval)
 			imgp->ip_px_spa = px_spap;
 
 			if ((error = copyin(px_args.port_actions, px_spap, 
-							px_args.port_actions_size)) != 0)
+							px_args.port_actions_size)) != 0) {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+				i9100_spawn_stage = 8;
+#endif
 				goto bad;
+			}
 		}
 	}
 
@@ -1916,6 +1949,9 @@ posix_spawn(proc_t ap, struct posix_spawn_args *uap, int32_t *retval)
 	 */
 	if (uthread->uu_flag & UT_VFORK) {
 	    error = EINVAL;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+	    i9100_spawn_stage = 13;
+#endif
 	    goto bad;
 	}
 
@@ -1973,8 +2009,12 @@ posix_spawn(proc_t ap, struct posix_spawn_args *uap, int32_t *retval)
 		 * exec_handle_port_actions().
 		 */
 		if ((error = exec_handle_port_actions(imgp,
-		    imgp->ip_px_sa != NULL ? px_sa.psa_flags : 0)) != 0) 
+		    imgp->ip_px_sa != NULL ? px_sa.psa_flags : 0)) != 0) {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+			i9100_spawn_stage = 14;
+#endif
 			goto bad;
+		}
 	}
 
 	/* Has spawn attr? */
@@ -2159,6 +2199,19 @@ posix_spawn(proc_t ap, struct posix_spawn_args *uap, int32_t *retval)
 	}
 
 bad:
+#if BOARD_CONFIG_EXYNOS4210_I9100
+	if (error != 0) {
+		char sp[160]; size_t sn = 0;
+		if (copyinstr(uap->path, sp, sizeof sp, &sn) != 0)
+			snprintf(sp, sizeof sp, "?");
+		kprintf("J1SPAWN err=%d stage=%d parent=%d(%s) child=%d path=%s "
+			"adesc as=%u fs=%u ps=%u\n", error, i9100_spawn_stage,
+			ap->p_pid, ap->p_comm, p ? p->p_pid : -1, sp,
+			(unsigned)px_args.attr_size,
+			(unsigned)px_args.file_actions_size,
+			(unsigned)px_args.port_actions_size);
+	}
+#endif
 #if BOARD_CONFIG_ARMPBA8
 	if ((ios7lab_preferences_spawn || ios7lab_parent_spawn) && !ios7lab_spawn_reported)
 		printf("IOS7LAB spawn trace parent=%d child=%d preferences=%d stage=preactivate error=%d path=%s\n",

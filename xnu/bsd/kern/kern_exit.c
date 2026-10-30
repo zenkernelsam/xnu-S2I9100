@@ -284,6 +284,11 @@ exit1_internal(proc_t p, int rv, int *retval, boolean_t thread_can_terminate, bo
 	struct task *task = p->task;
 	struct uthread *ut;
 	int error = 0;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+	if (p->p_pid > 8)
+		kprintf("J1EXIT pid=%d(%s) rv=%x%s%s\n", p->p_pid, p->p_comm, rv,
+			WIFSIGNALED(rv) ? " sig" : "", WIFEXITED(rv) ? " ex" : "");
+#endif
 #if BOARD_CONFIG_ARMPBA8
     int lab_preferences_exit_target = ios7lab_preferences_lifecycle_target(p);
     int lab_preferences_exit_pid = p->p_pid;

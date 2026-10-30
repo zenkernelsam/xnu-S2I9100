@@ -3872,6 +3872,18 @@ void pmap_remove_range(pmap_t pmap, vm_map_offset_t start_vaddr, pt_entry_t * sp
     assert(pmap->pm_stats.resident_count >= num_removed);
     OSAddAtomic(-num_removed, &pmap->pm_stats.resident_count);
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    /* The PA-global PMAP_OSPTE_TYPE_WIRED flag cannot tell apart wired
+     * vs unwired mappings of a shared physical page (Mach OOL copyin
+     * aliases user pages).  Until per-PV mapping_wired is enabled for
+     * i9100, clamp the debit instead of panicking — wired_count is a
+     * stats field, an imperfect value is better than a dead kernel. */
+    if (pmap->pm_stats.wired_count < num_unwired) {
+        kprintf("pmap_remove_range: wired_count clamp %d < %d\n",
+            pmap->pm_stats.wired_count, num_unwired);
+        num_unwired = pmap->pm_stats.wired_count;
+    }
+#endif
     if (pmap->pm_stats.wired_count < num_unwired)
         panic("pmap_remove_range: wired_count");
     assert(pmap->pm_stats.wired_count >= num_unwired);

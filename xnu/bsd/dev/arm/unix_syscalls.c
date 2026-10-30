@@ -80,6 +80,7 @@
 #include <sys/sysent.h>
 #include <sys/ucontext.h>
 #include <sys/wait.h>
+#include <sys/syscall.h>
 #include <mach/thread_act.h>    /* for thread_abort_safely */
 #include <mach/thread_status.h>
 
@@ -273,6 +274,52 @@ ios7lab_guarded_kqueue(struct proc *p, user_addr_t guard_addr,
 }
 #endif
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+/* iOS6/iOS7 fd-guard syscalls 441..444 are beyond NUM_SYSENT (440) in this
+ * table build, so they arrive here instead of sysent. The wire format is
+ * the same on both userlands: a guard pointer plus flag words. Guard
+ * enforcement is optional for correctness here — forward each call to the
+ * matching plain descriptor operation so iOS6 daemons can open files. */
+static int
+i9100_fdguard_dispatch(struct proc *p, unsigned int code, int32_t *args, int32_t *retval)
+{
+    static unsigned int logs;
+    if (logs++ < 48) {
+        char pn[17]; pn[0] = 0;
+        proc_name(p->p_pid, pn, sizeof pn);
+        printf("I9KFDG pid=%d(%s) call=%u a0=%08x a1=%08x a2=%08x a3=%08x a4=%08x\n",
+               p->p_pid, pn, code, (unsigned)args[0], (unsigned)args[1],
+               (unsigned)args[2], (unsigned)args[3], (unsigned)args[4]);
+    }
+    if (code == 441) {
+        /* guarded_open_np(path, guardp, guardflags, flags, mode) */
+        struct open_nocancel_args oa;
+        bzero(&oa, sizeof(oa));
+        oa.path = (user_addr_t)args[0];
+        oa.flags = (int)args[3];
+        oa.mode = (int)args[4];
+        return open_nocancel(p, &oa, retval);
+    }
+    if (code == 442) {
+        /* guarded_close_np(fd, guardp) */
+        struct close_nocancel_args ca;
+        int ignored = 0;
+        bzero(&ca, sizeof(ca));
+        ca.fd = (int)args[0];
+        return close_nocancel(p, &ca, &ignored);
+    }
+    if (code == 443) {
+        /* guarded_kqueue_np(guardp, guardflags) */
+        return kqueue(p, NULL, retval);
+    }
+    if (code == 444) {
+        /* change_fdguard_np(fd, guardp, guardflags, nguardp, nguardflags, fdflagsp) */
+        return 0;
+    }
+    return ENOSYS;
+}
+#endif
+
 /*
  * Function:	unix_syscall
  *
@@ -440,11 +487,33 @@ void unix_syscall(arm_saved_state_t * state)
                                       state->r[first + 1], &uthread->uu_rval[0]);
     } else
 #endif
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    if ((code == SYS_execve || code == SYS_posix_spawn) && p->p_pid > 8) {
+        char ep[160]; size_t nc = 0;
+        user_addr_t up = (code == SYS_execve) ? uthread->uu_arg[0] : uthread->uu_arg[1];
+        if (copyinstr(up, ep, sizeof ep, &nc) == 0)
+            printf("SYSPAWN pid=%d call=%u path=%s\n", p->p_pid, code, ep);
+        else
+            printf("SYSPAWN pid=%d call=%u path_bad=%x\n", p->p_pid, code, (unsigned)up);
+    }
+    if (code == SYS_exit && p->p_pid > 8) {
+        char pn2[17]; pn2[0] = 0;
+        proc_name(p->p_pid, pn2, sizeof pn2);
+        printf("SYSEXIT pid=%d(%s) status=%x\n", p->p_pid, pn2,
+               (unsigned)uthread->uu_arg[0]);
+    }
+    if (code >= 441 && code <= 444 && !(code == 443 && lab_guarded_queue)) {
+        unsigned int first = shift_args ? 1 : 0;
+        error = i9100_fdguard_dispatch(p, code, (int32_t *)&state->r[first],
+                                       &uthread->uu_rval[0]);
+    } else
+#endif
     error = (*(callp->sy_call)) (p, (void *) uthread->uu_arg, &(uthread->uu_rval[0]));
     AUDIT_SYSCALL_EXIT(code, p, uthread, error);
 #if BOARD_CONFIG_EXYNOS4210_I9100
     {
         static unsigned int sysc_seen;
+        static unsigned int sysc_nosys;
         char pn[17]; pn[0] = 0;
         proc_name(p->p_pid, pn, sizeof pn);
         int is_fips = !strncmp(pn, "cc_fips_test", 12);
@@ -455,6 +524,12 @@ void unix_syscall(arm_saved_state_t * state)
                    pn, p->p_pid, code, error,
                    (unsigned)uthread->uu_arg[0], (unsigned)uthread->uu_arg[1],
                    (unsigned)uthread->uu_rval[0], (unsigned)uthread->uu_rval[1]);
+        } else if (error == ENOSYS && sysc_nosys < 64) {
+            sysc_nosys++;
+            printf("SYSC-NOSYS %s[%d] call=%u a0=%08x a1=%08x a2=%08x a3=%08x\n",
+                   pn, p->p_pid, code,
+                   (unsigned)uthread->uu_arg[0], (unsigned)uthread->uu_arg[1],
+                   (unsigned)uthread->uu_arg[2], (unsigned)uthread->uu_arg[3]);
         }
     }
 #endif

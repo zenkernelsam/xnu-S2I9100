@@ -590,17 +590,78 @@ IOReturn IOS7LabSurfaceClient::describeOffscreen(uint32_t id,
     return kIOReturnSuccess;
 }
 
+/* Find "key" then the next "<integer ...>NUM<" in a bounded XML dict.
+ * Handles iOS6/iOS7 key-order differences; input is not NUL-terminated. */
+static bool ios7lab_xml_uint(const void *input, IOByteCount size, const char *key, uint32_t *out)
+{
+    const char *in = (const char *)input;
+    IOByteCount klen = strlen(key);
+    for (IOByteCount i = 0; i + klen <= size; ++i) {
+        if (memcmp(in + i, key, klen)) continue;
+        for (i += klen; i + 8 <= size; ++i) {
+            if (memcmp(in + i, "<integer", 8)) continue;
+            for (i += 8; i < size && in[i] != '>'; ++i) ;
+            if (i >= size) return false;
+            ++i;
+            uint64_t v = 0;
+            unsigned digits = 0;
+            if (i + 1 < size && in[i] == '0' && (in[i + 1] == 'x' || in[i + 1] == 'X')) {
+                for (i += 2; i < size; ++i) {
+                    char c = in[i];
+                    uint32_t d;
+                    if (c >= '0' && c <= '9') d = c - '0';
+                    else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+                    else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+                    else break;
+                    v = (v << 4) | d;
+                    ++digits;
+                }
+            } else {
+                for (; i < size; ++i) {
+                    char c = in[i];
+                    if (c < '0' || c > '9') break;
+                    v = v * 10 + (uint32_t)(c - '0');
+                    ++digits;
+                }
+            }
+            if (!digits || v > 0xffffffffU) return false;
+            *out = (uint32_t)v;
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
 IOReturn IOS7LabSurfaceClient::createOffscreen(IOExternalMethodArguments *args)
 {
-    if (args->scalarInputCount || !args->structureInput ||
-        args->structureInputSize != sizeof(ios7lab_fullscreen_surface_request) ||
-        memcmp(args->structureInput, ios7lab_fullscreen_surface_request,
-               sizeof(ios7lab_fullscreen_surface_request)) != 0 ||
-        !args->structureOutput || args->structureOutputSize < 0x548 ||
-        args->scalarOutputCount) return kIOReturnUnsupported;
-
-    IOS7LabSimpleSurfaceRequest geometry = {0, 0, 480, 800, 0x42475241U, 4, 1920, offscreenPixelBytes};
-    return createSurface(&geometry, args);
+    uint32_t width = 0, height = 0, row = 0, format = 0, elem = 4, alloc = 0;
+    if (!args->scalarInputCount && !args->scalarOutputCount && args->structureInput &&
+        args->structureInputSize <= 4096 && args->structureOutput &&
+        args->structureOutputSize >= 0x548 &&
+        ios7lab_xml_uint(args->structureInput, args->structureInputSize, "IOSurfaceWidth", &width) &&
+        ios7lab_xml_uint(args->structureInput, args->structureInputSize, "IOSurfaceHeight", &height) &&
+        ios7lab_xml_uint(args->structureInput, args->structureInputSize, "IOSurfacePixelFormat", &format)) {
+        ios7lab_xml_uint(args->structureInput, args->structureInputSize, "IOSurfaceBytesPerRow", &row);
+        ios7lab_xml_uint(args->structureInput, args->structureInputSize, "IOSurfaceBytesPerElement", &elem);
+        ios7lab_xml_uint(args->structureInput, args->structureInputSize, "IOSurfaceAllocSize", &alloc);
+        IOS7LabSimpleSurfaceRequest input = {0, 0, width, height, format, elem, row, alloc};
+        IOS7LabSimpleSurfaceRequest geometry;
+        if (ios7lab_surface_geometry(&input, &geometry))
+            return createSurface(&geometry, args);
+    }
+    static unsigned int rejectLogs;
+    if (rejectLogs++ < 8 && args->structureInput && args->structureInputSize) {
+        unsigned int n = args->structureInputSize < 384 ? args->structureInputSize : 384;
+        char dump[385];
+        memcpy(dump, args->structureInput, n);
+        dump[n] = 0;
+        for (unsigned int i = 0; i < n; ++i)
+            if (dump[i] < 0x20 || dump[i] > 0x7e) dump[i] = '.';
+        IOLog("IOS7LAB createOffscreen reject size=%u input=[%s]\n",
+              args->structureInputSize, dump);
+    }
+    return kIOReturnUnsupported;
 }
 
 IOReturn IOS7LabSurfaceClient::createSimple(IOExternalMethodArguments *args)

@@ -419,7 +419,20 @@ IOReturn IOS7LabSurfaceClient::createOffscreen(IOExternalMethodArguments *args)
         memcmp(args->structureInput, ios7lab_fullscreen_surface_request,
                sizeof(ios7lab_fullscreen_surface_request)) != 0 ||
         !args->structureOutput || args->structureOutputSize < 0x548 ||
-        args->scalarOutputCount) return kIOReturnUnsupported;
+        args->scalarOutputCount) {
+        static unsigned int rejectLogs;
+        if (rejectLogs++ < 8 && args->structureInput && args->structureInputSize) {
+            unsigned int n = args->structureInputSize < 384 ? args->structureInputSize : 384;
+            char dump[385];
+            memcpy(dump, args->structureInput, n);
+            dump[n] = 0;
+            for (unsigned int i = 0; i < n; ++i)
+                if (dump[i] < 0x20 || dump[i] > 0x7e) dump[i] = '.';
+            IOLog("IOS7LAB createOffscreen reject size=%u expected=%u input=[%s]\n",
+                  args->structureInputSize, (unsigned int)sizeof(ios7lab_fullscreen_surface_request), dump);
+        }
+        return kIOReturnUnsupported;
+    }
 
     IOS7LabSimpleSurfaceRequest geometry = {0, 0, 640, 960, 0x42475241U, 4, 2560, offscreenPixelBytes};
     return createSurface(&geometry, args);

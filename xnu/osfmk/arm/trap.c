@@ -59,6 +59,19 @@ struct proc;
 extern char *proc_name_address(void *p);
 extern int proc_pid(struct proc *p);
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+static int i9100_iolog_enabled(void)
+{
+    static int v = -1;
+    if (v < 0) {
+        int t = 0;
+        PE_parse_boot_argn("i9100iolog", &t, sizeof(t));
+        v = t ? 1 : 0;
+    }
+    return v > 0;
+}
+#endif
+
 #define ANSI_COLOR_RED     "\x1b[31m"
 #define ANSI_COLOR_GREEN   "\x1b[32m"
 #define ANSI_COLOR_YELLOW  "\x1b[33m"
@@ -659,7 +672,7 @@ void sleh_abort(void *context, int reason)
                             (unsigned)dfar, (unsigned)(dfar & ~0xfffu),
                             (unsigned)arm_ctx->pc, (unsigned)arm_ctx->lr,
                             (unsigned)dfsr, (unsigned)arm_ctx->cpsr);
-                    if ((uda_total & 511U) == 0)
+                    if ((uda_total & 511U) == 0 && i9100_iolog_enabled())
                         printf("UDA: total faults=%u\n", uda_total);
                 }
 #endif
@@ -1166,7 +1179,7 @@ void sleh_undef(arm_saved_state_t * state)
             static unsigned trhist_dumped;
             if (trhist_dumped < 2) { trhist_dumped++; i9100_trap_dump(); }
         }
-        {
+        if (i9100_iolog_enabled()) {
             extern boolean_t vm_map_lookup_entry(vm_map_t, vm_map_address_t, vm_map_entry_t *);
             unsigned addrs[3] = { (unsigned)arm_ctx->pc, (unsigned)arm_ctx->lr, (unsigned)arm_ctx->sp };
             const char *names[3] = { "pc", "lr", "sp" };

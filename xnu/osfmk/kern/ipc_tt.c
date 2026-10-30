@@ -90,6 +90,20 @@
 #include <kern/ipc_kobject.h>
 #include <kern/ipc_tt.h>
 #include <kern/kalloc.h>
+#include <pexpert/pexpert.h>
+
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+static int i9100_iolog_enabled_tt(void)
+{
+	static int v = -1;
+	if (v < 0) {
+		int t = 0;
+		PE_parse_boot_argn("i9100iolog", &t, sizeof(t));
+		v = t ? 1 : 0;
+	}
+	return v > 0;
+}
+#endif
 #include <kern/thread.h>
 #include <kern/misc_protos.h>
 
@@ -861,6 +875,7 @@ task_get_special_port(
 	    case TASK_BOOTSTRAP_PORT:
 		port = ipc_port_copy_send(task->itk_bootstrap);
 #if BOARD_CONFIG_EXYNOS4210_I9100
+		if (i9100_iolog_enabled_tt())
 		kprintf("BPGET task=%p itkbs=%p ->port=%p pid=%d\n",
 			task, task->itk_bootstrap, port, proc_selfpid());
 #endif

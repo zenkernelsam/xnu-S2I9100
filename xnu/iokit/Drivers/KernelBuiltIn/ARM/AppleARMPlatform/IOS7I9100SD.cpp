@@ -48,6 +48,14 @@ public:
  virtual IOReturn reportWriteProtection(bool *);
 };
 OSDefineMetaClassAndStructors(IOS7I9100SD,IOBlockStorageDevice)
+static int i9100sd_iolog=-1;
+static bool sdIologOn(void)
+{
+ if(i9100sd_iolog<0){int v=0;
+  extern int PE_parse_boot_argn(const char *,void *,int);
+  PE_parse_boot_argn("i9100iolog",&v,sizeof(v));i9100sd_iolog=v?1:0;}
+ return i9100sd_iolog>0;
+}
 /* regs[] covers the whole 0x40000 four-host span; callbacks get the
  * host PA and index off it. */
 uint32_t IOS7I9100SD::readMMIO32(void *o,uint32_t pa,unsigned r)
@@ -128,6 +136,7 @@ IOReturn IOS7I9100SD::doAsyncReadWrite(IOMemoryDescriptor *buffer,UInt64 block,U
   if((tv>=0x7ffff000U&&tv<0xc0000000U)||
      (tp<0x80000000ULL&&tp>=0x5d000000ULL)||
      (te<0x80000000ULL&&te>=0x5d000000ULL))
+   if(sdIologOn())
    IOLog("I9100SDTMP blk=%llu n=%llu tmp=%p kvp0=%llx kvpN=%llx\n",
          (unsigned long long)block,(unsigned long long)count,
          tmp,(unsigned long long)tp,(unsigned long long)te);
@@ -143,7 +152,7 @@ IOReturn IOS7I9100SD::doAsyncReadWrite(IOMemoryDescriptor *buffer,UInt64 block,U
  IOFree(tmp,(unsigned)bytes);
  {
   static unsigned long i9100_sdrw_n;
-  if(((++i9100_sdrw_n) & 0xfffUL)==1UL)
+  if(((++i9100_sdrw_n) & 0xfffUL)==1UL && sdIologOn())
    IOLog("I9100SDRW blk=%llu n=%llu result=%d done=%llu rd#%lu\n",
          (unsigned long long)block,(unsigned long long)count,result,
          (unsigned long long)completed,i9100_sdrw_n);

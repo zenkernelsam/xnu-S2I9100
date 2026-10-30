@@ -366,6 +366,11 @@ fork1(proc_t parent_proc, thread_t *child_threadp, int kind)
 	int err = 0;
 	int spawn = 0;
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+	kprintf("J1FORK parent=%d(%s) kind=%d\n", parent_proc->p_pid,
+		parent_proc->p_comm, kind);
+#endif
+
 	/*
 	 * Although process entries are dynamically created, we still keep
 	 * a global limit on the maximum number we will create.  Don't allow
