@@ -1158,7 +1158,7 @@ shared_region_check_np(
 		 (uint64_t)uap->start_address, (uint64_t)start_address, error));
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
-	kprintf("SRCHK pid=%d(%s) start=%llx err=%d\n",
+	printf("SRCHK pid=%d(%s) start=%llx err=%d\n",
 		p->p_pid, p->p_comm, (uint64_t)start_address, error);
 #endif
 
@@ -1177,7 +1177,12 @@ shared_region_copyin_mappings(
 	vm_size_t	mappings_size = 0;
 
 #if IOS7_COMPAT_PLATFORM
-    if (ios7lab_cache_abi()) {
+    /* Both the iOS7 dyld and the iOS<=6-era dyld pass mappings as the classic
+     * 32-byte wire record (three 64-bit fields + two prots). The kernel's
+     * native shared_file_mapping_np on this port uses 32-bit mach_vm_*
+     * fields, so a raw copyin would misalign every entry. Always decode the
+     * wire format; ios7lab_cache_abi() only selects the validation bounds. */
+    {
         struct ios7lab_mapping_wire {
             uint64_t address, size, offset;
             uint32_t max_prot, init_prot;
@@ -1220,6 +1225,26 @@ shared_region_copyin_mappings(
 			 current_thread(), p->p_pid, p->p_comm,
 			 (uint64_t)user_mappings, mappings_count, error));
 	}
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+	{
+		unsigned int i6;
+		char probe[160];
+		for (i6 = 0; !error && i6 < mappings_count; i6++)
+			printf("SRMAP-LEGACY mapping %u va=%08llx size=%llx off=%llx mp=%x ip=%x\n",
+			       i6, (uint64_t)mappings[i6].sfm_address,
+			       (uint64_t)mappings[i6].sfm_size,
+			       (uint64_t)mappings[i6].sfm_file_offset,
+			       mappings[i6].sfm_max_prot, mappings[i6].sfm_init_prot);
+		if (copyin(user_mappings, probe, sizeof(probe)) == 0) {
+			for (i6 = 0; i6 < sizeof(probe)/4; i6 += 8)
+				printf("SRMAP-RAW %02x: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+				       i6*4, ((unsigned*)probe)[i6], ((unsigned*)probe)[i6+1],
+				       ((unsigned*)probe)[i6+2], ((unsigned*)probe)[i6+3],
+				       ((unsigned*)probe)[i6+4], ((unsigned*)probe)[i6+5],
+				       ((unsigned*)probe)[i6+6], ((unsigned*)probe)[i6+7]);
+		}
+	}
+#endif
 	return error;
 }
 /*
@@ -1607,7 +1632,7 @@ shared_region_map_and_slide_np(
 	}
 done:
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
-	kprintf("SRMAP pid=%d(%s) fd=%d cnt=%u slide=%x kr=%d\n",
+	printf("SRMAP pid=%d(%s) fd=%d cnt=%u slide=%x kr=%d\n",
 		p->p_pid, p->p_comm, uap->fd, mappings_count, slide, kr);
 #endif
 	return kr;
