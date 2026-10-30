@@ -391,6 +391,22 @@ static IOReturn ios7lab_present_owned_scanout(uint32_t id)
                   id,w[0],w[(length/2)>>2],w[(length-4)>>2],sum,length);
         }
     }
+    {
+        static int i9100Testfb=-1;
+        if(i9100Testfb<0){int v=0;PE_parse_boot_argn("i9100testfb",&v,sizeof(v));i9100Testfb=v;}
+        if(i9100Testfb && bytes && length >= 1536000U){
+            uint32_t *pw = (uint32_t *)(uintptr_t)bytes;
+            static const uint32_t bars[8] = {
+                0xFFFF0000U,0xFF00FF00U,0xFF0000FFU,0xFFFFFF00U,
+                0xFF00FFFFU,0xFFFF00FFU,0xFFFFFFFFU,0xFF808080U};
+            for(uint32_t y=0;y<800;y++){
+                for(uint32_t x=0;x<480;x++){
+                    pw[y*480+x] = bars[(x/60)&7] ^ ((y&63)<<8);
+                }
+            }
+            IOLog("IOS7LAB testfb fill applied id=%u\n", id);
+        }
+    }
     int didPhys=0;
     if(bytes&&i9100Zcopy&&surfDesc){
         IOByteCount seglen=0;
@@ -830,9 +846,12 @@ IOReturn IOS7LabSurfaceClient::externalMethod(uint32_t selector, IOExternalMetho
 {
     static unsigned int logs;
     if (!args) return kIOReturnBadArgument;
-    if (logs++ < 96)
-        IOLog("IOS7LAB surface method=%u scalar-in=%u struct-in=%u scalar-out=%u struct-out=%u\n",
-              selector, args->scalarInputCount, args->structureInputSize, args->scalarOutputCount, args->structureOutputSize);
+    if (logs++ < 96) {
+        void *surfaceProc = ownerTask ? get_bsdtask_info(ownerTask) : 0;
+        IOLog("IOS7LAB surface method=%u pid=%d scalar-in=%u struct-in=%u scalar-out=%u struct-out=%u\n",
+              selector, surfaceProc ? proc_pid((struct proc *)surfaceProc) : -1,
+              args->scalarInputCount, args->structureInputSize, args->scalarOutputCount, args->structureOutputSize);
+    }
     if (args->structureInputDescriptor || args->structureOutputDescriptor) return kIOReturnUnsupported;
     IOReturn result = kIOReturnUnsupported;
     IOLockLock(mappingLock);
@@ -1391,8 +1410,8 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
     if (!args)
         return kIOReturnBadArgument;
     if (logs++ < 128)
-        IOLog("IOS7LAB framebuffer method=%u scalar-in=%u struct-in=%u scalar-out=%u struct-out=%u\n",
-              selector, args->scalarInputCount, args->structureInputSize,
+        IOLog("IOS7LAB framebuffer method=%u pid=%u scalar-in=%u struct-in=%u scalar-out=%u struct-out=%u\n",
+              selector, graphicsOwnerPID, args->scalarInputCount, args->structureInputSize,
               args->scalarOutputCount, args->structureOutputSize);
     if (args->structureInputDescriptor || args->structureOutputDescriptor) {
         note->reason=LEO_GRAPHICS_REASON_DESCRIPTOR;return kIOReturnUnsupported;
@@ -1763,6 +1782,66 @@ IOReturn IOMobileFramebuffer::newUserClient(task_t task, void *security, UInt32 
     return kIOReturnSuccess;
 }
 
+class IOAcceleratorESClient : public IOUserClient {
+    OSDeclareDefaultStructors(IOAcceleratorESClient);
+public:
+    virtual IOReturn clientClose(void) {
+        IOLog("IOS7ACC clientClose\n");
+        if (!isInactive()) terminate();
+        return kIOReturnSuccess;
+    }
+    virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+        IOExternalMethodDispatch *dispatch = 0, OSObject *target = 0, void *reference = 0)
+    {
+        IOLog("IOS7ACC method=%u scalar-in=%u struct-in=%u scalar-out=%u struct-out=%u\n",
+            selector, args ? args->scalarInputCount : 0,
+            args ? args->structureInputSize : 0,
+            args ? args->scalarOutputCount : 0,
+            args ? args->structureOutputSize : 0);
+        if (args && args->scalarInputCount && args->scalarInput) {
+            unsigned int i, n = args->scalarInputCount > 8 ? 8 : args->scalarInputCount;
+            for (i = 0; i < n; i++)
+                IOLog("IOS7ACC   in[%u]=%llx\n", i, (unsigned long long)args->scalarInput[i]);
+        }
+        if (args && args->structureOutputSize && args->structureOutput) {
+            memset(args->structureOutput, 0, args->structureOutputSize);
+            if (args->structureOutputSize >= 4)
+                *(uint32_t *)args->structureOutput = 0x1acc;
+        }
+        return kIOReturnSuccess;
+    }
+};
+
+class IOAcceleratorES : public IOService {
+    OSDeclareDefaultStructors(IOAcceleratorES);
+public:
+    virtual bool start(IOService *provider) {
+        bool ok = IOService::start(provider);
+        setName("IOAcceleratorES");
+        setProperty("IOS7LabBackend", "stub accelerator - logging only");
+        registerService();
+        IOLog("IOS7ACC stub accelerator published\n");
+        return ok;
+    }
+    virtual IOReturn newUserClient(task_t task, void *security, UInt32 type,
+        OSDictionary *properties, IOUserClient **handler)
+    {
+        IOLog("IOS7ACC open type=%u\n", (unsigned int)type);
+        if (!handler) return kIOReturnBadArgument;
+        *handler = 0;
+        IOAcceleratorESClient *client = new IOAcceleratorESClient;
+        if (!client) return kIOReturnNoMemory;
+        if (!client->initWithTask(task, security, type, properties)) { client->release(); return kIOReturnNoMemory; }
+        if (!client->attach(this)) { client->release(); return kIOReturnError; }
+        if (!client->start(this)) { client->detach(this); client->release(); return kIOReturnError; }
+        *handler = client;
+        return kIOReturnSuccess;
+    }
+};
+
+OSDefineMetaClassAndStructors(IOAcceleratorESClient, IOUserClient);
+OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
+
 void ios7leo_register_display(IOService *platform)
 {
     if (!ios7leo_display_ready())return;
@@ -1787,6 +1866,22 @@ void ios7leo_register_display(IOService *platform)
         if(displayAttached)display->detach(platform);if(surfacesAttached)surfaces->detach(platform);
         if(display)display->release();if(surfaces)surfaces->release();
         IOLog("Leo display registration failed; no provider published\n");return;
+    }
+    {
+        IOAcceleratorES *accel = new IOAcceleratorES;
+        if (accel && accel->init() && accel->attach(platform) && accel->start(platform)) {
+            IOLog("IOS7ACC accelerator attached\n");
+        } else if (accel) {
+            accel->release();
+        }
+    }
+    {
+        IOAcceleratorES *accel = new IOAcceleratorES;
+        if (accel && accel->init() && accel->attach(platform) && accel->start(platform)) {
+            IOLog("IOS7ACC accelerator attached\n");
+        } else if (accel) {
+            accel->release();
+        }
     }
     surfaces->setName("IOCoreSurfaceRoot");
 #if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)

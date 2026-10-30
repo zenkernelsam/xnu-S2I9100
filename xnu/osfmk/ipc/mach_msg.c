@@ -640,6 +640,16 @@ mach_msg_overwrite_trap(
     mach_msg_bits_t lab_boundary_send_bits = 0;
 #endif
 	
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+	static unsigned int j1msgLogs;
+	{
+		int j1cpid = proc_selfpid();
+		if ((j1cpid >= 52) && j1msgLogs < 4000 && !(option & MACH_SEND_MSG)) {
+			j1msgLogs++;
+			kprintf("J1MSGR pid=%d opt=%x rname=%x tmo=%d\n", j1cpid, option, rcv_name, msg_timeout);
+		}
+	}
+#endif
 	if (option & MACH_SEND_MSG) {
 		ipc_space_t space = current_space();
 		ipc_kmsg_t kmsg;
@@ -650,6 +660,41 @@ mach_msg_overwrite_trap(
 #endif
 		if (mr != MACH_MSG_SUCCESS)
 			return mr;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+		{
+			int j1cpid = proc_selfpid();
+			if ((j1cpid >= 52) && j1msgLogs < 4000) {
+				char j1tmp[57];
+				unsigned int j1n = kmsg->ikm_header->msgh_size, j1i;
+				j1msgLogs++;
+				if (j1n > 56) j1n = 56;
+				bcopy((char *)kmsg->ikm_header + 24, j1tmp, j1n);
+				for (j1i = 0; j1i < j1n; j1i++)
+					if (j1tmp[j1i] < 0x20 || j1tmp[j1i] > 0x7e) j1tmp[j1i] = 0x2e;
+				j1tmp[j1n] = 0;
+				kprintf("J1MSGS pid=%d id=%d sz=%u b=%s\n", j1cpid,
+					kmsg->ikm_header->msgh_id, kmsg->ikm_header->msgh_size, j1tmp);
+				if (kmsg->ikm_header->msgh_bits & 0x80000000U) {
+					unsigned int j1nd = *(unsigned int *)((char *)kmsg->ikm_header + 24);
+					if (j1nd > 0 && j1nd < 8) {
+						unsigned int *j1d = (unsigned int *)((char *)kmsg->ikm_header + 28);
+						unsigned int j1oa = j1d[0], j1os = j1d[2];
+						char j1o[401];
+						unsigned int j1i2;
+						if (j1os > 400) j1os = 400;
+						if (j1oa >= 0x1000 && j1oa < 0xc0000000 && j1os > 0 &&
+						    copyin(j1oa, j1o, j1os) == 0) {
+							for (j1i2 = 0; j1i2 < j1os; j1i2++)
+								if (j1o[j1i2] < 0x20 || j1o[j1i2] > 0x7e) j1o[j1i2] = 0x2e;
+							j1o[j1os] = 0;
+							kprintf("J1MSGO pid=%d id=%d ool=%x/%u data=%s\n",
+								j1cpid, kmsg->ikm_header->msgh_id, j1oa, j1os, j1o);
+						}
+					}
+				}
+			}
+		}
+#endif
 
 #if BOARD_CONFIG_ARMPBA8
         int lab_send = ios7lab_checkin_trace(kmsg->ikm_header);

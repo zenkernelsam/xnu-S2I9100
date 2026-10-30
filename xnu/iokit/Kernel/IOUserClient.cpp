@@ -1700,6 +1700,18 @@ kern_return_t is_io_service_get_matching_services(
     obj = OSUnserializeXML( matching );
 
     if( (dict = OSDynamicCast( OSDictionary, obj))) {
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        {
+            extern int proc_selfpid(void);
+            char i9m[128]; unsigned i9i;
+            for (i9i = 0; i9i < 127 && matching[i9i]; i9i++) {
+                char c = matching[i9i];
+                i9m[i9i] = (c < 0x20 || c > 0x7e) ? 0x2e : c;
+            }
+            i9m[i9i] = 0;
+            kprintf("I9MATCH pid=%d kind=%d dict=%s\n", proc_selfpid(), 1, i9m);
+        }
+#endif
 /* IOS7LEO_WAIT_BEGIN */
 #if defined(BOARD_CONFIG_QSD8250_LEO)
         unsigned leo_wait = ios7leo_wait_claim(ios7leo_wait_dictionary(dict));
@@ -1764,6 +1776,18 @@ kern_return_t is_io_service_get_matching_service(
     obj = OSUnserializeXML( matching );
 
     if( (dict = OSDynamicCast( OSDictionary, obj))) {
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        {
+            extern int proc_selfpid(void);
+            char i9m[128]; unsigned i9i;
+            for (i9i = 0; i9i < 127 && matching[i9i]; i9i++) {
+                char c = matching[i9i];
+                i9m[i9i] = (c < 0x20 || c > 0x7e) ? 0x2e : c;
+            }
+            i9m[i9i] = 0;
+            kprintf("I9MATCH pid=%d kind=%d dict=%s\n", proc_selfpid(), 2, i9m);
+        }
+#endif
 /* IOS7LEO_WAIT_BEGIN */
 #if defined(BOARD_CONFIG_QSD8250_LEO)
         unsigned leo_wait = ios7leo_wait_claim(ios7leo_wait_dictionary(dict));
