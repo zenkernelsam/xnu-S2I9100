@@ -906,4 +906,54 @@ void i9100_usbcdc_init(void)
 	i9100_usb_probed = 1;
 }
 
+/* ==== SMP: CPU1 kick I/O ====
+ * Register side of the Exynos4210 secondary-CPU boot contract:
+ *   - PMU INFORM5 (0x10020814): rev1.1 iROM + QEMU smpboot mailbox
+ *   - SYSRAM secure slot (0x02020000+0x00) and NS slot (0x0202F000+0x1C)
+ *   - GICD SGIR (0x10490F00): SGI0 -> CPU1 wakes its iROM WFI
+ *   - SCU (0x10500000): coherency cluster enable + tag invalidate
+ * Everything is bounded; absent hardware (1-vcpu QEMU) just never
+ * answers the alive poll. */
+static vm_offset_t i9100_smp_pmu, i9100_smp_gicd, i9100_smp_scu,
+                   i9100_smp_sysram_s, i9100_smp_sysram_ns;
+
+int i9100_smp_map(void)
+{
+	i9100_smp_pmu = ml_io_map(0x10020000, 0x4000); /* +0x2084/+0x2104 CPU1 config/status need >4KB */ 
+	i9100_smp_gicd = ml_io_map(0x10490000, 0x1000);
+	i9100_smp_scu = ml_io_map(0x10500000, 0x1000);
+	i9100_smp_sysram_s = ml_io_map(0x02020000, 0x1000);
+	i9100_smp_sysram_ns = ml_io_map(0x0202F000, 0x1000);
+	return i9100_smp_pmu && i9100_smp_gicd;
+}
+
+void i9100_smp_fire(uint32_t tramp_pa)
+{
+	unsigned int i;
+
+	/* SCU coherency: invalidate tags then enable (already on in
+	 * practice; writes are idempotent / ignored where absent). */
+	if (i9100_smp_scu) {
+		*(volatile uint32_t *)(i9100_smp_scu + 0x0C) = 0xFFFF;
+		*(volatile uint32_t *)(i9100_smp_scu + 0x00) = 1;
+	}
+	/* Best-effort CPU1 power-up (rev1.1 CORE1 config/status);
+	 * QEMU doesn't model it — bounded poll just falls through. */
+	*(volatile uint32_t *)(i9100_smp_pmu + 0x2084) = 0x3;
+	for (i = 0; i < 0x10000; i++) {
+		if ((*(volatile uint32_t *)(i9100_smp_pmu + 0x2104) & 3) == 3)
+			break;
+	}
+	/* Boot-address mailboxes (cover all iROM variants). */
+	*(volatile uint32_t *)(i9100_smp_pmu + 0x0814) = tramp_pa;      /* INFORM5 */
+	if (i9100_smp_sysram_s)
+		*(volatile uint32_t *)(i9100_smp_sysram_s + 0x00) = tramp_pa;
+	if (i9100_smp_sysram_ns)
+		*(volatile uint32_t *)(i9100_smp_sysram_ns + 0x1C) = tramp_pa;
+	__asm__ volatile("dsb sy; sev" ::: "memory");
+	/* SGI0 to CPU1: wakes the parked iROM WFI loop. */
+	*(volatile uint32_t *)(i9100_smp_gicd + 0xF00) = (2U << 16) | 0U;
+	__asm__ volatile("dsb sy; sev" ::: "memory");
+}
+
 #endif

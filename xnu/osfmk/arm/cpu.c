@@ -87,6 +87,12 @@
 #include <mach/machine.h>
 #include <arm/arch.h>
 #include "proc_reg.h"
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+#include <kern/startup.h>
+#include <kern/sched_prim.h>
+#include <arm/cpu_data.h>
+#include <arm/cpufunc.h>
+#endif
 
 /*
  * Initial stack for first CPU.
@@ -830,9 +836,19 @@ void identify_arm_cpu(void)
  *
  * Initialize core processor data for CPU #0 during initialization.
  */
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+static cpu_data_t i9100_cpu1_data;
+#endif
+
 void cpu_bootstrap(void)
 {
     cpu_data_ptr[0] = &cpu_data_master;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    /* cpu_data_ptr lives in a read-only region after early init, so the
+     * second slot must be registered here, before page protection. The
+     * struct contents are filled later by i9100_smp_init(). */
+    cpu_data_ptr[1] = &i9100_cpu1_data;
+#endif
 
     cpu_data_master.cpu_this = &cpu_data_master;
     cpu_data_master.cpu_processor = &BootProcessor;
@@ -890,7 +906,11 @@ void cpu_init(void)
  */
 int get_cpu_number(void)
 {
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    return armreg_mpidr_read() & 0x3;
+#else
     return 0;
+#endif
 }
 
 /**
@@ -1057,15 +1077,259 @@ void cpu_machine_init(void)
     ml_init_interrupt();
 }
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+/*
+ * SMP: CPU1 bring-up for Exynos4210 (QEMU smdkc210 + real GT-I9100).
+ *
+ * The secondary Cortex-A9 is parked in iROM/smpboot: it enables its own
+ * GIC CPU interface, WFI-sleeps, then polls a boot-address mailbox
+ * (PMU INFORM5 0x10020814 on rev1.1 / QEMU; SYSRAM slots on others)
+ * and branches to the value found there.  We publish a position-
+ * independent trampoline at a physical address; it replays TTBR0/
+ * TTBCR/DACR/VBAR, sets ACTLR.SMP, turns on the MMU, and jumps into
+ * i9100_cpu1_main() at its virtual address.
+ *
+ * Trampoline opcodes produced by tools/i9100_cpu1_tramp.S
+ * (arm-none-eabi-as).  CPU1 enters at the PHYSICAL array address with
+ * MMU off.  It mirrors TTBR0/TTBR1/TTBCR/DACR/VBAR, installs a 1MB
+ * identity section for its own physical page in the *masked* TTBR1
+ * base (register low bits are attributes, not base — that off-by-0x18
+ * bug corrupted slot 0x40A and left 0x404 empty), sets ACTLR.SMP,
+ * enables the MMU, then bx to the C entry VA.
+ * Data slots live at words [76..85]:
+ *   [0] TTBR0 [1] TTBR1 [2] TTBCR [3] DACR
+ *   [4] SCTLR [5] VBAR  [6] SP    [7] ENTRY
+ *   [8] alive_phys  [9] heartbeat_phys
+ */
+#define I9100_SMP_TD 76U
+static volatile uint32_t i9100_smp_tramp[86] __attribute__((aligned(32))) = {
+    0xf10c00c0, 0xe28f4f49, 0xe3a01001, 0xe5940020,
+    0xe5801000, 0xf57ff04f, 0xe8941fe0, 0xe3a01002,
+    0xe5801000, 0xe3a00000, 0xee080f17, 0xee070f15,
+    0xee070fd5, 0xf57ff04f, 0xf57ff06f, 0xe5940020,
+    0xe3a01003, 0xe5801000, 0xee025f10, 0xee026f30,
+    0xee027f50, 0xee038f10, 0xee0caf10, 0xe5940020,
+    0xe3a01004, 0xe5801000, 0xe1a00a2f, 0xe1a01726,
+    0xe1a01701, 0xe0811100, 0xe5912000, 0xe3520000,
+    0x1a000007, 0xe3002c0e, 0xe1822a00, 0xe5812000,
+    0xe3a02000, 0xee082f17, 0xee072f15, 0xf57ff04f,
+    0xf57ff06f, 0xee110f30, 0xe3800040, 0xe3800001,
+    0xee010f30, 0xf57ff06f, 0xee110f10, 0xe1800009,
+    0xee010f10, 0xf57ff04f, 0xf57ff06f, 0xe5940020,
+    0xe3a01005, 0xe5801000, 0xe1a0d00b, 0xe10f0000,
+    0xe3c0101f, 0xe3812012, 0xe121f002, 0xe1a0d00b,
+    0xe3812017, 0xe121f002, 0xe1a0d00b, 0xe381201b,
+    0xe121f002, 0xe1a0d00b, 0xe3812011, 0xe121f002,
+    0xe1a0d00b, 0xe121f000, 0xe1a0d00b, 0xe5940020,
+    0xe3a01006, 0xe5801000, 0xe12fff1c, 0xe1a00000,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
+static uint8_t i9100_cpu1_istack[8192] __attribute__((aligned(16)));
+static processor_t i9100_proc1;
+static volatile uint32_t i9100_cpu1_alive, i9100_cpu1_heartbeat;
+static vm_offset_t i9100_smp_phys_delta = 0x40000000U; /* va-pa in kernel image */
+
+extern void ios7j1_debug_putc(char);
+extern int i9100_smp_map(void);
+extern void i9100_smp_fire(uint32_t tramp_pa);
+
+void i9100_cpu1_main(void)
+{
+    /* Proof-of-life milestone: CPU1 reaches kernel virtual context via
+     * the TTBR1-mirroring trampoline (mailbox -> iROM -> phys entry ->
+     * identity section -> MMU on -> kernel VA).  Full scheduler entry
+     * (cpu_init/slave_main/processor_up) still trips on single-CPU
+     * assumptions (commpage assert, per-CPU init) — parked for a later
+     * milestone; i9100smp=0 leaves the whole path dormant anyway. */
+    /* The flag write lands in our L1 only — CPU0's invalidate-then-read
+     * sees stale DRAM (observed: report showed the last phys-written
+     * stage marker).  Push the line out so CPU0 can see stage 7. */
+    i9100_cpu1_alive = 7;   /* tramp stages write 1..6; 7 = C context */
+    arm_dcache_wbinv_range((vaddr_t) &i9100_cpu1_alive, 64);
+    for (;;) {
+        i9100_cpu1_heartbeat++;
+        if ((i9100_cpu1_heartbeat & 0xFFFF) == 0)
+            arm_dcache_wbinv_range((vaddr_t) &i9100_cpu1_heartbeat, 64);
+        __asm__ volatile("wfe" ::: "memory");
+    }
+}
+
+static void i9100_cpu1_worker(void *p, wait_result_t w)
+{
+    (void) p; (void) w;
+    for (;;) {
+        volatile int i;
+        __sync_add_and_fetch(&i9100_cpu1_heartbeat, 1);
+        for (i = 0; i < 200000; i++)
+            ;
+    }
+}
+
+static void i9100_smp_puthex(uint32_t v)
+{
+    int q;
+    for (q = 0; q < 8; q++) {
+        unsigned int n = (v >> ((7 - q) * 4)) & 15U;
+        ios7j1_debug_putc((char)(n < 10 ? ('0' + n) : ('a' + n - 10)));
+    }
+}
+
+static kern_return_t i9100_smp_fire_and_wait(void)
+{
+    uint32_t dacr;
+    int i;
+
+    /* CPU0 runs TTBCR N=2: TTBR0 owns the low 1GB (user), TTBR1 owns
+     * everything above (kernel VAs AND our phys-identity alias). CPU1
+     * must mirror both or every kernel fetch faults into a recursive
+     * prefetch abort (observed: CPU1 stuck at VBAR+0xc). */
+    i9100_smp_tramp[I9100_SMP_TD + 0] = armreg_ttbr_read();
+    __asm__ volatile("mrc p15,0,%0,c2,c0,1" : "=r"(dacr));
+    i9100_smp_tramp[I9100_SMP_TD + 1] = dacr;   /* TTBR1 */
+    i9100_smp_tramp[I9100_SMP_TD + 2] = armreg_ttbcr_read();
+    __asm__ volatile("mrc p15,0,%0,c3,c0,0" : "=r"(dacr));
+    i9100_smp_tramp[I9100_SMP_TD + 3] = dacr;   /* DACR */
+    /* mirror CPU0's full SCTLR (M|C|Z|I plus the ARMv7 SBOP bits a
+     * bare reset SCTLR lacks). */
+    __asm__ volatile("mrc p15,0,%0,c1,c0,0" : "=r"(dacr));
+    i9100_smp_tramp[I9100_SMP_TD + 4] = dacr;   /* SCTLR */
+    i9100_smp_tramp[I9100_SMP_TD + 5] = armreg_vbar_read();
+    i9100_smp_tramp[I9100_SMP_TD + 6] = i9100_cpu1_data.cpu_int_stack_top;
+    i9100_smp_tramp[I9100_SMP_TD + 7] = (uint32_t) i9100_cpu1_main;
+    i9100_smp_tramp[I9100_SMP_TD + 8] =
+        (uint32_t) &i9100_cpu1_alive - i9100_smp_phys_delta;
+    i9100_smp_tramp[I9100_SMP_TD + 9] =
+        (uint32_t) &i9100_cpu1_heartbeat - i9100_smp_phys_delta;
+    arm_dcache_wbinv_range((vaddr_t) &i9100_smp_tramp[0], sizeof(i9100_smp_tramp));
+    arm_dcache_wbinv_range((vaddr_t) &i9100_cpu1_data, sizeof(i9100_cpu1_data));
+
+    i9100_smp_fire((uint32_t) &i9100_smp_tramp[0] - i9100_smp_phys_delta);
+
+    for (i = 0; i < 20000000; i++) {
+        /* park path writes flags through DRAM while our L1 may hold
+         * stale lines — invalidate before each check (harmless in the
+         * coherent fast path).  Wait for stage 7 (C context) — any
+         * lower stage just means QEMU hasn't scheduled the vCPU yet. */
+        arm_dcache_inv_range((vaddr_t) &i9100_cpu1_alive, 64);
+        if (i9100_cpu1_alive == 7)
+            return KERN_SUCCESS;
+    }
+    return KERN_FAILURE;
+}
+
+/*
+ * i9100_smp_init: create + start the second processor.  Called late in
+ * boot (IOKit platform setup) so paging, the scheduler and the master
+ * GIC are already live.  Returns nonzero if CPU1 was launched.
+ */
+int i9100_smp_init(void)
+{
+    ios7j1_debug_putc('S'); ios7j1_debug_putc('0');
+    processor_t proc;
+    thread_t hb;
+    spl_t s;
+
+    if (i9100_cpu1_alive)
+        return 1;
+    if (!i9100_smp_map()) {
+        ios7j1_debug_putc('S'); ios7j1_debug_putc('M'); ios7j1_debug_putc('P');
+        ios7j1_debug_putc('!'); ios7j1_debug_putc('M'); ios7j1_debug_putc('A');
+        ios7j1_debug_putc('P'); ios7j1_debug_putc('\n');
+        return 0;
+    }
+    ios7j1_debug_putc('A');
+    /* CPU0 joins the coherent cluster (SCU already enabled by bootrom
+     * on both QEMU and real hw; ACTLR.SMP makes L1 snoopy). */
+    __asm__ volatile(
+        "mrc p15,0,r0,c1,c0,1\n\t"
+        "orr r0,r0,#0x40\n\t"
+        "orr r0,r0,#0x1\n\t"
+        "mcr p15,0,r0,c1,c0,1\n\t"
+        ::: "r0", "memory");
+    OSMemoryBarrier();
+    ios7j1_debug_putc('B');
+
+    proc = cpu_processor_alloc(FALSE);
+    if (!proc)
+        return 0;
+    i9100_proc1 = proc;
+    ios7j1_debug_putc('C');
+
+    bzero(&i9100_cpu1_data, sizeof(i9100_cpu1_data));
+    /* cpu_data_ptr[1] already points here (registered in cpu_bootstrap
+     * while the page was still writable). */
+    i9100_cpu1_data.cpu_this = &i9100_cpu1_data;
+    i9100_cpu1_data.cpu_processor = proc;
+    i9100_cpu1_data.cpu_number = 1;
+    i9100_cpu1_data.cpu_phys_number = 1;
+    i9100_cpu1_data.cpu_preemption_level = 1;
+    i9100_cpu1_data.cpu_pending_ast = AST_NONE;
+    i9100_cpu1_data.cpu_int_stack_top =
+        (vm_offset_t)(i9100_cpu1_istack + sizeof(i9100_cpu1_istack));
+    arm_dcache_wbinv_range((vaddr_t) &i9100_cpu1_data, sizeof(i9100_cpu1_data));
+    ios7j1_debug_putc('D');
+
+    processor_init(proc, 1, &pset0);
+    /* give CPU1 a non-NULL active thread so its fleh/sleh dump path
+     * (thread->kernel_stack reads) doesn't recursively abort. */
+    i9100_cpu1_data.cpu_active_thread = proc->idle_thread;
+    i9100_cpu1_data.cpu_active_stack = proc->idle_thread ?
+        (vm_offset_t)proc->idle_thread->kernel_stack : 0;
+    i9100_cpu1_data.cpu_kernel_stack = i9100_cpu1_data.cpu_active_stack;
+    arm_dcache_wbinv_range((vaddr_t) &i9100_cpu1_data, sizeof(i9100_cpu1_data));
+    ios7j1_debug_putc('E');
+
+    /* Milestone 1: wake CPU1 into kernel context only.  processor_start /
+     * slave_main wiring into the Mach scheduler is deferred — the commpage
+     * active-cpus assert and per-CPU init paths still assume one CPU. */
+    if (i9100_smp_fire_and_wait() != KERN_SUCCESS) {
+        ios7j1_debug_putc('!'); ios7j1_debug_putc('S');
+        return 0;
+    }
+    ios7j1_debug_putc('F');
+    (void) hb; (void) s;
+    ios7j1_debug_putc('G');
+    return 1;
+}
+
+/* CPU0-visible proof of life. */
+void i9100_smp_report(void)
+{
+    uint32_t a, h0;
+    int i;
+    arm_dcache_inv_range((vaddr_t) &i9100_cpu1_alive, 64);
+    a = i9100_cpu1_alive;
+    h0 = i9100_cpu1_heartbeat;
+    for (i = 0; i < 400000; i++)
+        ;
+    /* re-sample after the delay — the first read can catch CPU1 still
+     * mid-trampoline (observed: report showed 3 while CPU1 was already
+     * spinning in i9100_cpu1_main). */
+    arm_dcache_inv_range((vaddr_t) &i9100_cpu1_alive, 64);
+    a = i9100_cpu1_alive;
+    ios7j1_debug_putc('S'); ios7j1_debug_putc('M'); ios7j1_debug_putc('P');
+    ios7j1_debug_putc(' ');
+    i9100_smp_puthex(a);
+    ios7j1_debug_putc(' ');
+    i9100_smp_puthex(h0);
+    ios7j1_debug_putc(' ');
+    i9100_smp_puthex(i9100_cpu1_heartbeat);
+    ios7j1_debug_putc('\n');
+}
+#endif /* BOARD_CONFIG_EXYNOS4210_I9100 */
+
 kern_return_t cpu_start(int cpu)
 {
-    kern_return_t ret;
-
     if (cpu == cpu_number()) {
         cpu_machine_init();
         return KERN_SUCCESS;
     }
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    if (cpu == 1)
+        return i9100_smp_fire_and_wait();
+#endif
     return KERN_SUCCESS;
 }
 

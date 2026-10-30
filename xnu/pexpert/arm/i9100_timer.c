@@ -270,6 +270,7 @@ void I9100_handle_interrupt(void *context)
         irq=ack&0x3ffU;
         last_vector=irq;
         if(irq>=1020U){ if(budget==0) spurious_irq_count++; return; }
+        if(irq<16U){ write_reg(i9100_gic_cpu,I9100_GIC_CPU_EOI,ack); drain(); continue; } /* SGI (cpu1 wake/IPI): ack only */
         if(irq!=I9100_TIMER_IRQ){ write_reg(i9100_gic_cpu,I9100_GIC_CPU_EOI,ack); panic("I9100 unexpected IRQ %u",irq); }
         /* Clear the MCT comparator status BEFORE EOI: the line is level
          * asserted and stays high until INT_CSTAT is written. */

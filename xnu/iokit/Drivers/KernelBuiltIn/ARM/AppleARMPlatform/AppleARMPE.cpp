@@ -48,6 +48,11 @@ void AppleARMPE::registerNVRAMController(IONVRAMController * caller)
     publishResource("IONVRAM");
 }
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+extern "C" int i9100_smp_init(void);
+extern "C" void i9100_smp_report(void);
+#endif
+
 bool AppleARMPE::start(IOService * provider)
 {
     DTEntry entry;
@@ -103,6 +108,19 @@ bool AppleARMPE::start(IOService * provider)
     ios7i9100_register_sd(this);
 #endif
     ios7leo_register_hid_touch(this);
+#endif
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    {
+        extern int PE_parse_boot_argn(const char *, void *, int);
+        int smp_arg = 1;
+        boolean_t found = PE_parse_boot_argn("i9100smp", &smp_arg, sizeof(smp_arg));
+        if (found && smp_arg == 0)
+            ;
+        else {
+            (void) i9100_smp_init();
+            i9100_smp_report();
+        }
+    }
 #endif
     return true;
 }

@@ -1656,7 +1656,11 @@ static pt_entry_t leo_pte_build(pmap_t map,vm_map_offset_t va,ppnum_t pn,vm_prot
     pt_entry_t value=((pn<<PAGE_SHIFT)&L2_ADDR_MASK)|L2_SMALL_PAGE;
     value|=pmap_vm_prot_to_page_flags(map,prot,wired,0);
     if(va==_COMM_PAGE_BASE_ADDRESS)value|=L2_ACCESS_USER;
-    if(map==kernel_pmap&&(va==IOS7LAB_COMMPAGE_ALIAS||va==IOS7LAB_COMMPAGE_ALIAS6))value|=L2_ACCESS_USER|L2_ACCESS_APX|L2_NX_BIT;
+    /* The commpage aliases are enforced user/RO/NX — but only when this
+     * entry really is the commpage (entered VM_PROT_READ).  An ml_io_map
+     * device VA that happens to collide with the alias address must keep
+     * its requested RW kernel protection (SMP SYSRAM mailbox hit this). */
+    if(map==kernel_pmap&&(prot&VM_PROT_WRITE)==0&&(va==IOS7LAB_COMMPAGE_ALIAS||va==IOS7LAB_COMMPAGE_ALIAS6))value|=L2_ACCESS_USER|L2_ACCESS_APX|L2_NX_BIT;
     return value|pmap_get_cache_attributes(pn);
 }
 void pmap_expand(pmap_t,vm_offset_t);
