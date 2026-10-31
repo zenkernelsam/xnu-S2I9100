@@ -2961,6 +2961,17 @@ change_dir(struct nameidata *ndp, vfs_context_t ctx)
  *
  * XXX Need to implement uid, gid
  */
+static int
+i9_path_has(const char *hay, const char *needle)
+{
+	size_t n = strlen(needle);
+	const char *p;
+	for (p = hay; *p; p++)
+		if (!strncmp(p, needle, n))
+			return 1;
+	return 0;
+}
+
 int
 open1(vfs_context_t ctx, struct nameidata *ndp, int uflags, struct vnode_attr *vap, int32_t *retval)
 {
@@ -3013,6 +3024,8 @@ open1(vfs_context_t ctx, struct nameidata *ndp, int uflags, struct vnode_attr *v
 	}
 
 	if ((error = vn_open_auth(ndp, &flags, vap))) {
+		if (ndp->ni_pathbuf[0] && i9_path_has(ndp->ni_pathbuf, "DataMigrat"))
+			kprintf("J1DMOPEN pid=%d err=%d path=%s\n", proc_selfpid(), error, ndp->ni_pathbuf);
 		if ((error == ENODEV || error == ENXIO) && (uu->uu_dupfd >= 0)){	/* XXX from fdopen */
 			if ((error = dupfdopen(fdp, indx, uu->uu_dupfd, flags, error)) == 0) {
 				fp_drop(p, indx, NULL, 0);
@@ -3040,6 +3053,8 @@ open1(vfs_context_t ctx, struct nameidata *ndp, int uflags, struct vnode_attr *v
 			session_rele(sessp);
 		return (error);
 	}
+	if (ndp->ni_pathbuf[0] && i9_path_has(ndp->ni_pathbuf, "DataMigrat"))
+		kprintf("J1DMOPEN pid=%d ok path=%s\n", proc_selfpid(), ndp->ni_pathbuf);
 	uu->uu_dupfd = 0;
 	vp = ndp->ni_vp;
 
