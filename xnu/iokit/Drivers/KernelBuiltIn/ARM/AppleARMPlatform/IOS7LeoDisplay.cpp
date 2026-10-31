@@ -1803,6 +1803,7 @@ I9STUB(AppleM2TVOut)
 I9STUB(AppleWirelessDisplay)
 I9STUB(IOSurfaceAccelerator)
 I9STUB(IOAVController)
+I9STUB(AppleMobileFileIntegrity)
 
 class I9StubClient : public IOUserClient {
     OSDeclareDefaultStructors(I9StubClient);
@@ -1829,6 +1830,48 @@ static IOReturn i9stub_client(task_t t, IOUserClient **h) {
     if (!c->initWithTask(t, 0, 0)) { c->release(); return kIOReturnError; }
     *h = c; return kIOReturnSuccess;
 }
+#include "i9_ent_blob.h"
+class I9AmfiClient : public IOUserClient {
+    OSDeclareDefaultStructors(I9AmfiClient);
+public:
+    virtual IOReturn clientClose(void) {
+        if (!isInactive()) terminate();
+        return kIOReturnSuccess;
+    }
+    virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+        IOExternalMethodDispatch *dispatch = 0, OSObject *target = 0, void *reference = 0)
+    {
+        IOLog("I9AMFIC method=%u si=%u so=%u sti=%u sto=%u\n", selector,
+            args ? args->scalarInputCount : 0, args ? args->scalarOutputCount : 0,
+            args ? args->structureInputSize : 0, args ? args->structureOutputSize : 0);
+        if (args && args->structureInput && args->structureInputSize >= 4)
+            IOLog("I9AMFIC   in[0..3]=%02x %02x %02x %02x\n",
+                ((uint8_t*)args->structureInput)[0], ((uint8_t*)args->structureInput)[1],
+                ((uint8_t*)args->structureInput)[2], ((uint8_t*)args->structureInput)[3]);
+        /* selector 1: copy-entitlements-for-audit-token (sti=32 token, sto=dict buf).
+         * Security.framework parses output with a property-list parser, so
+         * feed the entitlement XML plist only (skip 8-byte CS superblob hdr). */
+        if (selector == 1 && args && args->structureOutput && args->structureOutputSize) {
+            size_t n = sizeof(i9_ent_blob) - 8;
+            if (n > args->structureOutputSize) n = args->structureOutputSize;
+            memcpy(args->structureOutput, i9_ent_blob + 8, n);
+            if (args->structureOutputSize > n)
+                memset((uint8_t*)args->structureOutput + n, 0, args->structureOutputSize - n);
+            IOLog("I9AMFIC   fed %u-byte ent blob\n", (unsigned)n);
+            return kIOReturnSuccess;
+        }
+        if (args && args->structureOutput && args->structureOutputSize)
+            memset(args->structureOutput, 0, args->structureOutputSize);
+        return kIOReturnSuccess;
+    }
+};
+OSDefineMetaClassAndStructors(I9AmfiClient, IOUserClient);
+static IOReturn i9amfi_client(task_t t, IOUserClient **h) {
+    I9AmfiClient *c = new I9AmfiClient;
+    if (!c) return kIOReturnNoMemory;
+    if (!c->initWithTask(t, 0, 0)) { c->release(); return kIOReturnError; }
+    *h = c; return kIOReturnSuccess;
+}
 OSDefineMetaClassAndStructors(AppleKeyStore, IOService);
 OSDefineMetaClassAndStructors(AppleDiagnosticDataAccess, IOService);
 OSDefineMetaClassAndStructors(AppleDiagnosticDataAccessReadOnly, IOService);
@@ -1838,6 +1881,7 @@ OSDefineMetaClassAndStructors(AppleM2TVOut, IOService);
 OSDefineMetaClassAndStructors(AppleWirelessDisplay, IOService);
 OSDefineMetaClassAndStructors(IOSurfaceAccelerator, IOService);
 OSDefineMetaClassAndStructors(IOAVController, IOService);
+OSDefineMetaClassAndStructors(AppleMobileFileIntegrity, IOService);
 
 /* libMobileGestalt UDID derivation (iOS6 __computeUniqueDeviceID):
  *   UDID = SHA1( serial + ecid_decimal + wifiMAC + btMAC )
@@ -1902,6 +1946,9 @@ IOReturn IOSurfaceAccelerator::newUserClient(task_t t, void *s2, UInt32 ty,
 IOReturn IOAVController::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
 { IOLog("I9STUB IOAVController open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+IOReturn AppleMobileFileIntegrity::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleMobileFileIntegrity open type=%u\n",(unsigned)ty); return i9amfi_client(t, h); }
 IOReturn AppleM2ScalerCSCDriver::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
 { IOLog("I9STUB AppleM2ScalerCSCDriver open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
@@ -2015,6 +2062,7 @@ void ios7leo_register_display(IOService *platform)
     /* i9stub_publish_AppleWirelessDisplay disabled: fake wireless-display hw makes backboardd poll com.apple.coremedia.wirelessdisplayserver forever */
     i9stub_publish_IOSurfaceAccelerator(platform);
     i9stub_publish_IOAVController(platform);
+    i9stub_publish_AppleMobileFileIntegrity(platform);
     i9_publish_named(platform, "displayport");
     i9_publish_named(platform, "hdmi");
     i9_publish_macsvc(platform, "wlan", i9_wifimac);

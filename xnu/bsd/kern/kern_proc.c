@@ -79,6 +79,9 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+#include "i9_ent_blob.h"
+#endif
 #include <sys/kernel.h>
 #include <sys/proc_internal.h>
 #include <sys/acct.h>
@@ -1908,22 +1911,27 @@ csops_internal(pid_t pid, int ops, user_addr_t uaddr, user_size_t usersize, user
 			void *start;
 			size_t length;
 
-			if ((pt->p_csflags & CS_VALID) == 0) {
-				error = EINVAL;
-				break;
-			}
 			if (usize < sizeof(fakeheader)) {
 				error = ERANGE;
 				break;
 			}
 			if (0 != (error = cs_entitlements_blob_get(pt,
 			    &start, &length)))
-				break;
-			/* if no entitlement, fill in zero header */
+				error = 0, start = NULL;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+			/* if no entitlement, feed SpringBoard's real blob so
+			 * entitlement-gated daemons (backboardd etc.) pass */
+			if (NULL == start) {
+				start = (void *)i9_ent_blob;
+				length = sizeof(i9_ent_blob);
+			}
+#else
 			if (NULL == start) {
 				start = fakeheader;
 				length = sizeof(fakeheader);
-			} else if (usize < length) {
+			}
+#endif
+			if (usize < length) {
 				/* ... if input too short, copy out length of entitlement */
 				uint32_t length32 = htonl((uint32_t)length);
 				memcpy(&fakeheader[4], &length32, sizeof(length32));

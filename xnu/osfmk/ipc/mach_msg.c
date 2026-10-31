@@ -642,6 +642,7 @@ mach_msg_overwrite_trap(
 	
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 	static unsigned int j1msgLogs;
+	static unsigned int j1msgOol;
 	{
 		int j1cpid = proc_selfpid();
 		if ((j1cpid >= 17) && j1msgLogs < 6000 && !(option & MACH_SEND_MSG)) {
@@ -676,22 +677,24 @@ mach_msg_overwrite_trap(
 					kmsg->ikm_header->msgh_id, kmsg->ikm_header->msgh_size,
 					(unsigned)kmsg->ikm_header->msgh_remote_port,
 					(unsigned)kmsg->ikm_header->msgh_local_port, j1tmp);
-				if (kmsg->ikm_header->msgh_bits & 0x80000000U) {
-					unsigned int j1nd = *(unsigned int *)((char *)kmsg->ikm_header + 24);
-					if (j1nd > 0 && j1nd < 8) {
-						unsigned int *j1d = (unsigned int *)((char *)kmsg->ikm_header + 28);
-						unsigned int j1oa = j1d[0], j1os = j1d[2];
-						char j1o[401];
-						unsigned int j1i2;
-						if (j1os > 400) j1os = 400;
-						if (j1oa >= 0x1000 && j1oa < 0xc0000000 && j1os > 0 &&
-						    copyin(j1oa, j1o, j1os) == 0) {
-							for (j1i2 = 0; j1i2 < j1os; j1i2++)
-								if (j1o[j1i2] < 0x20 || j1o[j1i2] > 0x7e) j1o[j1i2] = 0x2e;
-							j1o[j1os] = 0;
-							kprintf("J1MSGO pid=%d id=%d ool=%x/%u data=%s\n",
-								j1cpid, kmsg->ikm_header->msgh_id, j1oa, j1os, j1o);
-						}
+			}
+			if ((j1cpid >= 17) && j1msgOol < 12000 &&
+			    (kmsg->ikm_header->msgh_bits & 0x80000000U)) {
+				unsigned int j1nd = *(unsigned int *)((char *)kmsg->ikm_header + 24);
+				if (j1nd > 0 && j1nd < 8) {
+					unsigned int *j1d = (unsigned int *)((char *)kmsg->ikm_header + 28);
+					unsigned int j1oa = j1d[0], j1os = j1d[2];
+					char j1o[401];
+					unsigned int j1i2;
+					if (j1os > 400) j1os = 400;
+					if (j1oa >= 0x1000 && j1oa < 0xc0000000 && j1os > 0 &&
+					    copyin(j1oa, j1o, j1os) == 0) {
+						for (j1i2 = 0; j1i2 < j1os; j1i2++)
+							if (j1o[j1i2] < 0x20 || j1o[j1i2] > 0x7e) j1o[j1i2] = 0x2e;
+						j1o[j1os] = 0;
+						j1msgOol++;
+						kprintf("J1MSGO pid=%d id=%d ool=%x/%u data=%s\n",
+							j1cpid, kmsg->ikm_header->msgh_id, j1oa, j1os, j1o);
 					}
 				}
 			}
