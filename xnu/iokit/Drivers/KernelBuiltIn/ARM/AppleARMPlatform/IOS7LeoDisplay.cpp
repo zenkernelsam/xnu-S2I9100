@@ -222,6 +222,7 @@ static IOMemoryDescriptor *primaryPixels;
 static IOBufferMemoryDescriptor *primaryControl;
 static uint32_t primaryBytes;
 static IOMemoryMap *primaryKernelPixels;
+static bool primaryClientMapped;
 static uint64_t scanoutSequence;
 static uint32_t displayBudget;
 static const uint32_t leoWidth=480,leoHeight=800,leoRow=1920;
@@ -835,6 +836,7 @@ IOReturn IOS7LabSurfaceClient::describe(IOExternalMethodArguments *args)
     info[16] = ((uint32_t *)primaryControl->getBytesNoCopy())[2];
     memcpy(args->structureOutput, info, sizeof(info));
     args->structureOutputSize = sizeof(info);
+    primaryClientMapped = true;
     static unsigned int map_logs;
     if (map_logs++ < 32)
         IOLog("IOS7LAB surface lookup id=1 mapped-pixels=%08x mapped-control=%08x bytes=%u\n", info[0], info[2], primaryBytes);
@@ -1439,6 +1441,12 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
             uint32_t w6[216 / 4];
             memcpy(w6, args->structureInput, sizeof(w6));
             uint32_t surf6 = pendingSwapSurface ? pendingSwapSurface : w6[2];
+            /* iOS6 SwapEnd omits the surface entirely (word2=0 in every
+             * observed frame): the contract is implicit — the client
+             * presents the surface it owns, which on this path is the
+             * mapped primary.  Only substitute when the client actually
+             * holds a primary mapping, never fabricate. */
+            if (!surf6 && primaryClientMapped) surf6 = primarySurfaceID;
             note->transaction = w6[0]; note->surface = surf6;
             uint64_t metadataBegin = mach_absolute_time();
             IOLockLock(transactionLock);
