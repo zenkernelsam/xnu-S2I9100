@@ -1792,7 +1792,7 @@ class IOAcceleratorES;
 
 /* Minimal published stubs for services iOS6 daemons wait-match on.
  * Each publishes <name> with a logging-only user client. */
-#define I9STUB(N) class N : public IOService {     OSDeclareDefaultStructors(N); public:     virtual bool start(IOService *provider) {         bool ok = IOService::start(provider);         setProperty("IOClass", #N);         registerService();         return ok;     }     virtual IOReturn newUserClient(task_t task, void *security, UInt32 type,         OSDictionary *properties, IOUserClient **handler); }; static void i9stub_publish_##N(IOService *platform) {     N *svc = new N;     if (svc && svc->init() && svc->attach(platform) && svc->start(platform)) {         svc->setName(#N);     } else if (svc) svc->release(); }
+#define I9STUB(N) class N : public IOService {     OSDeclareDefaultStructors(N); public:     virtual bool start(IOService *provider) {         bool ok = IOService::start(provider);         setProperty("IOClass", #N);         registerService();         return ok;     }     virtual IOReturn newUserClient(task_t task, void *security, UInt32 type,         OSDictionary *properties, IOUserClient **handler); }; static IOService *i9stub_publish_##N(IOService *platform) {     N *svc = new N;     if (svc && svc->init() && svc->attach(platform) && svc->start(platform)) {         svc->setName(#N);         return svc;     }     if (svc) svc->release();     return NULL; }
 
 I9STUB(AppleKeyStore)
 I9STUB(AppleDiagnosticDataAccess)
@@ -1837,9 +1837,47 @@ OSDefineMetaClassAndStructors(AppleM2TVOut, IOService);
 OSDefineMetaClassAndStructors(AppleWirelessDisplay, IOService);
 OSDefineMetaClassAndStructors(IOSurfaceAccelerator, IOService);
 
+/* libMobileGestalt UDID derivation (iOS6 __computeUniqueDeviceID):
+ *   UDID = SHA1( serial + ecid_decimal + wifiMAC + btMAC )
+ * Wifi MAC comes from a service NAMED "wlan" or "sdio" carrying
+ * "local-mac-address" (OSData, 6 bytes); BT MAC from service named
+ * "bluetooth" (same prop), falling back to syscfg tag 'BMac'.
+ * We have no radios in QEMU, so publish fake MAC services. */
+static const UInt8 i9_wifimac[6] = { 0x00, 0x26, 0xbb, 0x12, 0x34, 0x56 };
+static const UInt8 i9_btmac[6]   = { 0x00, 0x26, 0xbb, 0x12, 0x34, 0x57 };
+
+static void i9_publish_macsvc(IOService *platform, const char *svcname,
+                              const UInt8 mac[6])
+{
+    IOService *svc = new IOService;
+    if (svc && svc->init() && svc->attach(platform) && svc->start(platform)) {
+        svc->setName(svcname);
+        svc->setProperty("local-mac-address", OSData::withBytes(mac, 6));
+        svc->registerService();
+        IOLog("I9MAC %s local-mac-address published\n", svcname);
+    } else if (svc) svc->release();
+}
+
+/* Fabricated SysCfg block for AppleDiagnosticDataAccess ->
+ * property "AppleDiagnosticDataSysCfg" (lockdownd reads it directly).
+ * TLV: tag[4] + len32(LE) + data, padded to 4. */
+static const UInt8 i9_syscfg[] = {
+    'S','r','N','m', 12,0,0,0, 'C','3','9','G','H','0','0','E','0','0','6','9',
+    'M','L','B',' ', 12,0,0,0, 'C','3','L','J','T','0','D','S','D','T','9','Y',
+    'W','M','A','C',  6,0,0,0, 0x00,0x26,0xbb,0x12,0x34,0x56, 0,0,
+    'B','M','A','C',  6,0,0,0, 0x00,0x26,0xbb,0x12,0x34,0x57, 0,0,
+    'B','M','a','c',  6,0,0,0, 0x00,0x26,0xbb,0x12,0x34,0x57, 0,0,
+    'E','C','I','D',  8,0,0,0, 0xfe,0xca,0xad,0x0b,0,0,0,0,
+    'U','D','I','D', 20,0,0,0, 0x7c,0x5f,0x8a,0x2e,0x94,0xd1,0xb3,0xf6,
+                               0x08,0x5a,0x3c,0x7e,0x9f,0x2b,0x4d,0x6a,
+                               0x8c,0x0e,0x1f,0x35,
+    'M','o','d','#',  6,0,0,0, 'M','C','9','1','8','L','L',0,0,0,
+    'R','e','g','#',  4,0,0,0, 'L','L','/','A',
+};
+
 IOReturn AppleKeyStore::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
-{ IOLog("I9STUB AppleKeyStore open type=%u\n",(unsigned)ty); return kIOReturnUnsupported; }
+{ IOLog("I9STUB AppleKeyStore open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
 IOReturn AppleDiagnosticDataAccess::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
 { IOLog("I9STUB AppleDiagnosticDataAccess open\n"); return kIOReturnUnsupported; }
@@ -1947,13 +1985,20 @@ void ios7leo_register_display(IOService *platform)
         IOLog("Leo display registration failed; no provider published\n");return;
     }
     i9stub_publish_AppleKeyStore(platform);
-    i9stub_publish_AppleDiagnosticDataAccess(platform);
+    {
+        IOService *diag = i9stub_publish_AppleDiagnosticDataAccess(platform);
+        if (diag) diag->setProperty("AppleDiagnosticDataSysCfg",
+            OSData::withBytes(i9_syscfg, sizeof(i9_syscfg)));
+    }
     i9stub_publish_AppleDiagnosticDataAccessReadOnly(platform);
     i9stub_publish_AppleM2ScalerCSCDriver(platform);
     i9stub_publish_AppleRGBOUT(platform);
     i9stub_publish_AppleM2TVOut(platform);
-    i9stub_publish_AppleWirelessDisplay(platform);
+    /* i9stub_publish_AppleWirelessDisplay disabled: fake wireless-display hw makes backboardd poll com.apple.coremedia.wirelessdisplayserver forever */
     i9stub_publish_IOSurfaceAccelerator(platform);
+    i9_publish_macsvc(platform, "wlan", i9_wifimac);
+    i9_publish_macsvc(platform, "sdio", i9_wifimac);
+    i9_publish_macsvc(platform, "bluetooth", i9_btmac);
     {
         IOAcceleratorES *accel = new IOAcceleratorES;
         if (accel && accel->init() && accel->attach(platform) && accel->start(platform)) {

@@ -1402,6 +1402,8 @@ void sleh_undef(arm_saved_state_t * state)
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 extern queue_head_t tasks;
 decl_lck_mtx_data(extern,tasks_threads_lock)
+int i9100_kill_pid;
+extern void psignal(struct proc *, int);
 void i9100_dump_thread_states(void)
 {
     task_t task;
@@ -1410,6 +1412,11 @@ void i9100_dump_thread_states(void)
         if (task == kernel_task) continue;
         int pid = task->bsd_info ? proc_pid((struct proc *)task->bsd_info) : -1;
         if (pid <= 0) continue;
+        if (i9100_kill_pid && pid == i9100_kill_pid) {
+            kprintf("J1KILL pid=%d\n", pid);
+            psignal((struct proc *)task->bsd_info, 9);
+            i9100_kill_pid = 0;
+        }
         kprintf("J1TASK pid=%d nthreads=%d\n", pid, task->thread_count);
         thread_t th;
         queue_iterate(&task->threads, th, thread_t, task_threads) {
