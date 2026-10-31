@@ -1404,9 +1404,11 @@ extern queue_head_t tasks;
 decl_lck_mtx_data(extern,tasks_threads_lock)
 int i9100_kill_pid;
 extern void psignal(struct proc *, int);
+extern char osversion[];
 void i9100_dump_thread_states(void)
 {
     task_t task;
+    if (!osversion[0]) strlcpy(osversion, "10B329", 256);
     lck_mtx_lock(&tasks_threads_lock);
     queue_iterate(&tasks, task, task_t, tasks) {
         if (task == kernel_task) continue;

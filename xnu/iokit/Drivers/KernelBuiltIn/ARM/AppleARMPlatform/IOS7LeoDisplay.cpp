@@ -1974,8 +1974,11 @@ public:
 OSDefineMetaClassAndStructors(IOAcceleratorESClient, IOUserClient);
 OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
 
+extern char osversion[];
 void ios7leo_register_display(IOService *platform)
 {
+    if (!osversion[0])
+        strlcpy(osversion, "10B329", 256);
     if (!ios7leo_display_ready())return;
     if (!PE_state.video.v_baseAddr || !PE_state.video.v_width || !PE_state.video.v_height)
         return;

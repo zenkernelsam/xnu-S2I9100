@@ -46,6 +46,7 @@
 PE_state_t PE_state;
 
 char firmware_version[32];
+extern char osversion[];
 int pe_initialized = 0;
 
 extern uint32_t debug_enabled;
@@ -176,6 +177,15 @@ void PE_init_platform(boolean_t vm_initialized, void *_args)
              */
             if (kSuccess == DTGetProperty(entry, "debug-enabled", (void **) &map, &size)) {
                 debug_enabled = 1;
+            }
+            /*
+             * kern.osversion for userland (iBoot normally passes the OS build
+             * version in /chosen; DataMigration et al compare it).
+             */
+            if (kSuccess == DTGetProperty(entry, "osversion", (void **) &fversion, &size)) {
+                if (fversion && (strlen(fversion) < 256)) {
+                    ovbcopy((void *) fversion, (void *) osversion, strlen(fversion) + 1);
+                }
             }
         }
 
