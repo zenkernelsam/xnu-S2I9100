@@ -1446,9 +1446,21 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
             if (valid) activeTransaction = 0;
             IOLockUnlock(transactionLock);
             static unsigned int shortLogs;
-            if (shortLogs++ < 8)
+            if (shortLogs++ < 8) {
                 IOLog("IOS7LAB framebuffer swap6 valid-transaction=%u transaction=%u surface=%u dims=%ux%u masks=%x,%x\n",
                       (unsigned)valid, w6[0], surf6, w6[6], w6[7], w6[28], w6[46]);
+                IOLog("IOS7LAB swap6 w6[0..15]=%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x\n",
+                      w6[0],w6[1],w6[2],w6[3],w6[4],w6[5],w6[6],w6[7],
+                      w6[8],w6[9],w6[10],w6[11],w6[12],w6[13],w6[14],w6[15]);
+                IOLog("IOS7LAB swap6 w6[16..31]=%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x\n",
+                      w6[16],w6[17],w6[18],w6[19],w6[20],w6[21],w6[22],w6[23],
+                      w6[24],w6[25],w6[26],w6[27],w6[28],w6[29],w6[30],w6[31]);
+                IOLog("IOS7LAB swap6 w6[32..47]=%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x,%x\n",
+                      w6[32],w6[33],w6[34],w6[35],w6[36],w6[37],w6[38],w6[39],
+                      w6[40],w6[41],w6[42],w6[43],w6[44],w6[45],w6[46],w6[47]);
+                IOLog("IOS7LAB swap6 w6[48..53]=%x,%x,%x,%x,%x,%x\n",
+                      w6[48],w6[49],w6[50],w6[51],w6[52],w6[53]);
+            }
             if (!valid) {
                 note->reason = IOS7LabSwapMetaTransaction;
                 return kIOReturnBadArgument;
