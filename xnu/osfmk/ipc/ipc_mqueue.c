@@ -367,6 +367,11 @@ ipc_mqueue_send(
 	mach_msg_timeout_t	send_timeout,
 	spl_t			s)
 {
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+	{ int j1p=proc_selfpid(); if (j1p>=17)
+	    kprintf("J1MQS pid=%d mq=%x id=%d\n", j1p, (unsigned)mqueue,
+	        kmsg && kmsg->ikm_header ? kmsg->ikm_header->msgh_id : -1); }
+#endif
 	int wresult;
 
 	/*
@@ -685,6 +690,10 @@ ipc_mqueue_receive(
 	mach_msg_timeout_t      rcv_timeout,
 	int                     interruptible)
 {
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+	{ int j1p=proc_selfpid(); if (j1p>=17)
+	    kprintf("J1MQR pid=%d mq=%x\n", j1p, (unsigned)mqueue); }
+#endif
 	wait_result_t           wresult;
         thread_t                self = current_thread();
         

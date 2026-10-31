@@ -644,7 +644,7 @@ mach_msg_overwrite_trap(
 	static unsigned int j1msgLogs;
 	{
 		int j1cpid = proc_selfpid();
-		if ((j1cpid >= 52) && j1msgLogs < 4000 && !(option & MACH_SEND_MSG)) {
+		if ((j1cpid >= 17) && j1msgLogs < 6000 && !(option & MACH_SEND_MSG)) {
 			j1msgLogs++;
 			kprintf("J1MSGR pid=%d opt=%x rname=%x tmo=%d\n", j1cpid, option, rcv_name, msg_timeout);
 		}
@@ -663,7 +663,7 @@ mach_msg_overwrite_trap(
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 		{
 			int j1cpid = proc_selfpid();
-			if ((j1cpid >= 52) && j1msgLogs < 4000) {
+			if ((j1cpid >= 17) && j1msgLogs < 6000) {
 				char j1tmp[57];
 				unsigned int j1n = kmsg->ikm_header->msgh_size, j1i;
 				j1msgLogs++;
@@ -672,8 +672,10 @@ mach_msg_overwrite_trap(
 				for (j1i = 0; j1i < j1n; j1i++)
 					if (j1tmp[j1i] < 0x20 || j1tmp[j1i] > 0x7e) j1tmp[j1i] = 0x2e;
 				j1tmp[j1n] = 0;
-				kprintf("J1MSGS pid=%d id=%d sz=%u b=%s\n", j1cpid,
-					kmsg->ikm_header->msgh_id, kmsg->ikm_header->msgh_size, j1tmp);
+				kprintf("J1MSGS pid=%d id=%d sz=%u rp=%x lp=%x b=%s\n", j1cpid,
+					kmsg->ikm_header->msgh_id, kmsg->ikm_header->msgh_size,
+					(unsigned)kmsg->ikm_header->msgh_remote_port,
+					(unsigned)kmsg->ikm_header->msgh_local_port, j1tmp);
 				if (kmsg->ikm_header->msgh_bits & 0x80000000U) {
 					unsigned int j1nd = *(unsigned int *)((char *)kmsg->ikm_header + 24);
 					if (j1nd > 0 && j1nd < 8) {

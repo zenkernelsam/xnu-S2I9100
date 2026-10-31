@@ -1029,9 +1029,14 @@ class AppleCLCD : public IOMobileFramebuffer {
     OSDeclareDefaultStructors(AppleCLCD);
 };
 
+class AppleM2CLCD : public AppleCLCD {
+    OSDeclareDefaultStructors(AppleM2CLCD);
+};
+
 OSDefineMetaClassAndStructors(IOS7LabFramebufferClient, IOUserClient);
 OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
 OSDefineMetaClassAndStructors(AppleCLCD, IOMobileFramebuffer);
+OSDefineMetaClassAndStructors(AppleM2CLCD, AppleCLCD);
 
 bool IOS7LabFramebufferClient::initWithTask(task_t task, void *security,
     UInt32 type, OSDictionary *properties)
@@ -1782,6 +1787,80 @@ IOReturn IOMobileFramebuffer::newUserClient(task_t task, void *security, UInt32 
     return kIOReturnSuccess;
 }
 
+
+class IOAcceleratorES;
+
+/* Minimal published stubs for services iOS6 daemons wait-match on.
+ * Each publishes <name> with a logging-only user client. */
+#define I9STUB(N) class N : public IOService {     OSDeclareDefaultStructors(N); public:     virtual bool start(IOService *provider) {         bool ok = IOService::start(provider);         setProperty("IOClass", #N);         registerService();         return ok;     }     virtual IOReturn newUserClient(task_t task, void *security, UInt32 type,         OSDictionary *properties, IOUserClient **handler); }; static void i9stub_publish_##N(IOService *platform) {     N *svc = new N;     if (svc && svc->init() && svc->attach(platform) && svc->start(platform)) {         svc->setName(#N);     } else if (svc) svc->release(); }
+
+I9STUB(AppleKeyStore)
+I9STUB(AppleDiagnosticDataAccess)
+I9STUB(AppleDiagnosticDataAccessReadOnly)
+I9STUB(AppleM2ScalerCSCDriver)
+I9STUB(AppleRGBOUT)
+I9STUB(AppleM2TVOut)
+I9STUB(AppleWirelessDisplay)
+I9STUB(IOSurfaceAccelerator)
+
+class I9StubClient : public IOUserClient {
+    OSDeclareDefaultStructors(I9StubClient);
+public:
+    virtual IOReturn clientClose(void) {
+        if (!isInactive()) terminate();
+        return kIOReturnSuccess;
+    }
+    virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+        IOExternalMethodDispatch *dispatch = 0, OSObject *target = 0, void *reference = 0)
+    {
+        IOLog("I9STUBC method=%u si=%u so=%u sti=%u sto=%u\n", selector,
+            args ? args->scalarInputCount : 0, args ? args->scalarOutputCount : 0,
+            args ? args->structureInputSize : 0, args ? args->structureOutputSize : 0);
+        if (args && args->structureOutput && args->structureOutputSize)
+            memset(args->structureOutput, 0, args->structureOutputSize);
+        return kIOReturnSuccess;
+    }
+};
+OSDefineMetaClassAndStructors(I9StubClient, IOUserClient);
+static IOReturn i9stub_client(task_t t, IOUserClient **h) {
+    I9StubClient *c = new I9StubClient;
+    if (!c) return kIOReturnNoMemory;
+    if (!c->initWithTask(t, 0, 0)) { c->release(); return kIOReturnError; }
+    *h = c; return kIOReturnSuccess;
+}
+OSDefineMetaClassAndStructors(AppleKeyStore, IOService);
+OSDefineMetaClassAndStructors(AppleDiagnosticDataAccess, IOService);
+OSDefineMetaClassAndStructors(AppleDiagnosticDataAccessReadOnly, IOService);
+OSDefineMetaClassAndStructors(AppleM2ScalerCSCDriver, IOService);
+OSDefineMetaClassAndStructors(AppleRGBOUT, IOService);
+OSDefineMetaClassAndStructors(AppleM2TVOut, IOService);
+OSDefineMetaClassAndStructors(AppleWirelessDisplay, IOService);
+OSDefineMetaClassAndStructors(IOSurfaceAccelerator, IOService);
+
+IOReturn AppleKeyStore::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleKeyStore open type=%u\n",(unsigned)ty); return kIOReturnUnsupported; }
+IOReturn AppleDiagnosticDataAccess::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleDiagnosticDataAccess open\n"); return kIOReturnUnsupported; }
+IOReturn AppleDiagnosticDataAccessReadOnly::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleDiagnosticDataAccessReadOnly open\n"); return kIOReturnUnsupported; }
+IOReturn IOSurfaceAccelerator::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB IOSurfaceAccelerator open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+IOReturn AppleM2ScalerCSCDriver::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleM2ScalerCSCDriver open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+IOReturn AppleRGBOUT::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleRGBOUT open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+IOReturn AppleM2TVOut::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleM2TVOut open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+IOReturn AppleWirelessDisplay::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleWirelessDisplay open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
 class IOAcceleratorESClient : public IOUserClient {
     OSDeclareDefaultStructors(IOAcceleratorESClient);
 public:
@@ -1857,7 +1936,7 @@ void ios7leo_register_display(IOService *platform)
     displayBudget=(uint32_t)budget;
     if(displayBudget<offscreenPixelBytes+4096U+65536U || !ios7lab_primary_ready())return;
     IOSurfaceRoot *surfaces = new IOCoreSurfaceRoot;
-    IOMobileFramebuffer *display = new AppleCLCD;
+    IOMobileFramebuffer *display = new AppleM2CLCD;
     bool surfacesAttached=false,displayAttached=false;
     bool ready=surfaces && display && surfaces->init() && display->init();
     if(ready){surfacesAttached=surfaces->attach(platform);displayAttached=display->attach(platform);ready=surfacesAttached&&displayAttached;}
@@ -1867,14 +1946,14 @@ void ios7leo_register_display(IOService *platform)
         if(display)display->release();if(surfaces)surfaces->release();
         IOLog("Leo display registration failed; no provider published\n");return;
     }
-    {
-        IOAcceleratorES *accel = new IOAcceleratorES;
-        if (accel && accel->init() && accel->attach(platform) && accel->start(platform)) {
-            IOLog("IOS7ACC accelerator attached\n");
-        } else if (accel) {
-            accel->release();
-        }
-    }
+    i9stub_publish_AppleKeyStore(platform);
+    i9stub_publish_AppleDiagnosticDataAccess(platform);
+    i9stub_publish_AppleDiagnosticDataAccessReadOnly(platform);
+    i9stub_publish_AppleM2ScalerCSCDriver(platform);
+    i9stub_publish_AppleRGBOUT(platform);
+    i9stub_publish_AppleM2TVOut(platform);
+    i9stub_publish_AppleWirelessDisplay(platform);
+    i9stub_publish_IOSurfaceAccelerator(platform);
     {
         IOAcceleratorES *accel = new IOAcceleratorES;
         if (accel && accel->init() && accel->attach(platform) && accel->start(platform)) {
@@ -1886,6 +1965,32 @@ void ios7leo_register_display(IOService *platform)
     surfaces->setName("IOCoreSurfaceRoot");
 #if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     surfaces->setProperty("IOS7LabBackend","J1 owned BGRA CPU surface / direct FB RGB565");
+    {
+        static const unsigned char i9edid[16] = { 0x49,0x39,0x31,0x30,0x00,0x00,0x4a,0x31,0x80,0x08,0x01,0xe0,0x03,0x20,0x42,0x10 };
+        display->setProperty("EDID UUID", OSData::withBytes(i9edid, sizeof(i9edid)));
+        OSDictionary *lim = OSDictionary::withCapacity(4);
+        if (lim) {
+            lim->setObject("RGBLayer_MinScaleFraction", OSNumber::withNumber(0x3E800000ULL, 32));
+            lim->setObject("RGBLayer_MaxScale", OSNumber::withNumber(0x40000000ULL, 32));
+            lim->setObject("YUVLayer_MinScaleFraction", OSNumber::withNumber(0x3E800000ULL, 32));
+            lim->setObject("YUVLayer_MaxScale", OSNumber::withNumber(0x40000000ULL, 32));
+            display->setProperty("IOMFBScalingLimits", lim);
+            lim->release();
+        }
+        OSDictionary *strd = OSDictionary::withCapacity(4);
+        if (strd) {
+            strd->setObject("StrideLinearHorizontal", OSNumber::withNumber(64ULL, 32));
+            strd->setObject("StrideLinearVertical", OSNumber::withNumber(64ULL, 32));
+            strd->setObject("StrideTiledHorizontal", OSNumber::withNumber(64ULL, 32));
+            strd->setObject("StrideTiledVertical", OSNumber::withNumber(64ULL, 32));
+            display->setProperty("DisplayPipeStrideRequirements", strd);
+            strd->release();
+        }
+        display->setProperty("DisplayPipePlaneBaseAlignment", OSNumber::withNumber(64ULL, 32));
+        display->setProperty("IOMFBMaxSrcPixels", OSNumber::withNumber(0x200000ULL, 32));
+        display->setProperty("IOSurfaceAccelerator", OSNumber::withNumber(1ULL, 32));
+        display->setProperty("display-parity", OSString::withCString("i9100-fimd"));
+    }
     display->setName("IOS7J1FB");display->setProperty("IOS7LabBackend","Samsung J1 DECON direct RGB565 480x800");
     surfaces->registerService();display->registerService();
     IOLog("J1 native display provider published480x800 BGRA row1920 bytes1536000; physicalRGB565 row960 separate; dynamicbudget=%u\n",displayBudget);

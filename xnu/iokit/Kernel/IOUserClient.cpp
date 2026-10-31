@@ -1641,6 +1641,7 @@ kern_return_t is_io_service_match_property_table(
 {
     CHECK( IOService, _service, service );
 
+
     kern_return_t	kr;
     OSObject *		obj;
     OSDictionary *	dict;
@@ -1796,6 +1797,14 @@ kern_return_t is_io_service_get_matching_service(
 /* IOS7LEO_WAIT_END */
         *service = IOService::copyMatchingService( dict );
 	kr = *service ? kIOReturnSuccess : kIOReturnNotFound;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        {
+            extern int proc_selfpid(void);
+            const char * i9r = *service ? ((IOService*)*service)->getName() : 0;
+            if (!i9r) i9r = *service ? "?" : "NULL";
+            kprintf("I9MATCHR pid=%d svc=%s\n", proc_selfpid(), i9r);
+        }
+#endif
 /* IOS7LEO_WAIT_BEGIN */
 #if defined(BOARD_CONFIG_QSD8250_LEO)
         ios7leo_wait_note(leo_wait,2,1,kr,*service != 0,0,0);
@@ -2682,6 +2691,15 @@ kern_return_t is_io_service_open_extended(
     bool	   disallowAccess;
 
     CHECK( IOService, _service, service );
+
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    {
+        extern int proc_selfpid(void);
+        const char * i9n = service->getName();
+        if (!i9n) i9n = "?";
+        kprintf("I9OPEN pid=%d svc=%s type=%u\n", proc_selfpid(), i9n, (unsigned int) connect_type);
+    }
+#endif
 
     do
     {
