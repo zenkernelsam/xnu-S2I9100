@@ -1802,6 +1802,7 @@ I9STUB(AppleRGBOUT)
 I9STUB(AppleM2TVOut)
 I9STUB(AppleWirelessDisplay)
 I9STUB(IOSurfaceAccelerator)
+I9STUB(IOAVController)
 
 class I9StubClient : public IOUserClient {
     OSDeclareDefaultStructors(I9StubClient);
@@ -1836,6 +1837,7 @@ OSDefineMetaClassAndStructors(AppleRGBOUT, IOService);
 OSDefineMetaClassAndStructors(AppleM2TVOut, IOService);
 OSDefineMetaClassAndStructors(AppleWirelessDisplay, IOService);
 OSDefineMetaClassAndStructors(IOSurfaceAccelerator, IOService);
+OSDefineMetaClassAndStructors(IOAVController, IOService);
 
 /* libMobileGestalt UDID derivation (iOS6 __computeUniqueDeviceID):
  *   UDID = SHA1( serial + ecid_decimal + wifiMAC + btMAC )
@@ -1845,6 +1847,16 @@ OSDefineMetaClassAndStructors(IOSurfaceAccelerator, IOService);
  * We have no radios in QEMU, so publish fake MAC services. */
 static const UInt8 i9_wifimac[6] = { 0x00, 0x26, 0xbb, 0x12, 0x34, 0x56 };
 static const UInt8 i9_btmac[6]   = { 0x00, 0x26, 0xbb, 0x12, 0x34, 0x57 };
+
+static void i9_publish_named(IOService *platform, const char *svcname)
+{
+    IOService *svc = new IOService;
+    if (svc && svc->init() && svc->attach(platform) && svc->start(platform)) {
+        svc->setName(svcname);
+        svc->registerService();
+        IOLog("I9NAMED %s published\n", svcname);
+    } else if (svc) svc->release();
+}
 
 static void i9_publish_macsvc(IOService *platform, const char *svcname,
                               const UInt8 mac[6])
@@ -1887,6 +1899,9 @@ IOReturn AppleDiagnosticDataAccessReadOnly::newUserClient(task_t t, void *s2, UI
 IOReturn IOSurfaceAccelerator::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
 { IOLog("I9STUB IOSurfaceAccelerator open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+IOReturn IOAVController::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB IOAVController open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
 IOReturn AppleM2ScalerCSCDriver::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
 { IOLog("I9STUB AppleM2ScalerCSCDriver open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
@@ -1996,6 +2011,9 @@ void ios7leo_register_display(IOService *platform)
     i9stub_publish_AppleM2TVOut(platform);
     /* i9stub_publish_AppleWirelessDisplay disabled: fake wireless-display hw makes backboardd poll com.apple.coremedia.wirelessdisplayserver forever */
     i9stub_publish_IOSurfaceAccelerator(platform);
+    i9stub_publish_IOAVController(platform);
+    i9_publish_named(platform, "displayport");
+    i9_publish_named(platform, "hdmi");
     i9_publish_macsvc(platform, "wlan", i9_wifimac);
     i9_publish_macsvc(platform, "sdio", i9_wifimac);
     i9_publish_macsvc(platform, "bluetooth", i9_btmac);
