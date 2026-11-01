@@ -516,5 +516,22 @@ void ios7leo_register_hid_touch(IOService *platform)
   service->registerService();service->notePublished();IOLog("IOS7LEO TOUCH published actual Type2A service\n");
  }else if(attached)service->detach(platform);
  service->release();
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+ /* backboardd hosts hidd-in-process and registers bootstrap name
+  * com.apple.iohideventsystem, but its internal IOHIDEventSystemClient
+  * still needs the kernel-side IOHIDEventSystem service to create event
+  * queues. Both backboardd and SpringBoard log
+  * "Unable to create event queue via hidd". Publish a second touch-queue
+  * instance under that name: same queue-map/notification-port ABI; the
+  * method() dispatch logs reveal whatever else the real client wants. */
+ {
+  IOHIDEventService *hub=new IOHIDEventService;
+  if(hub && hub->init() && hub->attach(platform) && hub->start(platform)){
+   hub->setName("IOHIDEventSystem");
+   hub->registerService();hub->notePublished();
+   IOLog("IOS7LEO IOHIDEventSystem hub published (queue ABI clone)\n");
+  }else if(hub){if(hub->getProvider())hub->detach(platform);hub->release();}
+ }
+#endif
 }
 #endif
