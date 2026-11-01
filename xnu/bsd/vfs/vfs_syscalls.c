@@ -3024,7 +3024,8 @@ open1(vfs_context_t ctx, struct nameidata *ndp, int uflags, struct vnode_attr *v
 	}
 
 	if ((error = vn_open_auth(ndp, &flags, vap))) {
-		if (ndp->ni_pathbuf[0] && i9_path_has(ndp->ni_pathbuf, "DataMigrat"))
+		if (ndp->ni_pathbuf[0] && (i9_path_has(ndp->ni_pathbuf, "DataMigrat") ||
+				i9_path_has(ndp->ni_pathbuf, "progressui") || i9_path_has(ndp->ni_pathbuf, "images-")))
 			kprintf("J1DMOPEN pid=%d err=%d path=%s\n", proc_selfpid(), error, ndp->ni_pathbuf);
 		if ((error == ENODEV || error == ENXIO) && (uu->uu_dupfd >= 0)){	/* XXX from fdopen */
 			if ((error = dupfdopen(fdp, indx, uu->uu_dupfd, flags, error)) == 0) {
@@ -3053,7 +3054,8 @@ open1(vfs_context_t ctx, struct nameidata *ndp, int uflags, struct vnode_attr *v
 			session_rele(sessp);
 		return (error);
 	}
-	if (ndp->ni_pathbuf[0] && i9_path_has(ndp->ni_pathbuf, "DataMigrat"))
+	if (ndp->ni_pathbuf[0] && (i9_path_has(ndp->ni_pathbuf, "DataMigrat") ||
+			i9_path_has(ndp->ni_pathbuf, "progressui") || i9_path_has(ndp->ni_pathbuf, "images-")))
 		kprintf("J1DMOPEN pid=%d ok path=%s\n", proc_selfpid(), ndp->ni_pathbuf);
 	uu->uu_dupfd = 0;
 	vp = ndp->ni_vp;

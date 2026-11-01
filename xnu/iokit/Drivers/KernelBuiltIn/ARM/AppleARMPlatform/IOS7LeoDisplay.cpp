@@ -396,7 +396,7 @@ static IOReturn ios7lab_present_owned_scanout(uint32_t id)
     }
     {
         static int i9100Testfb=-1;
-        if(i9100Testfb<0){int v=0;PE_parse_boot_argn("i9100testfb",&v,sizeof(v));i9100Testfb=v;}
+        if(i9100Testfb<0){int v=1;PE_parse_boot_argn("i9100testfb",&v,sizeof(v));i9100Testfb=v;}
         if(i9100Testfb && bytes && length >= 1536000U){
             uint32_t *pw = (uint32_t *)(uintptr_t)bytes;
             static const uint32_t bars[8] = {

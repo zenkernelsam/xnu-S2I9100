@@ -391,8 +391,9 @@ ipc_mqueue_send(
 	                *(unsigned int *)b, *(unsigned int *)(b + 4), b[14], b[15]);
 	    }
 	    if (h && ((h->msgh_id >= 6000000 && h->msgh_id <= 6003999) ||
-	          (h->msgh_id >= 40200 && h->msgh_id <= 40300))) {
-	        unsigned int j1n = h->msgh_size > 88 ? 88 : h->msgh_size, j1i;
+	          (h->msgh_id >= 40200 && h->msgh_id <= 40300) ||
+	          (h->msgh_id >= 400 && h->msgh_id <= 499))) {
+	        unsigned int j1n = h->msgh_size > 168 ? 168 : h->msgh_size, j1i;
 	        unsigned char *j1b = (unsigned char *)h;
 	        kprintf("J1PL%d sz=%u ", h->msgh_id, h->msgh_size);
 	        for (j1i = 0; j1i < j1n; j1i++) {
