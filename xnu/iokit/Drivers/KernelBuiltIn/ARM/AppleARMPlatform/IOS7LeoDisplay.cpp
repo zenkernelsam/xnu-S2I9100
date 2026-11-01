@@ -7,6 +7,8 @@
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/IOTimerEventSource.h>
+#include <IOKit/IOMessage.h>
+#include <IOKit/IOCommand.h>
 #include <libkern/OSAtomic.h>
 #include "IOS7LabSurfaceGeometry.h"
 #if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
@@ -1814,7 +1816,79 @@ class IOAcceleratorES;
  * Each publishes <name> with a logging-only user client. */
 #define I9STUB(N) class N : public IOService {     OSDeclareDefaultStructors(N); public:     virtual bool start(IOService *provider) {         bool ok = IOService::start(provider);         setProperty("IOClass", #N);         registerService();         return ok;     }     virtual IOReturn newUserClient(task_t task, void *security, UInt32 type,         OSDictionary *properties, IOUserClient **handler); }; static IOService *i9stub_publish_##N(IOService *platform) {     N *svc = new N;     if (svc && svc->init() && svc->attach(platform) && svc->start(platform)) {         svc->setName(#N);         return svc;     }     if (svc) svc->release();     return NULL; }
 
-I9STUB(AppleKeyStore)
+/* AppleKeyStore needs more than a logging stub: UserEventAgent's
+ * LockStateNotifier registers an IOKit interest notification on this
+ * service and reposts every messageClients() broadcast as
+ * com.apple.mobile.keybagd.lock_status. Real hardware broadcasts the
+ * initial state ("lock change 0" == unlocked) once the boot keybag is
+ * resolved; without it nothing ever learns the device is unlocked and
+ * SpringBoard never proceeds past its keybag wait. A fresh bag with no
+ * passcode reads unlocked, so broadcast change=0 shortly after start,
+ * re-fired a few times to cover late interest registration. */
+class AppleKeyStore : public IOService {
+    OSDeclareDefaultStructors(AppleKeyStore);
+    IOTimerEventSource *lockNotifyTimer;
+    unsigned lockNotifyCount;
+    unsigned lockNotifyPolls;
+    static void lockNotifyFired(OSObject *owner, IOTimerEventSource *sender);
+public:
+    virtual bool start(IOService *provider) {
+        bool ok = IOService::start(provider);
+        setProperty("IOClass", "AppleKeyStore");
+        registerService();
+        lockNotifyTimer = 0;
+        lockNotifyCount = 0;
+        lockNotifyPolls = 0;
+        lockNotifyTimer = IOTimerEventSource::timerEventSource(this,
+            &AppleKeyStore::lockNotifyFired);
+        IOWorkLoop *wl = getWorkLoop();
+        if (wl && lockNotifyTimer &&
+            wl->addEventSource(lockNotifyTimer) == kIOReturnSuccess)
+            lockNotifyTimer->setTimeoutMS(20000);
+        return ok;
+    }
+    virtual void free(void) {
+        if (lockNotifyTimer) {
+            lockNotifyTimer->cancelTimeout();
+            lockNotifyTimer->release();
+            lockNotifyTimer = 0;
+        }
+        IOService::free();
+    }
+    virtual IOReturn newUserClient(task_t task, void *security, UInt32 type,
+        OSDictionary *properties, IOUserClient **handler);
+};
+static IOService *i9stub_publish_AppleKeyStore(IOService *platform) {
+    AppleKeyStore *svc = new AppleKeyStore;
+    if (svc && svc->init() && svc->attach(platform) && svc->start(platform)) {
+        svc->setName("AppleKeyStore");
+        return svc;
+    }
+    if (svc) svc->release();
+    return NULL;
+}
+void AppleKeyStore::lockNotifyFired(OSObject *owner, IOTimerEventSource *sender)
+{
+    AppleKeyStore *self = OSDynamicCast(AppleKeyStore, owner);
+    if (!self) return;
+    /* Interest registrations land on this service's IOGeneralInterest
+     * property as an IOCommand chain. Poll until a listener exists —
+     * broadcasting earlier (e.g. during kernel init) is wasted. */
+    IOCommand *list = OSDynamicCast(IOCommand,
+        self->getProperty(gIOGeneralInterest));
+    if (!list || queue_empty(&list->fCommandChain)) {
+        if (++self->lockNotifyPolls < 400)
+            sender->setTimeoutMS(3000);
+        else
+            IOLog("I9STUB AppleKeyStore: no interest listener ever registered\n");
+        return;
+    }
+    IOLog("I9STUB AppleKeyStore: lock change 0 (unlocked) broadcast #%u\n",
+        self->lockNotifyCount + 1);
+    self->messageClients(iokit_vendor_specific_msg(0), (void *)0);
+    if (++self->lockNotifyCount < 8)
+        sender->setTimeoutMS(5000);
+}
 I9STUB(AppleDiagnosticDataAccess)
 I9STUB(AppleDiagnosticDataAccessReadOnly)
 I9STUB(AppleM2ScalerCSCDriver)
