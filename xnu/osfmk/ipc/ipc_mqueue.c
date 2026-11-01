@@ -368,9 +368,40 @@ ipc_mqueue_send(
 	spl_t			s)
 {
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
-	{ int j1p=proc_selfpid(); if (j1p>=17)
-	    kprintf("J1MQS pid=%d mq=%x id=%d\n", j1p, (unsigned)mqueue,
-	        kmsg && kmsg->ikm_header ? kmsg->ikm_header->msgh_id : -1); }
+	{ int j1p=proc_selfpid(); if (j1p>=17) {
+	    extern int proc_pid(struct proc *);
+	    mach_msg_header_t *h = kmsg ? kmsg->ikm_header : 0;
+	    int j1to = -2;
+	    if (h && h->msgh_remote_port) {
+	        ipc_port_t j1port = (ipc_port_t)h->msgh_remote_port;
+	        if (j1port->ip_receiver && j1port->ip_receiver->is_task) {
+	            void *j1bi = j1port->ip_receiver->is_task->bsd_info;
+	            if (j1bi) j1to = proc_pid((struct proc *)j1bi);
+	        }
+	    }
+	    kprintf("J1MQS pid=%d mq=%x id=%d sz=%u bits=%x rp=%x lp=%x to=%d\n", j1p, (unsigned)mqueue,
+	        h ? h->msgh_id : -1, h ? h->msgh_size : 0, h ? h->msgh_bits : 0,
+	        h ? (unsigned)h->msgh_remote_port : 0,
+	        h ? (unsigned)h->msgh_local_port : 0, j1to);
+	    if (h && (h->msgh_bits & 0x80000000U) && h->msgh_size >= 40) {
+	        /* body: ndesc(4) at +24; desc0 at +28: obj(4) pad(4) pad2(2) disp(1) type(1) */
+	        unsigned char *b = (unsigned char *)h + 24;
+	        if (b[15] == 0)
+	            kprintf("J1MQD ndesc=%u d0obj=%x d0disp=%02x d0type=%02x\n",
+	                *(unsigned int *)b, *(unsigned int *)(b + 4), b[14], b[15]);
+	    }
+	    if (h && ((h->msgh_id >= 6000000 && h->msgh_id <= 6003999) ||
+	          (h->msgh_id >= 40200 && h->msgh_id <= 40300))) {
+	        unsigned int j1n = h->msgh_size > 88 ? 88 : h->msgh_size, j1i;
+	        unsigned char *j1b = (unsigned char *)h;
+	        kprintf("J1PL%d sz=%u ", h->msgh_id, h->msgh_size);
+	        for (j1i = 0; j1i < j1n; j1i++) {
+	            kprintf("%02x", j1b[j1i]);
+	            if ((j1i & 15) == 15) kprintf("\nJ1PL%d+ ", h->msgh_id);
+	        }
+	        kprintf("\n");
+	    }
+	} }
 #endif
 	int wresult;
 

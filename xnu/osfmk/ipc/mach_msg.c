@@ -392,6 +392,14 @@ mach_msg_send(
 	}
 
 	mr = ipc_kmsg_send(kmsg, option & MACH_SEND_TIMEOUT, send_timeout);
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+	{ int j1p=proc_selfpid(); if (j1p>=17)
+	    kprintf("J1MSEND pid=%d id=%d rp=%x lp=%x rc=%x\n", j1p,
+	        kmsg->ikm_header ? kmsg->ikm_header->msgh_id : -1,
+	        kmsg->ikm_header ? (unsigned)kmsg->ikm_header->msgh_remote_port : 0,
+	        kmsg->ikm_header ? (unsigned)kmsg->ikm_header->msgh_local_port : 0,
+	        (unsigned)mr); }
+#endif
 	if (mr != MACH_MSG_SUCCESS) {
 	    mr |= ipc_kmsg_copyout_pseudo(kmsg, space, map, MACH_MSG_BODY_NULL);
 	    (void) memcpy((void *) msg, (const void *) kmsg->ikm_header, 
@@ -659,8 +667,23 @@ mach_msg_overwrite_trap(
 #if BOARD_CONFIG_QSD8250_LEO
         leo_rpc060_note(leo_rpc060_seq,mr==MACH_MSG_SUCCESS?LEO_RPC060_HEADER:LEO_RPC060_DONE,(uint32_t)mr,mr==MACH_MSG_SUCCESS?kmsg->ikm_header:0);
 #endif
-		if (mr != MACH_MSG_SUCCESS)
+		if (mr != MACH_MSG_SUCCESS) {
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+			int j1p = proc_selfpid();
+			if (j1p >= 17) {
+				mach_msg_header_t j1uh;
+				int j1id = -1; unsigned int j1rp = 0, j1lp = 0;
+				if (copyin(msg_addr, (char *)&j1uh, sizeof j1uh) == 0) {
+					j1id = j1uh.msgh_id;
+					j1rp = (unsigned)j1uh.msgh_remote_port;
+					j1lp = (unsigned)j1uh.msgh_local_port;
+				}
+				kprintf("J1GETFAIL pid=%d id=%d rp=%x lp=%x rc=%x\n",
+					j1p, j1id, j1rp, j1lp, (unsigned)mr);
+			}
+#endif
 			return mr;
+		}
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 		{
 			int j1cpid = proc_selfpid();
@@ -759,6 +782,15 @@ mach_msg_overwrite_trap(
         }
 #endif
 		mr = ipc_kmsg_send(kmsg, option & MACH_SEND_TIMEOUT, msg_timeout);
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+		if (mr != MACH_MSG_SUCCESS) {
+			int j1p = proc_selfpid();
+			if (j1p >= 17)
+				kprintf("J1SENDFAIL pid=%d id=%d rc=%x\n", j1p,
+					kmsg->ikm_header ? kmsg->ikm_header->msgh_id : -1,
+					(unsigned)mr);
+		}
+#endif
 #if BOARD_CONFIG_QSD8250_LEO
         leo_rpc060_note(leo_rpc060_seq,mr==MACH_MSG_SUCCESS?LEO_RPC060_SEND:LEO_RPC060_DONE,(uint32_t)mr,0);
 #endif

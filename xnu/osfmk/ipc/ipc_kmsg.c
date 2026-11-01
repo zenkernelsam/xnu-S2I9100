@@ -2021,6 +2021,14 @@ ipc_kmsg_copyin_port_descriptor(
             *mr = MACH_SEND_INVALID_RIGHT;
             return NULL;
         }
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        { int j1p=proc_selfpid(); if (j1p>=17 &&
+            kmsg && kmsg->ikm_header && kmsg->ikm_header->msgh_id >= 6003000 &&
+            kmsg->ikm_header->msgh_id < 6004000)
+            kprintf("J1DSCR pid=%d uname=%x disp=%x obj=%x id=%d\n", j1p,
+                (unsigned)name, (unsigned)user_disp, (unsigned)object,
+                kmsg->ikm_header->msgh_id); }
+#endif
 
         if ((result_disp == MACH_MSG_TYPE_PORT_RECEIVE) &&
                 ipc_port_check_circularity((ipc_port_t) object,
