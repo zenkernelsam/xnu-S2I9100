@@ -2033,9 +2033,73 @@ static const UInt8 i9_syscfg[] = {
     'R','e','g','#',  4,0,0,0, 'L','L','/','A',
 };
 
+/* AKS user client with a persistent fake system keybag. All-zero answers
+ * made keybagd run create->store->exit every time, and later clients
+ * never saw a bag so nothing reached a resolved lock state. Keeping the
+ * 3072-byte blob keybagd stores (method 17) and handing it back on fetch
+ * (method 27) plus a nonzero id from GetSystem (method 14) closes the
+ * loop: next client sees "system bag exists, unlocked" -> lock_status. */
+static uint64_t aks_sys_bag_id;
+static uint8_t  aks_sys_bag[3072];
+class I9AksClient : public IOUserClient {
+    OSDeclareDefaultStructors(I9AksClient);
+public:
+    virtual IOReturn clientClose(void) {
+        if (!isInactive()) terminate();
+        return kIOReturnSuccess;
+    }
+    virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+        IOExternalMethodDispatch *dispatch = 0, OSObject *target = 0, void *reference = 0)
+    {
+        IOLog("I9AKSC method=%u si=%u so=%u sti=%u sto=%u\n", selector,
+            args ? args->scalarInputCount : 0, args ? args->scalarOutputCount : 0,
+            args ? args->structureInputSize : 0, args ? args->structureOutputSize : 0);
+        if (!args) return kIOReturnSuccess;
+        switch (selector) {
+        case 14: /* KeyBagGetSystem -> nonzero bag id once one is stored */
+            if (args->scalarOutput && args->scalarOutputCount >= 1)
+                args->scalarOutput[0] = aks_sys_bag_id;
+            break;
+        case 27: /* fetch system bag blob */
+            if (args->structureOutput && args->structureOutputSize) {
+                if (aks_sys_bag_id)
+                    memcpy(args->structureOutput, aks_sys_bag, 3072);
+                else
+                    memset(args->structureOutput, 0, args->structureOutputSize);
+            }
+            break;
+        case 17: /* store system bag blob */
+            if (args->structureInput && args->structureInputSize >= 3072) {
+                memcpy(aks_sys_bag, args->structureInput, 3072);
+                aks_sys_bag_id = 1;
+                IOLog("I9AKSC stored 3072-byte system bag, id=1\n");
+            }
+            break;
+        case 8: /* extended lock state: {state=0 unlocked, bag} */
+            if (args->scalarOutput && args->scalarOutputCount >= 2) {
+                args->scalarOutput[0] = 0;
+                args->scalarOutput[1] = aks_sys_bag_id;
+            }
+            break;
+        default:
+            if (args->structureOutput && args->structureOutputSize)
+                memset(args->structureOutput, 0, args->structureOutputSize);
+            break;
+        }
+        return kIOReturnSuccess;
+    }
+};
+OSDefineMetaClassAndStructors(I9AksClient, IOUserClient);
+static IOReturn i9aks_client(task_t t, IOUserClient **h) {
+    I9AksClient *c = new I9AksClient;
+    if (!c) return kIOReturnNoMemory;
+    if (!c->initWithTask(t, 0, 0)) { c->release(); return kIOReturnError; }
+    *h = c; return kIOReturnSuccess;
+}
+
 IOReturn AppleKeyStore::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
-{ IOLog("I9STUB AppleKeyStore open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+{ IOLog("I9STUB AppleKeyStore open type=%u\n",(unsigned)ty); return i9aks_client(t, h); }
 IOReturn AppleDiagnosticDataAccess::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
 { IOLog("I9STUB AppleDiagnosticDataAccess open\n"); return kIOReturnUnsupported; }
