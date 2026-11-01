@@ -83,6 +83,8 @@ static void i9100_uart_putc_raw(char c)
 }
 void i9100_usbcdc_putc(char c);
 void i9100_usbcdc_init(void);
+void i9100_wdt_pet(void);
+void i9100_stage_mark(unsigned int);
 
 void ios7j1_debug_putc(char c)
 {
@@ -90,6 +92,11 @@ void ios7j1_debug_putc(char c)
  if(i9100_uart_map) i9100_uart_putc_raw(c);
  else i9100_uart_putc_phys(c);
  i9100_usbcdc_putc(c);
+ /* Unattended-recovery: console liveness doubles as the WDT
+  * heartbeat.  Armed only after usbcdc_setmap(); a hard hang
+  * stops prints and the ~21 s watchdog bites.  A silent-but-
+  * alive kernel could false-reset - acceptable for bring-up. */
+ i9100_wdt_pet();
 }
 static void i9100_puts(const char *s)
 {
@@ -973,6 +980,101 @@ ring_only:
 /* ml_io_map() became usable: swap the register base from the
  * identity-mapped PA to a proper kernel VA.  Any adopted session is
  * untouched - only the access path changes. */
+/* ---------------- I9100 unattended-recovery block -----------------
+ * lilac METHOD-DEBUG-PORTABLE mapped onto Exynos4210:
+ *   L0 recovery  — kernel panic writes markers then resets the SoC;
+ *                  a hardware WDT covers true hangs (pet in IRQ path).
+ *   L1 telemetry — PMU INFORM6/7 survive warm reset; a DDR scratch
+ *                  cell at DRAM top holds the panic caller.  uniLoader
+ *                  reads both on the next pass and reports over CDC.
+ * PS_HOLD (0x1002330C) is never written: power-off is the worst end. */
+#define I9100_PMU_PA		0x10020000U
+#define I9100_PMU_SWRESET	0x0400	/* write-anything -> reset */
+#define I9100_INFORM6		0x0818	/* stage marker (INFORM5 = CPU1 mbox) */
+#define I9100_INFORM7		0x081C	/* crash reason */
+#define I9100_WDT_PA		0x10060000U
+#define I9100_WTCON		0x00
+#define I9100_WTDAT		0x04
+#define I9100_WTCNT		0x08
+#define I9100_STAGE_MAGIC	0x77660000U
+#define I9100_REASON_PANIC	0x7766DEADU
+#define I9100_DDRCELL_PA	0x7FFE0000U	/* 128 KiB under DRAM top */
+#define I9100_DDRCELL_MAGIC	0xCAFEBABEU
+
+static vm_offset_t i9100_pmu_va, i9100_wdt_va, i9100_cell_va;
+static int i9100_wdt_live;
+
+static void i9100_recover_map(void)
+{
+	if (!i9100_pmu_va)
+		i9100_pmu_va = ml_io_map(I9100_PMU_PA, 0x4000);
+	if (!i9100_wdt_va)
+		i9100_wdt_va = ml_io_map(I9100_WDT_PA, 0x1000);
+	if (!i9100_cell_va)
+		i9100_cell_va = ml_io_map(I9100_DDRCELL_PA, 0x1000);
+}
+
+void i9100_stage_mark(unsigned int s)
+{
+	if (i9100_pmu_va)
+		*(volatile uint32_t *)(i9100_pmu_va + I9100_INFORM6) =
+			I9100_STAGE_MAGIC | (s & 0xFFFFU);
+}
+
+void i9100_wdt_arm(void)
+{
+	if (!i9100_wdt_va)
+		return;
+	/* Max s3c timeout (~21 s @100 MHz PCLK): prescaler 0xff, /128,
+	 * reset-enable + watchdog-enable.  Pet in ios7j1_debug_putc. */
+	*(volatile uint32_t *)(i9100_wdt_va + I9100_WTDAT) = 0xFFFF;
+	*(volatile uint32_t *)(i9100_wdt_va + I9100_WTCNT) = 0xFFFF;
+	*(volatile uint32_t *)(i9100_wdt_va + I9100_WTCON) = 0xFF39;
+	i9100_wdt_live = 1;
+}
+
+void i9100_wdt_pet(void)
+{
+	if (i9100_wdt_live && i9100_wdt_va)
+		*(volatile uint32_t *)(i9100_wdt_va + I9100_WTCNT) = 0xFFFF;
+}
+
+/* panic_epilogue hook: marker -> DDR cell -> CDC drain -> reset.
+ * Bounded everywhere; worst case still falls into the wfi spin. */
+void i9100_panic_reset(void)
+{
+	unsigned int i;
+	if (i9100_pmu_va) {
+		*(volatile uint32_t *)(i9100_pmu_va + I9100_INFORM7) =
+			I9100_REASON_PANIC;
+	}
+	if (i9100_cell_va) {
+		volatile uint32_t *c = (volatile uint32_t *)i9100_cell_va;
+		extern unsigned long panic_caller;
+		c[0] = I9100_DDRCELL_MAGIC;
+		c[1] = (uint32_t)panic_caller;
+		c[2] = i9100_pmu_va ?
+			*(volatile uint32_t *)(i9100_pmu_va + I9100_INFORM6) : 0;
+		__asm__ volatile("dsb sy" ::: "memory");
+	}
+	/* Drain the CDC ring: push whatever is queued for ~20 ms so the
+	 * panic text actually leaves the port before we die. */
+	for (i = 0; i < 40000; i++) {
+		i9100_usb_poll();
+		__asm__ volatile("nop");
+	}
+	/* WDT bite in ~0.5 s as belt: prescaler 0, /16, reset-enable. */
+	if (i9100_wdt_va) {
+		*(volatile uint32_t *)(i9100_wdt_va + I9100_WTDAT) = 0x1800;
+		*(volatile uint32_t *)(i9100_wdt_va + I9100_WTCNT) = 0x1800;
+		*(volatile uint32_t *)(i9100_wdt_va + I9100_WTCON) = 0x0029;
+	}
+	if (i9100_pmu_va)
+		*(volatile uint32_t *)(i9100_pmu_va + I9100_PMU_SWRESET) = 1;
+	for (;;)
+		__asm__ volatile("wfi");
+}
+
 void i9100_usbcdc_setmap(void)
 {
 	i9100_usb_map = ml_io_map(I9100_DWC2_PA, 0x4000);
@@ -981,6 +1083,9 @@ void i9100_usbcdc_setmap(void)
 		return;
 	}
 	i9100_usbcdc_init();
+	i9100_recover_map();
+	i9100_stage_mark(1);
+	i9100_wdt_arm();
 }
 
 /* Probe/adopt or hard-init.  Called lazily on the first putc and again
@@ -1022,6 +1127,9 @@ static vm_offset_t i9100_smp_pmu, i9100_smp_gicd, i9100_smp_scu,
 int i9100_smp_map(void)
 {
 	i9100_smp_pmu = ml_io_map(0x10020000, 0x4000); /* +0x2084/+0x2104 CPU1 config/status need >4KB */ 
+	if (!i9100_pmu_va)
+		i9100_pmu_va = i9100_smp_pmu;
+	i9100_stage_mark(2);
 	i9100_smp_gicd = ml_io_map(0x10490000, 0x1000);
 	i9100_smp_scu = ml_io_map(0x10500000, 0x1000);
 	i9100_smp_sysram_s = ml_io_map(0x02020000, 0x1000);

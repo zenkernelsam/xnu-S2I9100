@@ -308,6 +308,12 @@ panic_epilogue(spl_t	s)
 		return;
 	}
 	kdb_printf("panic: We are hanging here...\n");
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+	{
+		extern void i9100_panic_reset(void);
+		i9100_panic_reset();
+	}
+#endif
 	panic_stop();
 	/* NOTREACHED */
 }
