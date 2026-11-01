@@ -852,9 +852,16 @@ IOReturn IOS7LabSurfaceClient::externalMethod(uint32_t selector, IOExternalMetho
     if (!args) return kIOReturnBadArgument;
     if (logs++ < 96) {
         void *surfaceProc = ownerTask ? get_bsdtask_info(ownerTask) : 0;
-        IOLog("IOS7LAB surface method=%u pid=%d scalar-in=%u struct-in=%u scalar-out=%u struct-out=%u\n",
+        uint64_t sv0 = args->scalarInput && args->scalarInputCount ? args->scalarInput[0] : 0;
+        uint32_t sw0 = 0, sw1 = 0;
+        if (args->structureInput && args->structureInputSize >= 8) {
+            sw0 = ((const uint32_t *)args->structureInput)[0];
+            sw1 = ((const uint32_t *)args->structureInput)[1];
+        }
+        IOLog("IOS7LAB surface method=%u pid=%d scalar-in=%u sv0=%llx struct-in=%u sw=[%x %x] scalar-out=%u struct-out=%u\n",
               selector, surfaceProc ? proc_pid((struct proc *)surfaceProc) : -1,
-              args->scalarInputCount, args->structureInputSize, args->scalarOutputCount, args->structureOutputSize);
+              args->scalarInputCount, (unsigned long long)sv0, args->structureInputSize,
+              sw0, sw1, args->scalarOutputCount, args->structureOutputSize);
     }
     if (args->structureInputDescriptor || args->structureOutputDescriptor) return kIOReturnUnsupported;
     IOReturn result = kIOReturnUnsupported;
@@ -936,10 +943,12 @@ IOReturn IOS7LabSurfaceClient::externalMethod(uint32_t selector, IOExternalMetho
     /* Report actual unsupported native calls even after routine traffic has
      * exhausted its log budget. These are ordinary driver errors, bounded. */
     static unsigned int failures[32];
-    if (result != kIOReturnSuccess && selector < 32 && failures[selector]++ < 4)
-        IOLog("IOS7LAB surface failure selector=%u result=%x scalar-in=%u struct-in=%u scalar-out=%u struct-out=%u\n",
-            selector, result, args->scalarInputCount, args->structureInputSize,
+    if (result != kIOReturnSuccess && selector < 32 && failures[selector]++ < 4) {
+        uint64_t fv0 = args->scalarInput && args->scalarInputCount ? args->scalarInput[0] : 0;
+        IOLog("IOS7LAB surface failure selector=%u result=%x scalar-in=%u sv0=%llx struct-in=%u scalar-out=%u struct-out=%u\n",
+            selector, result, args->scalarInputCount, (unsigned long long)fv0, args->structureInputSize,
             args->scalarOutputCount, args->structureOutputSize);
+    }
     return result;
 }
 
@@ -1922,6 +1931,14 @@ public:
             args ? args->structureInputSize : 0, args ? args->structureOutputSize : 0);
         if (args && args->structureOutput && args->structureOutputSize)
             memset(args->structureOutput, 0, args->structureOutputSize);
+        /* Scalars were previously left uninitialized: callers used kernel
+         * garbage (e.g. 0x800219a5) as IOSurface IDs and poisoned the
+         * compositor.  Stubs have nothing real to report, so answer every
+         * scalar-output request with an explicit error instead. */
+        if (args && args->scalarOutputCount && args->scalarOutput) {
+            memset(args->scalarOutput, 0, args->scalarOutputCount * sizeof(uint64_t));
+            return kIOReturnNotFound;
+        }
         return kIOReturnSuccess;
     }
 };
