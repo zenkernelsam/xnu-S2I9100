@@ -1877,10 +1877,18 @@ void AppleKeyStore::lockNotifyFired(OSObject *owner, IOTimerEventSource *sender)
     IOCommand *list = OSDynamicCast(IOCommand,
         self->getProperty(gIOGeneralInterest));
     if (!list || queue_empty(&list->fCommandChain)) {
-        if (++self->lockNotifyPolls < 400)
+        /* No listener on IOGeneralInterest yet. Blind-fire every ~30s
+         * anyway: the notifier may sit on another interest type, or its
+         * plugin may load lazily after a state it can only learn from a
+         * broadcast. messageClients() with zero listeners is harmless. */
+        if (++self->lockNotifyPolls < 400) {
+            if (!(self->lockNotifyPolls % 10)) {
+                IOLog("I9STUB AppleKeyStore: blind lock change 0 #%u\n",
+                    self->lockNotifyPolls / 10);
+                self->messageClients(iokit_vendor_specific_msg(0), (void *)0);
+            }
             sender->setTimeoutMS(3000);
-        else
-            IOLog("I9STUB AppleKeyStore: no interest listener ever registered\n");
+        }
         return;
     }
     IOLog("I9STUB AppleKeyStore: lock change 0 (unlocked) broadcast #%u\n",
