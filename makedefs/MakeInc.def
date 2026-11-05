@@ -247,6 +247,12 @@ endif
 export DEFINES = -DAPPLE -DKERNEL -DKERNEL_PRIVATE -DXNU_KERNEL_PRIVATE \
        -DPRIVATE -D__MACHO__=1 -Dvolatile=__volatile $(IDENT) -DBOARD_CONFIG_$(MACHINE_CONFIG)
 
+# Linux/embedded hosts: TargetConditionals.h comes from the SDK
+# on macOS; this tree builds -nostdinc.
+ifeq ($(ARCH_CONFIG),ARM)
+export DEFINES += -DTARGET_OS_EMBEDDED=1
+endif
+
 #
 # Compiler command
 #
@@ -433,10 +439,19 @@ export CFLAGS_DEVELOPMENTX86_64 = -O2
 export CFLAGS_DEBUGX86_64 = -O0
 export CFLAGS_PROFILEX86_64 = -O2
 
+# Linux hosts: llvm-14 -mkernel/-fapple-kext at -O0 emits an extra
+# ldr for every extern global; -O1 is the first correct level.
+ifeq ($(UNAME_S),Linux)
+export CFLAGS_RELEASEARM = -O1
+export CFLAGS_DEVELOPMENTARM = -O1
+export CFLAGS_DEBUGARM = -O1
+export CFLAGS_PROFILEARM = -O1
+else
 export CFLAGS_RELEASEARM = -O0
 export CFLAGS_DEVELOPMENTARM = -O0
 export CFLAGS_DEBUGARM = -O0
 export CFLAGS_PROFILEARM = -O0
+endif
 
 export CFLAGS 	= $(CFLAGS_GEN) \
 		  -DMACHINE_CONFIG_$(MACHINE_CONFIG) \
@@ -529,7 +544,7 @@ export LDFLAGS_KERNEL_GEN = \
 	-Wl,-sectcreate,__PRELINK_STATE,__kernel,/dev/null \
         -Wl,-sectcreate,__PRELINK_STATE,__kexts,/dev/null \
 	-Wl,-sectcreate,__PRELINK_INFO,__info,/dev/null \
-	-Wl,-ld_classic \
+	-Wl,-new_linker \
 	-Wl,-pagezero_size,0x0 \
 	-Wl,-version_load_command \
 	-Wl,-function_starts

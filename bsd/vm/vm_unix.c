@@ -1172,7 +1172,12 @@ shared_region_copyin_mappings(
 	vm_size_t	mappings_size = 0;
 
 #if IOS7_COMPAT_PLATFORM
-    if (ios7lab_cache_abi()) {
+    /* Both the iOS7 dyld and the iOS<=6-era dyld pass mappings as the
+     * classic 32-byte wire record (three 64-bit fields + two prots). The
+     * kernel's native struct uses 32-bit mach_vm_* fields, so always
+     * decode the wire format; ios7lab_cache_abi() only used to select
+     * the validation bounds. */
+    {
         struct ios7lab_mapping_wire {
             uint64_t address, size, offset;
             uint32_t max_prot, init_prot;

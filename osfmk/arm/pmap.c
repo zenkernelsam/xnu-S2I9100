@@ -208,6 +208,10 @@ vm_page_t commpage;
 #if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
 /* PC lab compatibility alias for original iOS 7 ARMv7 userspace. */
 #define IOS7LAB_COMMPAGE_ALIAS 0xFFFF4000U
+/* iOS<=6-era ARMv7 userspace reads CPU capabilities from the shared page at
+ * 0xffff1000 (same layout, +0x20 = _COMM_PAGE_CPU_CAPABILITIES). Alias the
+ * same phys page there too so one kernel can A/B both userlands. */
+#define IOS7LAB_COMMPAGE_ALIAS6 0xFFFF1000U
 #endif
 uint64_t pmap_nesting_size_min = 0x8000000;
 uint64_t pmap_nesting_size_max = 0x8000000;
@@ -1812,7 +1816,7 @@ static pt_entry_t leo_pte_build(pmap_t map,vm_map_offset_t va,ppnum_t pn,vm_prot
     pt_entry_t value=((pn<<PAGE_SHIFT)&L2_ADDR_MASK)|L2_SMALL_PAGE;
     value|=pmap_vm_prot_to_page_flags(map,prot,wired,0);
     if(va==_COMM_PAGE_BASE_ADDRESS)value|=L2_ACCESS_USER;
-    if(map==kernel_pmap&&va==IOS7LAB_COMMPAGE_ALIAS)value|=L2_ACCESS_USER|L2_ACCESS_APX|L2_NX_BIT;
+    if(map==kernel_pmap&&(va==IOS7LAB_COMMPAGE_ALIAS||va==IOS7LAB_COMMPAGE_ALIAS6))value|=L2_ACCESS_USER|L2_ACCESS_APX|L2_NX_BIT;
     return value|pmap_get_cache_attributes(pn);
 }
 void pmap_expand(pmap_t,vm_offset_t);
@@ -3106,6 +3110,16 @@ void pmap_create_sharedpage(void)
     assert((lab_pte & (L2_ACCESS_USER | L2_ACCESS_APX | L2_NX_BIT)) ==
            (L2_ACCESS_USER | L2_ACCESS_APX | L2_NX_BIT));
     kprintf("IOS7LAB commpage alias 0xffff4000: same page, user read-only, XN\n");
+    /* Same page once more at the iOS<=6 user-visible address. */
+    assert(pmap_extract(kernel_pmap, IOS7LAB_COMMPAGE_ALIAS6) == 0);
+    pmap_enter(kernel_pmap, (vm_map_offset_t) IOS7LAB_COMMPAGE_ALIAS6,
+               commpage->phys_page, VM_PROT_READ, 0, FALSE, TRUE);
+    assert(pmap_extract(kernel_pmap, IOS7LAB_COMMPAGE_ALIAS6) ==
+           (commpage->phys_page << PAGE_SHIFT));
+    lab_pte = *(uint32_t *)pmap_pte(kernel_pmap, IOS7LAB_COMMPAGE_ALIAS6);
+    assert((lab_pte & (L2_ACCESS_USER | L2_ACCESS_APX | L2_NX_BIT)) ==
+           (L2_ACCESS_USER | L2_ACCESS_APX | L2_NX_BIT));
+    kprintf("IOS7LAB commpage alias 0xffff1000: same page, user read-only, XN\n");
 #endif
     return;
 }
@@ -3558,7 +3572,7 @@ kern_return_t pmap_enter_options(pmap_t pmap, vm_map_offset_t va, ppnum_t pa, vm
         if (va == _COMM_PAGE_BASE_ADDRESS)
             template_pte |= L2_ACCESS_USER;
 #if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
-        if (pmap == kernel_pmap && va == IOS7LAB_COMMPAGE_ALIAS)
+        if (pmap == kernel_pmap && (va == IOS7LAB_COMMPAGE_ALIAS || va == IOS7LAB_COMMPAGE_ALIAS6))
             template_pte |= L2_ACCESS_USER | L2_ACCESS_APX | L2_NX_BIT;
 #endif
 
@@ -3795,7 +3809,7 @@ kern_return_t pmap_enter_options(pmap_t pmap, vm_map_offset_t va, ppnum_t pa, vm
     if (va == _COMM_PAGE_BASE_ADDRESS)
         template_pte |= L2_ACCESS_USER;
 #if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
-    if (pmap == kernel_pmap && va == IOS7LAB_COMMPAGE_ALIAS)
+    if (pmap == kernel_pmap && (va == IOS7LAB_COMMPAGE_ALIAS || va == IOS7LAB_COMMPAGE_ALIAS6))
         template_pte |= L2_ACCESS_USER | L2_ACCESS_APX | L2_NX_BIT;
 #endif
 
