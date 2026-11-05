@@ -60,6 +60,8 @@ static unsigned int i9100_panic_reason, i9100_panic_reason_known;
 static char i9100_panic_text[768];
 
 void ios7i9100_fast_putc(char c);
+void i9100_usbcdc_putc(char c);
+void i9100_usbcdc_setmap(void);
 static void i9100_puts(const char *s);
 static void i9100_puthex(unsigned int v);
 
@@ -217,6 +219,7 @@ void ios7i9100_debug_putc(char c)
         i9100_uart_putc_raw(c);
     else
         i9100_uart_putc_phys(c);
+    i9100_usbcdc_putc(c);
 }
 
 static void i9100_puts(const char *s)
@@ -546,6 +549,7 @@ void PE_init_SocSupport_stub(void)
     if(!fb) fb=ml_io_map(i9100_fb_physical, 1536000);
     i9100_uart2_map=ml_io_map(I9100_UART2_PA, 4096);
     i9100_uart0_map=ml_io_map(I9100_UART0_PA, 4096);
+    i9100_usbcdc_setmap();
     if(!fb || (!i9100_uart2_map && !i9100_uart0_map)) ios7i9100_final_boundary(5);
 
     i9100_pixels=(volatile unsigned int *)fb;
