@@ -1717,7 +1717,7 @@ static void i9100_match_note(const char *what, const char *matching, long hit)
         return;
     if (i9100_match_logs++ >= 160)
         return;
-    char brief[121]; unsigned n = 0;
+    char brief[401]; unsigned n = 0;
     for (; matching && matching[n] && n < sizeof(brief) - 1; n++)
         brief[n] = (matching[n] == '\n' || matching[n] == '\t') ? ' ' : matching[n];
     brief[n] = 0;
