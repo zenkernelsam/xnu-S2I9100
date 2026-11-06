@@ -71,6 +71,12 @@ extern int proc_pid(struct proc *p);
 #define ANSI_COLOR_RESET   "\x1b[0m"
 
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+/* Live abort frame for the vm_map exec-fault forensic probe; set at
+ * sleh_abort entry for user-mode aborts only. */
+void *i9100_user_abort_ctx = 0;
+#endif
+
 /* IOS7LEO_DYLD_BEGIN */
 #if defined(BOARD_CONFIG_QSD8250_LEO)
 
@@ -78,8 +84,6 @@ extern int proc_pid(struct proc *p);
 #include <libkern/OSAtomic.h>
 #include <sys/errno.h>
 static volatile UInt32 ios7leo_dyld_phase;
-static task_t ios7leo_dyld_task;
-static arm_saved_state_t ios7leo_dyld_state;
 static boolean_t ios7leo_dyld_matches(thread_t thread,arm_saved_state_t *state,uint32_t instruction)
 {
     uint64_t info;
@@ -319,6 +323,14 @@ void sleh_abort(void *context, int reason)
     abort_information_context_t *arm_ctx =
         (abort_information_context_t *) context;
     thread_t thread = current_thread();
+
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    /* Publish the live abort frame so the vm_map exec-fault forensic
+     * probe can print the real faulting registers instead of the stale
+     * pcb copy (user_regs is only synced on return-to-user). */
+    extern void *i9100_user_abort_ctx;
+    i9100_user_abort_ctx = ((arm_ctx->cpsr & 0x1f) == 0x10) ? arm_ctx : 0;
+#endif
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
     extern void ios7i9100_abort_during_fatal(unsigned int,unsigned int,

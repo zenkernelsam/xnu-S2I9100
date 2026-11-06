@@ -9074,6 +9074,13 @@ submap_recurse:
 					entry->object.vm_object->ref_count,
 					entry->object.vm_object->resident_page_count,
 					(unsigned long long)entry->object.vm_object->vo_size);
+			{
+				extern void *i9100_user_abort_ctx;
+				const uint32_t *uc = (const uint32_t *)i9100_user_abort_ctx;
+				if (uc)
+					printf(" uctx pc=0x%x lr=0x%x sp=0x%x r12=0x%x far=0x%x fsr=0x%x",
+						uc[15], uc[14], uc[13], uc[12], uc[18], uc[17]);
+			}
 			printf("\n");
 		}
 
