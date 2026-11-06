@@ -9,6 +9,7 @@
 #include <IOKit/IOTimerEventSource.h>
 #include <libkern/OSAtomic.h>
 #include <libkern/c++/OSUnserialize.h>
+#include <IOKit/IODeviceTreeSupport.h>
 #include "IOS7LabSurfaceGeometry.h"
 #if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
 /* J1 backend: direct-FB present/ready/completed (see pe_exynos3475_j1.c). */
@@ -1621,6 +1622,16 @@ void ios7leo_register_display(IOService *platform)
             dp->release();
         } else
             IOLog("i9100 IODisplayParameters XML failed to parse\n");
+    }
+    /* backboardd name-matches "arm-io" and discovers the display from the
+     * device-tree plane underneath. Seat the service under the clcd node so
+     * it answers at IODeviceTree:/arm-io/clcd like on real iOS. */
+    {
+        IORegistryEntry *clcd = IORegistryEntry::fromPath("/arm-io/clcd", gIODTPlane);
+        if (clcd) {
+            display->attachToParent(clcd, gIODTPlane);
+            clcd->release();
+        }
     }
     surfaces->registerService();display->registerService();
     IOLog("i9100 native display provider published 480x800 BGRA row1920 bytes1536000; dynamicbudget=%u\n",displayBudget);
