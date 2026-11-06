@@ -340,7 +340,9 @@ EnterARM(lck_rw_lock_shared_to_exclusive)
     ands        r2, r1, r3
     beq         rwlsepanic
     bic         r1, r1, r3
-    LOAD_ADDR(r12, lck_rw_lock_shared_gen)
+    /* Contended upgrades must drop our reader and arbitrate the upgrade.
+     * lock_shared_gen merely acquires another read lock and returns void. */
+    LOAD_ADDR(r12, lck_rw_lock_shared_to_exclusive_gen)
     subs        r2, r2, #0x10000
     bxne        r12
     ands        r3, r1, #5
@@ -356,7 +358,11 @@ EnterARM(lck_rw_lock_shared_to_exclusive)
     mov         r0, #1
     bx          lr
 rwlsepanic:
-    mov         r1, r2
+    /* Keep the callsite and report the full lock word, not the masked
+     * reader count (which is necessarily zero on this path). */
+    stmfd       sp!, {r7,lr}
+    mov         r7, sp
+    mov         r2, r1
     mov         r1, r0
     adr         r0, lckReadToWritePanicString
     blx         _panic
@@ -739,4 +745,5 @@ EnterARM(hw_unlock_bit)
 
 LOAD_ADDR_GEN_DEF(thread_wakeup)
 LOAD_ADDR_GEN_DEF(lck_rw_lock_shared_gen)
+LOAD_ADDR_GEN_DEF(lck_rw_lock_shared_to_exclusive_gen)
 LOAD_ADDR_GEN_DEF(lck_rw_lock_exclusive_gen)
