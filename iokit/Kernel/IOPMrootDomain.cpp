@@ -28,7 +28,11 @@
  */
 #include <libkern/c++/OSKext.h>
 #include <libkern/c++/OSMetaClass.h>
+#include <libkern/c++/OSUnserialize.h>
 #include <libkern/OSAtomic.h>
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+#include "I9100SystemPowerProfiles.h"
+#endif
 #include <libkern/OSDebug.h>
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/IOCommandGate.h>
@@ -893,6 +897,27 @@ bool IOPMrootDomain::start( IOService * nub )
                         (thread_call_param_t) this);
     
     setProperty(kIOSleepSupportedKey, true);
+
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    /*
+     * Publish "SystemPowerProfiles" on the root domain.  The userland
+     * IOPMCopyPowerProfiles() reads this property; when absent it falls
+     * back to the powerd.bundle defaults plist, which SCF unserializes as
+     * immutable containers, and its helper then traps in
+     * CFDictionaryAddValue while adding per-source defaults (observed as
+     * repeated powerd kills on real hardware).  Registry objects
+     * deserialize mutable, so supplying the same profile table here keeps
+     * that code path on the mutable side, matching real iOS where the PM
+     * plugin publishes this property.
+     */
+    {
+        OSObject *profiles = OSUnserializeXML(i9100SystemPowerProfilesXML);
+        if (profiles) {
+            setProperty("SystemPowerProfiles", profiles);
+            profiles->release();
+        }
+    }
+#endif
 
     bzero(&gPMStats, sizeof(gPMStats));
 
