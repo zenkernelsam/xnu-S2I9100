@@ -119,6 +119,10 @@ static volatile unsigned int i9100_usb_h, i9100_usb_t;
  * Sequence numbers increase within a USB session; this is a local maintenance
  * protocol, not authentication. No allocator, printf or arbitrary MMIO verbs. */
 static char uctl_line[256], uctl_reply[64];
+/* read-memory staging: one snapshot buffer, drained in 64-byte EP1 packets
+ * ahead of the log ring so frame text cannot interleave with payload. */
+static unsigned char uctl_data[32768];
+static unsigned int uctl_doff, uctl_dlen;
 static char uctl_build[17] = "0000000000000000";
 static unsigned int uctl_used, uctl_len, uctl_last;
 static int uctl_drop, uctl_flight, uctl_action, uctl_enabled, uctl_started;
@@ -155,8 +159,43 @@ static const char *uctl_root_status(void)
 static void uctl_cancel(void)
 {
 	uctl_used = uctl_len = 0;
+	uctl_doff = uctl_dlen = 0;
 	uctl_drop = uctl_flight = uctl_action = 0;
 }
+
+/* Parse up to 8 hex digits; advances *pp past them. Returns 0 on empty. */
+static unsigned int uctl_hex(const char **pp)
+{
+	unsigned int v = 0, n = 0, c;
+	while (n < 8) {
+		c = (unsigned char)**pp;
+		if (c >= '0' && c <= '9') c -= '0';
+		else if (c >= 'a' && c <= 'f') c -= 'a' - 10;
+		else if (c >= 'A' && c <= 'F') c -= 'A' - 10;
+		else break;
+		v = (v << 4) | c; n++; (*pp)++;
+	}
+	return n ? v : 0;
+}
+
+static void uctl_hex8(char *out, unsigned int v)
+{
+	unsigned int i, c;
+	for (i = 0; i < 8; i++) {
+		c = (v >> (28 - i * 4)) & 0xf;
+		out[i] = c < 10 ? '0' + c : 'a' + c - 10;
+	}
+}
+
+#ifdef I9100_USB_SIM
+static const unsigned char *uctl_sim_mem; /* test supplies a DRAM stand-in */
+#define UCTL_PREAD(pa, dst, n) \
+	memcpy(dst, uctl_sim_mem + ((pa) - 0x40000000U), n)
+#else
+/* Direct map: kernel VA = PA + 0x80000000 covers all of DRAM. */
+#define UCTL_PREAD(pa, dst, n) \
+	memcpy(dst, (const void *)((pa) + 0x80000000U), n)
+#endif
 
 static void uctl_ready(void)
 {
@@ -202,6 +241,29 @@ static void uctl_command(void)
 			else {
 				uctl_action = !strcmp(verb, "reboot-download") ? 2 : 1;
 				answer = uctl_action == 2 ? "OK reboot-download" : "OK reboot";
+			}
+		} else if (!strncmp(verb, "read-memory ", 12)) {
+			/* read-memory <pa> <len>: snapshot DRAM [0x40000000,0x80000000)
+			 * into uctl_data, then stream raw bytes after the DATA header.
+			 * PA range only: no MMIO side effects, direct map always valid. */
+			const char *p = verb + 12;
+			unsigned int addr = uctl_hex(&p), len;
+			while (*p == ' ') p++;
+			len = uctl_hex(&p);
+			if (!uctl_enabled) answer = "ERR disabled";
+			else if (uctl_doff < uctl_dlen) answer = "ERR busy";
+			else if (!len || len > sizeof(uctl_data)) answer = "ERR len";
+			else if (addr < 0x40000000U || addr + len > 0x80000000U ||
+			         addr + len < addr) answer = "ERR addr";
+			else {
+				static char hdr[24];
+				UCTL_PREAD(addr, uctl_data, len);
+				uctl_doff = 0; uctl_dlen = len;
+				memcpy(hdr, "OK DATA ", 8);
+				uctl_hex8(hdr + 8, addr);
+				hdr[16] = ' ';
+				uctl_hex8(hdr + 17, len);
+				answer = hdr;
 			}
 		} else answer = "ERR verb";
 	}
@@ -581,16 +643,18 @@ static void i9100_usb_rxlvl(void)
 
 static void i9100_usb_drain(void)
 {
-	unsigned char pkt[64] = { 0 };
-	unsigned int n = 0, i, w, space;
+	unsigned char pkt[512] = { 0 };
+	unsigned int n = 0, i, w, space, pkts;
 
 	if (i9100_usb_busy1 || !i9100_usb_configured ||
-	    (!uctl_len && i9100_usb_h == i9100_usb_t))
+	    (!uctl_len && uctl_doff >= uctl_dlen &&
+	     i9100_usb_h == i9100_usb_t))
 		return;
 	space = UDTXFSTS(1) & 0xffff;
 	if (!space)
 		return;
-	n = uctl_len ? uctl_len : (i9100_usb_h - i9100_usb_t) & (UTXRING - 1);
+	n = uctl_len ? uctl_len : uctl_doff < uctl_dlen ?
+	    uctl_dlen - uctl_doff : (i9100_usb_h - i9100_usb_t) & (UTXRING - 1);
 	if (n > sizeof(pkt)) n = sizeof(pkt);
 	if (space < (n + 3) / 4) return;
 	if (uctl_len) {
@@ -598,11 +662,16 @@ static void i9100_usb_drain(void)
 		memcpy(pkt, uctl_reply, n);
 		uctl_len = 0;
 		uctl_flight = 1;
+	} else if (uctl_doff < uctl_dlen) {
+		memcpy(pkt, uctl_data + uctl_doff, n);
+		uctl_doff += n;
+		uctl_flight = 1;
 	} else for (i = 0; i < n; i++) {
 		pkt[i] = i9100_usb_ring[i9100_usb_t];
 		i9100_usb_t = (i9100_usb_t + 1) & (UTXRING - 1);
 	}
-	UDIEPTSIZ(1) = (1 << 19) | (1u << 29) | n;
+	pkts = (n + i9100_usb_bulk_mps - 1) / i9100_usb_bulk_mps;
+	UDIEPTSIZ(1) = (pkts << 19) | (1u << 29) | n;
 	UDIEPCTL(1) = (UDIEPCTL(1) & ~(UEPCTL_EPDIS | UEPCTL_SNAK |
 		UEPCTL_STALL)) | UEPCTL_EPENA | UEPCTL_CNAK;
 	for (i = 0; i < (n + 3) / 4; i++) {

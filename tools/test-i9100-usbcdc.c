@@ -164,6 +164,60 @@ static void control_tests(void)
     CHECK(pmu_count == 3 && pmu_values[0] == 0x12345678 && pmu_values[1] == 0x12345670);
 }
 
+static void readmem_tests(void)
+{
+    static unsigned char fake_dram[0x40000];
+    uctl_cancel(); uctl_last = 0; i9100_usb_busy1 = 0;
+    i9100_usb_configured = 1; uctl_enabled = 1;
+    UDTXFSTS(1) = 384; i9100_usb_h = i9100_usb_t = 0;
+    for (unsigned i = 0; i < sizeof(fake_dram); i++)
+        fake_dram[i] = (unsigned char)(i * 7u);
+    uctl_sim_mem = fake_dram;
+    command("I9CTL1 00000001 read-memory 40000010 80\n");
+    CHECK(uctl_dlen == 0x80 && uctl_doff == 0);
+    CHECK(strstr(uctl_reply, "OK DATA 40000010 00000080"));
+    CHECK(!memcmp(uctl_data, fake_dram + 0x10, 0x80));
+    /* While the header waits, a second request is rejected as busy. */
+    command("I9CTL1 00000002 read-memory 40000000 10\n");
+    CHECK(strstr(uctl_reply, "ERR busy") == NULL); /* reply slot busy: no new reply */
+    i9100_usb_busy1 = 0; i9100_usb_drain();
+    CHECK(uctl_flight && !uctl_len);          /* header packet in flight */
+    uctl_complete(UEPINT_XFC); i9100_usb_busy1 = 0;
+    /* Log ring must not interleave with payload chunks. */
+    i9100_usb_h = 32; memset(i9100_usb_ring, 0x55, 32);
+    i9100_usb_drain();
+    CHECK(uctl_flight && uctl_doff == 0x80 && i9100_usb_t == 0);
+    uctl_complete(UEPINT_XFC); i9100_usb_busy1 = 0;
+    /* Stream finished: ring resumes. */
+    i9100_usb_drain();
+    CHECK(i9100_usb_t == 32 && uctl_doff == 0x80);
+    /* Range/length gates. */
+    i9100_usb_h = i9100_usb_t = 0;
+    command("I9CTL1 00000003 read-memory 20000000 10\n");
+    CHECK(strstr(uctl_reply, "ERR addr"));
+    uctl_cancel();
+    command("I9CTL1 00000004 read-memory 40000000 9000\n");
+    CHECK(strstr(uctl_reply, "ERR len"));
+    uctl_cancel();
+    command("I9CTL1 00000005 read-memory 7ffffff0 40\n");
+    CHECK(strstr(uctl_reply, "ERR addr"));
+    uctl_cancel();
+    command("I9CTL1 00000006 read-memory 40000000 0\n");
+    CHECK(strstr(uctl_reply, "ERR len"));
+    uctl_cancel();
+    /* Busy mid-stream: header and one chunk sent, retry is rejected. */
+    command("I9CTL1 00000007 read-memory 40000100 400\n");
+    CHECK(uctl_dlen == 0x400);
+    i9100_usb_busy1 = 0; i9100_usb_drain();
+    uctl_complete(UEPINT_XFC); i9100_usb_busy1 = 0;
+    i9100_usb_drain();                        /* chunk 1 in flight */
+    CHECK(uctl_doff == 512);
+    uctl_complete(UEPINT_XFC); i9100_usb_busy1 = 0;
+    command("I9CTL1 00000008 read-memory 40000000 10\n");
+    CHECK(strstr(uctl_reply, "ERR busy"));
+    uctl_cancel();
+}
+
 int main(void)
 {
     i9100_usb_map = 1;
@@ -250,6 +304,7 @@ int main(void)
     CHECK(interrupts == 1);
     control_tests();
     root_tests();
+    readmem_tests();
     printf("kernel CDC: %u checks, %u failures (no hardware emulation)\n", checks, fails);
     return fails ? 1 : 0;
 }
