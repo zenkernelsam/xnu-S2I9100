@@ -318,7 +318,10 @@ bool IOHIDEventService::publishProperties(void)
  }else{
  setName("IOS7I9100Touch");setProperty("HIDServiceSupport",true);
  setProperty("IOS7LabBackend","GT-I9100 physical Atmel maXTouch native HID queue");
- setProperty("PrimaryUsagePage",13,32);setProperty("PrimaryUsage",4,32);
+ /* backboardd looks for the multitouch gesture source as
+  * {PrimaryUsage:4, HIDServiceSupport, PrimaryUsagePage:0xff00} — the
+  * Apple vendor-defined usage page, not generic Digitizers(0x0d). */
+ setProperty("PrimaryUsagePage",0xff00,32);setProperty("PrimaryUsage",4,32);
  setProperty("Built-In",true);setProperty("DisplayIntegrated",true);
  setProperty("Transport","I2C");setProperty("Product","GT-I9100 Atmel mXT224/224E");
  setProperty("TouchTransportReady",touchState.ready!=0);
