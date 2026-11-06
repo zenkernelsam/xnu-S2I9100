@@ -1582,11 +1582,12 @@ void ios7leo_register_display(IOService *platform)
     IOLog("J1 native display provider published480x800 BGRA row1920 bytes1536000; physicalRGB565 row960 separate; dynamicbudget=%u\n",displayBudget);
 #elif defined(BOARD_CONFIG_EXYNOS4210_I9100)
     surfaces->setProperty("IOS7LabBackend","i9100 owned BGRA CPU surface / direct FB RGB565");
-    /* iOS6 discovery mirrors real AppleCLCD: IOServiceMatching("IOMobile-
-     * Framebuffer") is an IOProviderClass match (already satisfied by class
-     * inheritance), while QuartzCore name-matches "AppleCLCD". The real
-     * registry name resolves to AppleCLCD, so name the provider the same. */
+    /* iOS6 backboardd finds the main display through an IOServiceFirstMatch
+     * notification on {backlight-control:true}, proven by live probes: no
+     * provider-class query for the framebuffer is ever issued. Without this
+     * property the notification never fires and the display stays closed. */
     display->setName("AppleCLCD");display->setProperty("IOS7LabBackend","Samsung Galaxy S2 FIMD direct RGB565 480x800");
+    display->setProperty("backlight-control",kOSBooleanTrue);
     surfaces->registerService();display->registerService();
     IOLog("i9100 native display provider published 480x800 BGRA row1920 bytes1536000; dynamicbudget=%u\n",displayBudget);
 #else
