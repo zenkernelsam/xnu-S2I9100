@@ -1922,6 +1922,28 @@ static kern_return_t internal_io_service_add_notification(
 	    continue;
 	}
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        {
+            char nt[33]; unsigned ni = 0;
+            for (; notification_type[ni] && ni < sizeof(nt) - 1; ni++)
+                nt[ni] = notification_type[ni];
+            nt[ni] = 0;
+            char tag[40]; ni = 0;
+            const char *w = "notify:";
+            for (; w[ni]; ni++) tag[ni] = w[ni];
+            unsigned ti = ni;
+            for (ni = 0; nt[ni] && ti < sizeof(tag) - 1; ni++) tag[ti++] = nt[ni];
+            tag[ti] = 0;
+            OSIterator *probe = IOService::getMatchingServices( dict );
+            unsigned cnt = 0;
+            if (probe) {
+                while (probe->getNextObject()) cnt++;
+                probe->release();
+            }
+            i9100_match_note(tag, matching, (long)cnt);
+        }
+#endif
+
 	if( (sym == gIOPublishNotification)
 	 || (sym == gIOFirstPublishNotification))
 	    userMsgType = kIOServicePublishNotificationType;
