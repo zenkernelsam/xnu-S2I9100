@@ -33,6 +33,9 @@
 #include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/IOKitKeys.h>
 #include <IOKit/IOPlatformExpert.h>
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+#include "../../pexpert/arm/i9100_root_wait.h"
+#endif
 
 extern "C" {
 
@@ -320,6 +323,27 @@ OSDictionary * IOOFPathMatching( const char * path, char * buf, int maxLen )
 }
 
 static int didRam = 0;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+static void *i9100_wait_root_media(void *cookie, unsigned int seconds)
+{
+    OSDictionary *matching = (OSDictionary *)cookie;
+    mach_timespec_t timeout = { seconds, 0 };
+    matching->retain(); /* waitForService consumes its matching reference */
+    IOService *media = IOService::waitForService(matching, &timeout);
+    if (!media) IOSleep(100); /* also bound CPU use if matching fails immediately */
+    return media;
+}
+static void i9100_report_root_state(void *, unsigned int state)
+{
+    i9100_usbcdc_set_root_state(state);
+    if (state == I9100_ROOT_WAITING)
+        IOLog("i9100 root: WAIT_ROOT; looking for matching root media\n");
+    else if (state == I9100_ROOT_MISSING)
+        IOLog("i9100 root: NO_ROOT; USB maintenance remains available; no automatic reset\n");
+    else
+        IOLog("i9100 root: MEDIA_FOUND; continuing normal mounting\n");
+}
+#endif
 static int rootMountTries = 0;
 
 kern_return_t IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
@@ -468,6 +492,9 @@ kern_return_t IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
 				rootName[3] = 0;								/* Build root name */
 				IOLog("BSD root: %s, major %d, minor %d\n", rootName, major(*root), minor(*root));
 				*oflags = 0;									/* Show that this is not network */
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+                i9100_usbcdc_set_root_state(I9100_ROOT_MEDIA_FOUND);
+#endif
 				goto iofrootx;									/* Join common exit... */
 			}
 			panic("IOFindBSDRoot: specified root memory device, %s, has not been configured\n", rdBootVar);	/* Not there */
@@ -528,6 +555,18 @@ kern_return_t IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
         }
     }
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    {
+        const struct i9100_root_wait_ops ops = {
+            matching, i9100_wait_root_media, i9100_report_root_state
+        };
+        service = (IOService *)i9100_wait_for_root(&ops);
+        /* Missing media never gets here. Preserve the old failure budget
+         * if mounting repeatedly rejects an actual discovered device. */
+        if (++rootMountTries == 30)
+            panic("Repeated root mount failures after media discovery");
+    }
+#else
     do {
 #if defined(BOARD_CONFIG_QSD8250_LEO)
         ios7leo_root_file_status();
@@ -560,6 +599,7 @@ kern_return_t IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
             }
 	}
     } while( !service);
+#endif
     matching->release();
 
     if ( service && mediaProperty ) {

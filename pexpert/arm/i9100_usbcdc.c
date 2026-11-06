@@ -11,6 +11,7 @@
 #include "i9100_timer.h"
 #endif
 #include <string.h>
+#include "i9100_root_wait.h"
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 
@@ -123,6 +124,22 @@ static unsigned int uctl_used, uctl_len, uctl_last;
 static int uctl_drop, uctl_flight, uctl_action, uctl_enabled, uctl_started;
 static int uctl_reset_action;
 static uint64_t uctl_reset_at;
+/* Atomic word snapshots on the single-core bring-up target; IRQ-side queries
+ * never acquire filesystem locks or allocate memory. */
+static volatile unsigned int i9100_root_state = I9100_ROOT_BOOTING;
+void i9100_usbcdc_set_root_state(unsigned int state)
+{
+	if (state <= I9100_ROOT_MEDIA_FOUND) i9100_root_state = state;
+}
+static const char *uctl_root_status(void)
+{
+	switch (i9100_root_state) {
+	case I9100_ROOT_WAITING: return "OK root=WAIT_ROOT";
+	case I9100_ROOT_MISSING: return "OK root=NO_ROOT";
+	case I9100_ROOT_MEDIA_FOUND: return "OK root=MEDIA_FOUND";
+	default: return "OK root=BOOTING";
+	}
+}
 #ifndef UCTL_NOW
 #define UCTL_NOW() I9100_get_timebase()
 #define UCTL_ACK_TICKS (I9100_MCT_HZ / 2U)
@@ -178,6 +195,8 @@ static void uctl_command(void)
 		uctl_last = seq;
 		if (!strcmp(verb, "ping") || !strcmp(verb, "status"))
 			answer = uctl_enabled ? "OK control=1" : "OK control=0";
+		else if (!strcmp(verb, "root-status"))
+			answer = uctl_root_status();
 		else if (!strcmp(verb, "reboot") || !strcmp(verb, "reboot-download")) {
 			if (!uctl_enabled || !i9100_pmu_map) answer = "ERR disabled";
 			else {

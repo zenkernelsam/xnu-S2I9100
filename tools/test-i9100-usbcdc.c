@@ -55,6 +55,49 @@ static void out(const char *s, unsigned n)
     if (uctl_started) CHECK(UDOEPTSIZ(1) == ((1u << 19) | i9100_usb_bulk_mps));
 }
 static void command(const char *s) { out(s, strlen(s)); }
+struct root_fixture { unsigned misses, calls, states[3], state_count; int media; };
+static void *root_wait(void *cookie, unsigned seconds)
+{
+    struct root_fixture *f=cookie;
+    CHECK(seconds == 5);
+    f->calls++;
+    return f->calls > f->misses ? &f->media : NULL;
+}
+static void root_report(void *cookie, unsigned state)
+{
+    struct root_fixture *f=cookie;
+    CHECK(f->state_count < 3);
+    f->states[f->state_count++]=state;
+    i9100_usbcdc_set_root_state(state);
+    if(state == I9100_ROOT_MISSING) {
+        CHECK(f->calls == 6);
+        command("I9CTL1 00000001 root-status\n");
+        const char *expected="\nI9CTL1 00000001 OK root=NO_ROOT\n";
+        CHECK(uctl_len == strlen(expected) && !memcmp(uctl_reply,expected,uctl_len));
+        CHECK(!uctl_action && !uctl_reset_action && !pmu_count);
+        uctl_cancel();
+    }
+}
+static void root_tests(void)
+{
+    const unsigned cases[]={0,2,5,6,29,30,80};
+    for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);i++) {
+        struct root_fixture f={0}; f.misses=cases[i];
+        struct i9100_root_wait_ops ops={&f,root_wait,root_report};
+        uctl_cancel();uctl_last=0;uctl_reset_action=0;pmu_count=0;
+        void *media=i9100_wait_for_root(&ops);
+        CHECK(media == &f.media && f.calls == f.misses+1);
+        CHECK(f.states[0] == I9100_ROOT_WAITING);
+        CHECK(f.state_count == (f.misses >= 6 ? 3U : 2U));
+        CHECK(f.states[f.state_count-1] == I9100_ROOT_MEDIA_FOUND);
+        command("I9CTL1 00000002 root-status\n");
+        const char *expected="\nI9CTL1 00000002 OK root=MEDIA_FOUND\n";
+        CHECK(uctl_len == strlen(expected) && !memcmp(uctl_reply,expected,uctl_len));
+        CHECK(!pmu_count);
+    }
+    i9100_usbcdc_set_root_state(99);
+    CHECK(i9100_root_state == I9100_ROOT_MEDIA_FOUND);
+}
 static void control_tests(void)
 {
     uctl_cancel(); uctl_last = 0; i9100_usb_busy1 = 0;
@@ -206,6 +249,7 @@ int main(void)
     CHECK(i9100_usb_t == 7);
     CHECK(interrupts == 1);
     control_tests();
+    root_tests();
     printf("kernel CDC: %u checks, %u failures (no hardware emulation)\n", checks, fails);
     return fails ? 1 : 0;
 }
