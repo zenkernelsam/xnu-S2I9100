@@ -1683,6 +1683,48 @@ kern_return_t is_io_service_match_property_table_ool(
     return( kr );
 }
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+/* Display-discovery forensics: record who queries the registry for what.
+ * backboardd/SpringBoard get full coverage; everyone else is logged only for
+ * display-related match dictionaries, capped so noise stays bounded. */
+static unsigned i9100_match_logs;
+static bool i9100_has(const char *s, const char *needle)
+{
+    if (!s || !needle || !*needle)
+        return false;
+    for (; *s; s++) {
+        const char *a = s, *b = needle;
+        while (*b && *a == *b) { a++; b++; }
+        if (!*b)
+            return true;
+    }
+    return false;
+}
+static bool i9100_match_interesting(const char *who, const char *matching)
+{
+    if (i9100_has(who, "backboard") || i9100_has(who, "SpringBoard"))
+        return true;
+    return i9100_has(matching, "CLCD") || i9100_has(matching, "ramebuffer") ||
+           i9100_has(matching, "RGBOUT") || i9100_has(matching, "TVOut") ||
+           i9100_has(matching, "CoreSurface") || i9100_has(matching, "hosen") ||
+           i9100_has(matching, "isplay") || i9100_has(matching, "Mali");
+}
+static void i9100_match_note(const char *what, const char *matching, long hit)
+{
+    if (i9100_match_logs++ >= 96)
+        return;
+    char who[17]; bzero(who, sizeof(who));
+    proc_selfname(who, sizeof(who) - 1);
+    if (!i9100_match_interesting(who, matching))
+        return;
+    char brief[121]; unsigned n = 0;
+    for (; matching && matching[n] && n < sizeof(brief) - 1; n++)
+        brief[n] = (matching[n] == '\n' || matching[n] == '\t') ? ' ' : matching[n];
+    brief[n] = 0;
+    IOLog("i9100match %s %s hit=%ld %s\n", who, what, hit, brief);
+}
+#endif
+
 /* Routine io_service_get_matching_services */
 kern_return_t is_io_service_get_matching_services(
 	mach_port_t master_port,
@@ -1699,6 +1741,21 @@ kern_return_t is_io_service_get_matching_services(
     obj = OSUnserializeXML( matching );
 
     if( (dict = OSDynamicCast( OSDictionary, obj))) {
+/* IOS7LEO_WAIT_BEGIN */
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        {
+            /* count matches independently; the returned iterator is left for
+             * the caller untouched */
+            OSIterator *probe = IOService::getMatchingServices( dict );
+            unsigned cnt = 0;
+            if (probe) {
+                while (probe->getNextObject()) cnt++;
+                probe->release();
+            }
+            i9100_match_note("services", matching, (long)cnt);
+        }
+#endif
+/* IOS7LEO_WAIT_END */
 /* IOS7LEO_WAIT_BEGIN */
 #if defined(BOARD_CONFIG_QSD8250_LEO)
         unsigned leo_wait = ios7leo_wait_claim(ios7leo_wait_dictionary(dict));
@@ -1764,6 +1821,13 @@ kern_return_t is_io_service_get_matching_service(
 
     if( (dict = OSDynamicCast( OSDictionary, obj))) {
 /* IOS7LEO_WAIT_BEGIN */
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        {
+            IOService *probe = IOService::copyMatchingService( dict );
+            i9100_match_note("service", matching, (long)(probe != 0));
+            if (probe) probe->release();
+        }
+#endif
 #if defined(BOARD_CONFIG_QSD8250_LEO)
         unsigned leo_wait = ios7leo_wait_claim(ios7leo_wait_dictionary(dict));
         ios7leo_wait_note(leo_wait,2,0,0,0,0,0);
@@ -2201,6 +2265,10 @@ kern_return_t is_io_registry_entry_from_path(
         return( kIOReturnNotPrivileged);
 
     entry = IORegistryEntry::fromPath( path );
+
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    i9100_match_note("frompath", path, (long)(entry != 0));
+#endif
 
     *registry_entry = entry;
 
