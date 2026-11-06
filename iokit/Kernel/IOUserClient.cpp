@@ -1592,6 +1592,9 @@ kern_return_t is_io_object_get_retain_count(
 }
 
 /* Routine io_iterator_next */
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+static bool i9100_has(const char *s, const char *needle);
+#endif
 kern_return_t is_io_iterator_next(
 	io_object_t iterator,
 	io_object_t *object )
@@ -1601,6 +1604,25 @@ kern_return_t is_io_iterator_next(
     CHECK( OSIterator, iterator, iter );
 
     obj = iter->getNextObject();
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    {
+        static unsigned iter_logs;
+        char who[17]; bzero(who, sizeof(who));
+        proc_selfname(who, sizeof(who) - 1);
+        if ((i9100_has(who, "backboard") || i9100_has(who, "SpringBoard")) &&
+            iter_logs++ < 80) {
+            IORegistryEntry *re = OSDynamicCast(IORegistryEntry, obj);
+            const OSSymbol *nm = re ? re->copyName() : 0;
+            const OSSymbol *lc = re ? re->copyLocation() : 0;
+            const char *en = nm ? nm->getCStringNoCopy() : "?";
+            const char *el = lc ? lc->getCStringNoCopy() : "";
+            IOLog("i9100iter %s name=%s loc=%s class=%s\n", who, en, el,
+                  obj ? obj->getMetaClass()->getClassName() : "end");
+            if (nm) nm->release();
+            if (lc) lc->release();
+        }
+    }
+#endif
     if( obj) {
 	obj->retain();
 	*object = obj;
