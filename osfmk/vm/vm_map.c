@@ -9076,10 +9076,27 @@ submap_recurse:
 					(unsigned long long)entry->object.vm_object->vo_size);
 			{
 				extern void *i9100_user_abort_ctx;
+				extern unsigned int ml_phys_read(vm_offset_t);
 				const uint32_t *uc = (const uint32_t *)i9100_user_abort_ctx;
+				thread_t th = current_thread();
+				ppnum_t pn;
+				int i;
 				if (uc)
 					printf(" uctx pc=0x%x lr=0x%x sp=0x%x r12=0x%x far=0x%x fsr=0x%x",
 						uc[15], uc[14], uc[13], uc[12], uc[18], uc[17]);
+				if (th && th->map && th->map->pmap) {
+					pn = pmap_find_phys(th->map->pmap, (addr64_t)vaddr);
+					if (pn) {
+						vm_offset_t pa = ((vm_offset_t)pn) << 12;
+						vm_offset_t fo = (vm_offset_t)vaddr & 0xff0;
+						printf(" phys=0x%x page:", (unsigned int)pa);
+						for (i = 0; i < 16; i++)
+							printf(" %08x", ml_phys_read(pa + i * 4));
+						printf(" at-fault(%x):", (unsigned int)fo);
+						for (i = -4; i < 4; i++)
+							printf(" %08x", ml_phys_read(pa + fo + i * 4));
+					}
+				}
 			}
 			printf("\n");
 		}
