@@ -8,6 +8,7 @@
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
 #include <machine/machine_routines.h>
+#include "i9100_timer.h"
 #endif
 #include <string.h>
 
@@ -120,6 +121,12 @@ static char uctl_line[256], uctl_reply[64];
 static char uctl_build[17] = "0000000000000000";
 static unsigned int uctl_used, uctl_len, uctl_last;
 static int uctl_drop, uctl_flight, uctl_action, uctl_enabled, uctl_started;
+static int uctl_reset_action;
+static uint64_t uctl_reset_at;
+#ifndef UCTL_NOW
+#define UCTL_NOW() I9100_get_timebase()
+#define UCTL_ACK_TICKS (I9100_MCT_HZ / 2U)
+#endif
 
 #ifndef UPMU_WRITE
 #define UPMU_WRITE(off, value) \
@@ -136,7 +143,7 @@ static void uctl_cancel(void)
 
 static void uctl_ready(void)
 {
-	if (!uctl_started) return;
+	if (!uctl_started || uctl_reset_action) return;
 	const char *s = uctl_enabled ? "\nI9CTL1 READY control=1\n" :
 		"\nI9CTL1 READY control=0\n";
 	if (!uctl_len && !uctl_flight) {
@@ -189,7 +196,7 @@ static void uctl_command(void)
 
 static void uctl_byte(unsigned char c)
 {
-	if (!uctl_started) return;
+	if (!uctl_started || uctl_reset_action) return;
 	if (c == '\n') {
 		if (!uctl_drop) uctl_command();
 		uctl_used = 0;
@@ -210,11 +217,25 @@ static void uctl_complete(unsigned int status)
 	if (!(status & UEPINT_XFC) || !uctl_flight) return;
 	uctl_flight = uctl_action = 0;
 	if (!action || !uctl_enabled || !i9100_pmu_map) return;
-	/* The host ACKed this response on USB before we touch the reset registers.
-	 * Do NOT copy S-Boot's unrelated write to physical 0x40000000. */
+	/* USB ACK is earlier than a synchronous Windows ReadFile completion.
+	 * Commit once, then allow the 250 ms reader to collect it before reset.
+	 * DTR close/USB teardown after the ACK must not cancel this committed action. */
+	uctl_reset_action = action;
+	uctl_reset_at = UCTL_NOW() + UCTL_ACK_TICKS;
+}
+
+static void uctl_reset_poll(void)
+{
+	int action = uctl_reset_action;
+	if (!action || UCTL_NOW() < uctl_reset_at) return;
+	uctl_reset_action = 0;
+	/* S-Boot check_reboot reads INFORM3, verifies 0x12345670 in its high
+	 * bits and consumes the low nibble: 1 requests download, 0 normal.
+	 * INFORM2 alone only supplied the reboot marker. Never clear kernel RAM. */
 	(void)ml_set_interrupts_enabled(FALSE);
 	UCTL_BARRIER();
-	UPMU_WRITE(0x808, action == 2 ? 0x12345678 : 0);
+	UPMU_WRITE(0x808, 0x12345678);
+	UPMU_WRITE(0x80c, action == 2 ? 0x12345671 : 0x12345670);
 	UCTL_BARRIER();
 	UPMU_WRITE(0x400, 1);
 	UCTL_BARRIER();
@@ -580,6 +601,7 @@ static void i9100_usb_poll(void)
 
 	if (!i9100_usb_probed)
 		return;
+	uctl_reset_poll();
 	st = UGINTSTS;
 	if (st & UGINT_USBRST) {
 		UGINTSTS = UGINT_USBRST;

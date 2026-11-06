@@ -18,6 +18,9 @@ static vm_offset_t ml_io_map(vm_offset_t p, unsigned n)
 #define UREG(off) regs[(off) / 4]
 #define URXFIFO() rx[rx_pos++]
 static unsigned pmu_offsets[4], pmu_values[4], pmu_count, barriers, halts;
+static uint64_t fake_ticks;
+#define UCTL_NOW() fake_ticks
+#define UCTL_ACK_TICKS 12000000U
 #define UPMU_WRITE(off, value) do { pmu_offsets[pmu_count] = off; pmu_values[pmu_count++] = value; } while (0)
 #define UCTL_BARRIER() (++barriers)
 #define UCTL_HALT() (++halts)
@@ -103,13 +106,19 @@ static void control_tests(void)
     i9100_usb_configured = 1; i9100_usb_h = i9100_usb_t = 0;
     command("I9CTL1 0000000a reboot-download\n"); i9100_usb_drain();
     uctl_complete(UEPINT_XFC);
-    CHECK(pmu_count == 2 && pmu_offsets[0] == 0x808 && pmu_values[0] == 0x12345678);
-    CHECK(pmu_offsets[1] == 0x400 && pmu_values[1] == 1 && barriers == 3 && halts == 1);
+    CHECK(!pmu_count && uctl_reset_action == 2);
+    uctl_cancel(); /* normal host close after receiving the ACK */
+    fake_ticks += UCTL_ACK_TICKS - 1; uctl_reset_poll(); CHECK(!pmu_count);
+    fake_ticks++; uctl_reset_poll();
+    CHECK(pmu_count == 3 && pmu_offsets[0] == 0x808 && pmu_values[0] == 0x12345678);
+    CHECK(pmu_offsets[1] == 0x80c && pmu_values[1] == 0x12345671);
+    CHECK(pmu_offsets[2] == 0x400 && pmu_values[2] == 1 && barriers == 3 && halts == 1);
     CHECK(!interrupts);
-    uctl_complete(UEPINT_XFC); CHECK(pmu_count == 2); /* no duplicate reset */
+    uctl_complete(UEPINT_XFC); uctl_reset_poll(); CHECK(pmu_count == 3);
     i9100_usb_busy1 = 0; pmu_count = 0;
     command("I9CTL1 0000000b reboot\n"); i9100_usb_drain(); uctl_complete(UEPINT_XFC);
-    CHECK(pmu_count == 2 && pmu_values[0] == 0);
+    fake_ticks += UCTL_ACK_TICKS; uctl_reset_poll();
+    CHECK(pmu_count == 3 && pmu_values[0] == 0x12345678 && pmu_values[1] == 0x12345670);
 }
 
 int main(void)
