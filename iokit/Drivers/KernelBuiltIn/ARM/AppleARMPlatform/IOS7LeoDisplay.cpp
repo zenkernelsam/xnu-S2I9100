@@ -1593,8 +1593,10 @@ void ios7leo_register_display(IOService *platform)
      * IODisplayParameters on the display service (live probe evidence).
      * Publish the retail-shaped plist so the discovery chain continues. */
     {
+        /* OSUnserializeXML accepts a bare container, not a <plist> wrapper —
+         * a wrapper silently parses to NULL and the property never lands. */
         static const char i9100DisplayParametersXML[] =
-            "<plist version=\"1.0\"><dict>"
+            "<dict>"
             "<key>brightness</key><dict>"
             "<key>min</key><integer>0</integer>"
             "<key>max</key><integer>255</integer>"
@@ -1610,7 +1612,7 @@ void ios7leo_register_display(IOService *platform)
             "<key>display</key><dict>"
             "<key>brightness-adjustment</key><real>1.0</real>"
             "</dict>"
-            "</dict></plist>";
+            "</dict>";
         OSObject *dp = OSUnserializeXML(i9100DisplayParametersXML);
         if (dp) {
             display->setProperty("IODisplayParameters", dp);
