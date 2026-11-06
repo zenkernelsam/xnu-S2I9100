@@ -7,6 +7,8 @@
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/IOTimerEventSource.h>
+#include <IOKit/IOMessage.h>
+#include <IOKit/IOCommand.h>
 #include <libkern/OSAtomic.h>
 #include <libkern/c++/OSUnserialize.h>
 #include <IOKit/IODeviceTreeSupport.h>
@@ -1551,6 +1553,392 @@ IOReturn IOMobileFramebuffer::newUserClient(task_t task, void *security, UInt32 
     return kIOReturnSuccess;
 }
 
+class IOAcceleratorES;
+
+/* Minimal published stubs for services iOS6 daemons wait-match on.
+ * Each publishes <name> with a logging-only user client. */
+#define I9STUB(N) class N : public IOService {     OSDeclareDefaultStructors(N); public:     virtual bool start(IOService *provider) {         bool ok = IOService::start(provider);         setProperty("IOClass", #N);         registerService();         return ok;     }     virtual IOReturn newUserClient(task_t task, void *security, UInt32 type,         OSDictionary *properties, IOUserClient **handler); }; static IOService *i9stub_publish_##N(IOService *platform) {     N *svc = new N;     if (svc && svc->init() && svc->attach(platform) && svc->start(platform)) {         svc->setName(#N);         return svc;     }     if (svc) svc->release();     return NULL; }
+
+/* AppleKeyStore needs more than a logging stub: UserEventAgent's
+ * LockStateNotifier registers an IOKit interest notification on this
+ * service and reposts every messageClients() broadcast as
+ * com.apple.mobile.keybagd.lock_status. Real hardware broadcasts the
+ * initial state ("lock change 0" == unlocked) once the boot keybag is
+ * resolved; without it nothing ever learns the device is unlocked and
+ * SpringBoard never proceeds past its keybag wait. A fresh bag with no
+ * passcode reads unlocked, so broadcast change=0 shortly after start,
+ * re-fired a few times to cover late interest registration. */
+class AppleKeyStore : public IOService {
+    OSDeclareDefaultStructors(AppleKeyStore);
+    IOTimerEventSource *lockNotifyTimer;
+    unsigned lockNotifyCount;
+    unsigned lockNotifyPolls;
+    static void lockNotifyFired(OSObject *owner, IOTimerEventSource *sender);
+public:
+    virtual bool start(IOService *provider) {
+        bool ok = IOService::start(provider);
+        setProperty("IOClass", "AppleKeyStore");
+        registerService();
+        lockNotifyTimer = 0;
+        lockNotifyCount = 0;
+        lockNotifyPolls = 0;
+        lockNotifyTimer = IOTimerEventSource::timerEventSource(this,
+            &AppleKeyStore::lockNotifyFired);
+        IOWorkLoop *wl = getWorkLoop();
+        if (wl && lockNotifyTimer &&
+            wl->addEventSource(lockNotifyTimer) == kIOReturnSuccess)
+            lockNotifyTimer->setTimeoutMS(20000);
+        return ok;
+    }
+    virtual void free(void) {
+        if (lockNotifyTimer) {
+            lockNotifyTimer->cancelTimeout();
+            lockNotifyTimer->release();
+            lockNotifyTimer = 0;
+        }
+        IOService::free();
+    }
+    virtual IOReturn newUserClient(task_t task, void *security, UInt32 type,
+        OSDictionary *properties, IOUserClient **handler);
+};
+static IOService *i9stub_publish_AppleKeyStore(IOService *platform) {
+    AppleKeyStore *svc = new AppleKeyStore;
+    if (svc && svc->init() && svc->attach(platform) && svc->start(platform)) {
+        svc->setName("AppleKeyStore");
+        return svc;
+    }
+    if (svc) svc->release();
+    return NULL;
+}
+void AppleKeyStore::lockNotifyFired(OSObject *owner, IOTimerEventSource *sender)
+{
+    AppleKeyStore *self = OSDynamicCast(AppleKeyStore, owner);
+    if (!self) return;
+    /* Interest registrations land on this service's IOGeneralInterest
+     * property as an IOCommand chain. Poll until a listener exists —
+     * broadcasting earlier (e.g. during kernel init) is wasted. */
+    IOCommand *list = OSDynamicCast(IOCommand,
+        self->getProperty(gIOGeneralInterest));
+    if (!list || queue_empty(&list->fCommandChain)) {
+        /* No listener on IOGeneralInterest yet. Blind-fire every ~30s
+         * anyway: the notifier may sit on another interest type, or its
+         * plugin may load lazily after a state it can only learn from a
+         * broadcast. messageClients() with zero listeners is harmless. */
+        if (++self->lockNotifyPolls < 400) {
+            if (!(self->lockNotifyPolls % 10)) {
+                IOLog("I9STUB AppleKeyStore: blind lock change 0 #%u\n",
+                    self->lockNotifyPolls / 10);
+                self->messageClients(iokit_vendor_specific_msg(0), (void *)0);
+            }
+            sender->setTimeoutMS(3000);
+        }
+        return;
+    }
+    IOLog("I9STUB AppleKeyStore: lock change 0 (unlocked) broadcast #%u\n",
+        self->lockNotifyCount + 1);
+    self->messageClients(iokit_vendor_specific_msg(0), (void *)0);
+    if (++self->lockNotifyCount < 8)
+        sender->setTimeoutMS(5000);
+}
+I9STUB(AppleDiagnosticDataAccess)
+I9STUB(AppleDiagnosticDataAccessReadOnly)
+I9STUB(AppleM2ScalerCSCDriver)
+I9STUB(AppleRGBOUT)
+I9STUB(AppleM2TVOut)
+I9STUB(AppleWirelessDisplay)
+I9STUB(IOSurfaceAccelerator)
+I9STUB(IOAVController)
+I9STUB(AppleMobileFileIntegrity)
+
+class I9StubClient : public IOUserClient {
+    OSDeclareDefaultStructors(I9StubClient);
+public:
+    virtual IOReturn clientClose(void) {
+        if (!isInactive()) terminate();
+        return kIOReturnSuccess;
+    }
+    virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+        IOExternalMethodDispatch *dispatch = 0, OSObject *target = 0, void *reference = 0)
+    {
+        IOLog("I9STUBC method=%u si=%u so=%u sti=%u sto=%u\n", selector,
+            args ? args->scalarInputCount : 0, args ? args->scalarOutputCount : 0,
+            args ? args->structureInputSize : 0, args ? args->structureOutputSize : 0);
+        if (args && args->structureOutput && args->structureOutputSize)
+            memset(args->structureOutput, 0, args->structureOutputSize);
+        /* Scalars were previously left uninitialized: callers used kernel
+         * garbage (e.g. 0x800219a5) as IOSurface IDs and poisoned the
+         * compositor.  Stubs have nothing real to report, so answer every
+         * scalar-output request with an explicit error instead. */
+        if (args && args->scalarOutputCount && args->scalarOutput) {
+            memset(args->scalarOutput, 0, args->scalarOutputCount * sizeof(uint64_t));
+            return kIOReturnNotFound;
+        }
+        return kIOReturnSuccess;
+    }
+};
+OSDefineMetaClassAndStructors(I9StubClient, IOUserClient);
+static IOReturn i9stub_client(task_t t, IOUserClient **h) {
+    I9StubClient *c = new I9StubClient;
+    if (!c) return kIOReturnNoMemory;
+    if (!c->initWithTask(t, 0, 0)) { c->release(); return kIOReturnError; }
+    *h = c; return kIOReturnSuccess;
+}
+#include "i9_ent_blob.h"
+class I9AmfiClient : public IOUserClient {
+    OSDeclareDefaultStructors(I9AmfiClient);
+public:
+    virtual IOReturn clientClose(void) {
+        if (!isInactive()) terminate();
+        return kIOReturnSuccess;
+    }
+    virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+        IOExternalMethodDispatch *dispatch = 0, OSObject *target = 0, void *reference = 0)
+    {
+        IOLog("I9AMFIC method=%u si=%u so=%u sti=%u sto=%u\n", selector,
+            args ? args->scalarInputCount : 0, args ? args->scalarOutputCount : 0,
+            args ? args->structureInputSize : 0, args ? args->structureOutputSize : 0);
+        if (args && args->structureInput && args->structureInputSize >= 4)
+            IOLog("I9AMFIC   in[0..3]=%02x %02x %02x %02x\n",
+                ((uint8_t*)args->structureInput)[0], ((uint8_t*)args->structureInput)[1],
+                ((uint8_t*)args->structureInput)[2], ((uint8_t*)args->structureInput)[3]);
+        /* selector 1: copy-entitlements-for-audit-token (sti=32 token, sto=dict buf).
+         * Security.framework parses output with a property-list parser, so
+         * feed the entitlement XML plist only (skip 8-byte CS superblob hdr). */
+        if (selector == 1 && args && args->structureOutput && args->structureOutputSize) {
+            size_t n = sizeof(i9_ent_blob) - 8;
+            if (n > args->structureOutputSize) n = args->structureOutputSize;
+            memcpy(args->structureOutput, i9_ent_blob + 8, n);
+            if (args->structureOutputSize > n)
+                memset((uint8_t*)args->structureOutput + n, 0, args->structureOutputSize - n);
+            IOLog("I9AMFIC   fed %u-byte ent blob\n", (unsigned)n);
+            return kIOReturnSuccess;
+        }
+        if (args && args->structureOutput && args->structureOutputSize)
+            memset(args->structureOutput, 0, args->structureOutputSize);
+        return kIOReturnSuccess;
+    }
+};
+OSDefineMetaClassAndStructors(I9AmfiClient, IOUserClient);
+static IOReturn i9amfi_client(task_t t, IOUserClient **h) {
+    I9AmfiClient *c = new I9AmfiClient;
+    if (!c) return kIOReturnNoMemory;
+    if (!c->initWithTask(t, 0, 0)) { c->release(); return kIOReturnError; }
+    *h = c; return kIOReturnSuccess;
+}
+OSDefineMetaClassAndStructors(AppleKeyStore, IOService);
+OSDefineMetaClassAndStructors(AppleDiagnosticDataAccess, IOService);
+OSDefineMetaClassAndStructors(AppleDiagnosticDataAccessReadOnly, IOService);
+OSDefineMetaClassAndStructors(AppleM2ScalerCSCDriver, IOService);
+OSDefineMetaClassAndStructors(AppleRGBOUT, IOService);
+OSDefineMetaClassAndStructors(AppleM2TVOut, IOService);
+OSDefineMetaClassAndStructors(AppleWirelessDisplay, IOService);
+OSDefineMetaClassAndStructors(IOSurfaceAccelerator, IOService);
+OSDefineMetaClassAndStructors(IOAVController, IOService);
+OSDefineMetaClassAndStructors(AppleMobileFileIntegrity, IOService);
+
+/* libMobileGestalt UDID derivation (iOS6 __computeUniqueDeviceID):
+ *   UDID = SHA1( serial + ecid_decimal + wifiMAC + btMAC )
+ * Wifi MAC comes from a service NAMED "wlan" or "sdio" carrying
+ * "local-mac-address" (OSData, 6 bytes); BT MAC from service named
+ * "bluetooth" (same prop), falling back to syscfg tag 'BMac'.
+ * We have no radios in QEMU, so publish fake MAC services. */
+static const UInt8 i9_wifimac[6] = { 0x00, 0x26, 0xbb, 0x12, 0x34, 0x56 };
+static const UInt8 i9_btmac[6]   = { 0x00, 0x26, 0xbb, 0x12, 0x34, 0x57 };
+
+static void i9_publish_named(IOService *platform, const char *svcname)
+{
+    IOService *svc = new IOService;
+    if (svc && svc->init() && svc->attach(platform) && svc->start(platform)) {
+        svc->setName(svcname);
+        svc->registerService();
+        IOLog("I9NAMED %s published\n", svcname);
+    } else if (svc) svc->release();
+}
+
+static void i9_publish_macsvc(IOService *platform, const char *svcname,
+                              const UInt8 mac[6])
+{
+    IOService *svc = new IOService;
+    if (svc && svc->init() && svc->attach(platform) && svc->start(platform)) {
+        svc->setName(svcname);
+        svc->setProperty("local-mac-address", OSData::withBytes(mac, 6));
+        svc->registerService();
+        IOLog("I9MAC %s local-mac-address published\n", svcname);
+    } else if (svc) svc->release();
+}
+
+/* Fabricated SysCfg block for AppleDiagnosticDataAccess ->
+ * property "AppleDiagnosticDataSysCfg" (lockdownd reads it directly).
+ * TLV: tag[4] + len32(LE) + data, padded to 4. */
+static const UInt8 i9_syscfg[] = {
+    'S','r','N','m', 12,0,0,0, 'C','3','9','G','H','0','0','E','0','0','6','9',
+    'M','L','B',' ', 12,0,0,0, 'C','3','L','J','T','0','D','S','D','T','9','Y',
+    'W','M','A','C',  6,0,0,0, 0x00,0x26,0xbb,0x12,0x34,0x56, 0,0,
+    'B','M','A','C',  6,0,0,0, 0x00,0x26,0xbb,0x12,0x34,0x57, 0,0,
+    'B','M','a','c',  6,0,0,0, 0x00,0x26,0xbb,0x12,0x34,0x57, 0,0,
+    'E','C','I','D',  8,0,0,0, 0xfe,0xca,0xad,0x0b,0,0,0,0,
+    'U','D','I','D', 20,0,0,0, 0x7c,0x5f,0x8a,0x2e,0x94,0xd1,0xb3,0xf6,
+                               0x08,0x5a,0x3c,0x7e,0x9f,0x2b,0x4d,0x6a,
+                               0x8c,0x0e,0x1f,0x35,
+    'M','o','d','#',  6,0,0,0, 'M','C','9','1','8','L','L',0,0,0,
+    'R','e','g','#',  4,0,0,0, 'L','L','/','A',
+};
+
+/* AKS user client with a persistent fake system keybag. All-zero answers
+ * made keybagd run create->store->exit every time, and later clients
+ * never saw a bag so nothing reached a resolved lock state. Keeping the
+ * 3072-byte blob keybagd stores (method 17) and handing it back on fetch
+ * (method 27) plus a nonzero id from GetSystem (method 14) closes the
+ * loop: next client sees "system bag exists, unlocked" -> lock_status. */
+static uint64_t aks_sys_bag_id;
+static uint8_t  aks_sys_bag[3072];
+class I9AksClient : public IOUserClient {
+    OSDeclareDefaultStructors(I9AksClient);
+public:
+    virtual IOReturn clientClose(void) {
+        if (!isInactive()) terminate();
+        return kIOReturnSuccess;
+    }
+    virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+        IOExternalMethodDispatch *dispatch = 0, OSObject *target = 0, void *reference = 0)
+    {
+        IOLog("I9AKSC method=%u si=%u so=%u sti=%u sto=%u\n", selector,
+            args ? args->scalarInputCount : 0, args ? args->scalarOutputCount : 0,
+            args ? args->structureInputSize : 0, args ? args->structureOutputSize : 0);
+        if (!args) return kIOReturnSuccess;
+        switch (selector) {
+        case 14: /* KeyBagGetSystem -> nonzero bag id once one is stored */
+            if (args->scalarOutput && args->scalarOutputCount >= 1)
+                args->scalarOutput[0] = aks_sys_bag_id;
+            break;
+        case 27: /* fetch system bag blob */
+            if (args->structureOutput && args->structureOutputSize) {
+                if (aks_sys_bag_id)
+                    memcpy(args->structureOutput, aks_sys_bag, 3072);
+                else
+                    memset(args->structureOutput, 0, args->structureOutputSize);
+            }
+            break;
+        case 17: /* store system bag blob */
+            if (args->structureInput && args->structureInputSize >= 3072) {
+                memcpy(aks_sys_bag, args->structureInput, 3072);
+                aks_sys_bag_id = 1;
+                IOLog("I9AKSC stored 3072-byte system bag, id=1\n");
+            }
+            break;
+        case 8: /* extended lock state: {state=0 unlocked, bag} */
+            if (args->scalarOutput && args->scalarOutputCount >= 2) {
+                args->scalarOutput[0] = 0;
+                args->scalarOutput[1] = aks_sys_bag_id;
+            }
+            break;
+        default:
+            if (args->structureOutput && args->structureOutputSize)
+                memset(args->structureOutput, 0, args->structureOutputSize);
+            break;
+        }
+        return kIOReturnSuccess;
+    }
+};
+OSDefineMetaClassAndStructors(I9AksClient, IOUserClient);
+static IOReturn i9aks_client(task_t t, IOUserClient **h) {
+    I9AksClient *c = new I9AksClient;
+    if (!c) return kIOReturnNoMemory;
+    if (!c->initWithTask(t, 0, 0)) { c->release(); return kIOReturnError; }
+    *h = c; return kIOReturnSuccess;
+}
+
+IOReturn AppleKeyStore::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleKeyStore open type=%u\n",(unsigned)ty); return i9aks_client(t, h); }
+IOReturn AppleDiagnosticDataAccess::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleDiagnosticDataAccess open\n"); return kIOReturnUnsupported; }
+IOReturn AppleDiagnosticDataAccessReadOnly::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleDiagnosticDataAccessReadOnly open\n"); return kIOReturnUnsupported; }
+IOReturn IOSurfaceAccelerator::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB IOSurfaceAccelerator open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+IOReturn IOAVController::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB IOAVController open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+IOReturn AppleMobileFileIntegrity::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleMobileFileIntegrity open type=%u\n",(unsigned)ty); return i9amfi_client(t, h); }
+IOReturn AppleM2ScalerCSCDriver::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleM2ScalerCSCDriver open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+IOReturn AppleRGBOUT::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleRGBOUT open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+IOReturn AppleM2TVOut::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleM2TVOut open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+IOReturn AppleWirelessDisplay::newUserClient(task_t t, void *s2, UInt32 ty,
+    OSDictionary *p, IOUserClient **h)
+{ IOLog("I9STUB AppleWirelessDisplay open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+class IOAcceleratorESClient : public IOUserClient {
+    OSDeclareDefaultStructors(IOAcceleratorESClient);
+public:
+    virtual IOReturn clientClose(void) {
+        IOLog("IOS7ACC clientClose\n");
+        if (!isInactive()) terminate();
+        return kIOReturnSuccess;
+    }
+    virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+        IOExternalMethodDispatch *dispatch = 0, OSObject *target = 0, void *reference = 0)
+    {
+        IOLog("IOS7ACC method=%u scalar-in=%u struct-in=%u scalar-out=%u struct-out=%u\n",
+            selector, args ? args->scalarInputCount : 0,
+            args ? args->structureInputSize : 0,
+            args ? args->scalarOutputCount : 0,
+            args ? args->structureOutputSize : 0);
+        if (args && args->scalarInputCount && args->scalarInput) {
+            unsigned int i, n = args->scalarInputCount > 8 ? 8 : args->scalarInputCount;
+            for (i = 0; i < n; i++)
+                IOLog("IOS7ACC   in[%u]=%llx\n", i, (unsigned long long)args->scalarInput[i]);
+        }
+        if (args && args->structureOutputSize && args->structureOutput) {
+            memset(args->structureOutput, 0, args->structureOutputSize);
+            if (args->structureOutputSize >= 4)
+                *(uint32_t *)args->structureOutput = 0x1acc;
+        }
+        return kIOReturnSuccess;
+    }
+};
+
+class IOAcceleratorES : public IOService {
+    OSDeclareDefaultStructors(IOAcceleratorES);
+public:
+    virtual bool start(IOService *provider) {
+        bool ok = IOService::start(provider);
+        setName("IOAcceleratorES");
+        setProperty("IOS7LabBackend", "stub accelerator - logging only");
+        registerService();
+        IOLog("IOS7ACC stub accelerator published\n");
+        return ok;
+    }
+    virtual IOReturn newUserClient(task_t task, void *security, UInt32 type,
+        OSDictionary *properties, IOUserClient **handler)
+    {
+        IOLog("IOS7ACC open type=%u\n", (unsigned int)type);
+        if (!handler) return kIOReturnBadArgument;
+        *handler = 0;
+        IOAcceleratorESClient *client = new IOAcceleratorESClient;
+        if (!client) return kIOReturnNoMemory;
+        if (!client->initWithTask(task, security, type, properties)) { client->release(); return kIOReturnNoMemory; }
+        if (!client->attach(this)) { client->release(); return kIOReturnError; }
+        if (!client->start(this)) { client->detach(this); client->release(); return kIOReturnError; }
+        *handler = client;
+        return kIOReturnSuccess;
+    }
+};
+
+OSDefineMetaClassAndStructors(IOAcceleratorESClient, IOUserClient);
+OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
+
+
 void ios7leo_register_display(IOService *platform)
 {
     if (!ios7leo_display_ready())return;
@@ -1641,6 +2029,40 @@ void ios7leo_register_display(IOService *platform)
     surfaces->registerService();display->registerService();
     IOLog("Leo native display provider published480x800 BGRA row1920 bytes1536000; physicalRGB565 row960 separate; dynamicbudget=%u\n",displayBudget);
 #endif
+    /* The iOS6 daemon set expects a whole family of always-present services:
+     * backboardd verifies system-app clients through AMFI before honoring
+     * checkin (EmbeddedPrivilegeDispensation), UserEventAgent waits on
+     * AppleKeyStore lock-state broadcasts, keybagd/lockdownd read syscfg,
+     * and the display stack looks for scaler/TV-out siblings. Without AMFI
+     * the sentinel kills SpringBoard in a SIGTERM respawn loop. Ported from
+     * the xnu-S2I9100 stub zoo that cleared entitlement rejections 11-01. */
+    i9stub_publish_AppleKeyStore(platform);
+    {
+        IOService *diag = i9stub_publish_AppleDiagnosticDataAccess(platform);
+        if (diag) diag->setProperty("AppleDiagnosticDataSysCfg",
+            OSData::withBytes(i9_syscfg, sizeof(i9_syscfg)));
+    }
+    i9stub_publish_AppleDiagnosticDataAccessReadOnly(platform);
+    i9stub_publish_AppleM2ScalerCSCDriver(platform);
+    i9stub_publish_AppleRGBOUT(platform);
+    i9stub_publish_AppleM2TVOut(platform);
+    /* i9stub_publish_AppleWirelessDisplay disabled: fake wireless-display hw makes backboardd poll com.apple.coremedia.wirelessdisplayserver forever */
+    i9stub_publish_IOSurfaceAccelerator(platform);
+    i9stub_publish_IOAVController(platform);
+    i9stub_publish_AppleMobileFileIntegrity(platform);
+    i9_publish_named(platform, "displayport");
+    i9_publish_named(platform, "hdmi");
+    i9_publish_macsvc(platform, "wlan", i9_wifimac);
+    i9_publish_macsvc(platform, "sdio", i9_wifimac);
+    i9_publish_macsvc(platform, "bluetooth", i9_btmac);
+    {
+        IOAcceleratorES *accel = new IOAcceleratorES;
+        if (accel && accel->init() && accel->attach(platform) && accel->start(platform)) {
+            IOLog("IOS7ACC accelerator attached\n");
+        } else if (accel) {
+            accel->release();
+        }
+    }
     surfaces->release();display->release();
 }
 #endif
