@@ -1711,11 +1711,11 @@ static bool i9100_match_interesting(const char *who, const char *matching)
 }
 static void i9100_match_note(const char *what, const char *matching, long hit)
 {
-    if (i9100_match_logs++ >= 96)
-        return;
     char who[17]; bzero(who, sizeof(who));
     proc_selfname(who, sizeof(who) - 1);
     if (!i9100_match_interesting(who, matching))
+        return;
+    if (i9100_match_logs++ >= 160)
         return;
     char brief[121]; unsigned n = 0;
     for (; matching && matching[n] && n < sizeof(brief) - 1; n++)
@@ -2789,6 +2789,22 @@ kern_return_t is_io_service_open_extended(
 		data->release();
 	    }
 	}
+
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+	{
+	    const OSSymbol * snm = service->copyName();
+	    const char * svc = snm ? snm->getCStringNoCopy() : "?";
+	    char who[17]; bzero(who, sizeof(who));
+	    proc_selfname(who, sizeof(who) - 1);
+	    if (i9100_has(svc, "CLCD") || i9100_has(svc, "Framebuffer") ||
+		i9100_has(svc, "CoreSurface") || i9100_has(svc, "Touch") ||
+		i9100_has(svc, "HID") || i9100_has(who, "backboard") ||
+		i9100_has(who, "SpringBoard"))
+		IOLog("i9100open %s svc=%s type=%u\n", who, svc ? svc : "?",
+		    (unsigned)connect_type);
+	    if (snm) snm->release();
+	}
+#endif
 
 	res = service->newUserClient( owningTask, (void *) owningTask,
 		    connect_type, propertiesDict, &client );
