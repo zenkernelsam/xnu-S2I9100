@@ -2756,7 +2756,20 @@ kern_return_t is_io_service_wait_quiet(
     timeoutNS = wait_time.tv_sec;
     timeoutNS *= kSecondScale;
     timeoutNS += wait_time.tv_nsec;
-    
+
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    {
+        char who[17]; bzero(who, sizeof(who));
+        proc_selfname(who, sizeof(who) - 1);
+        const OSSymbol *snm = service->copyName();
+        if (i9100_has(who, "backboard") || i9100_has(who, "SpringBoard"))
+            IOLog("i9100wait %s svc=%s busy=%x sec=%u\n", who,
+                  snm ? snm->getCStringNoCopy() : "?",
+                  (unsigned)service->getBusyState(),
+                  (unsigned)wait_time.tv_sec);
+        if (snm) snm->release();
+    }
+#endif
 /* IOS7LEO_WAIT_BEGIN */
 #if defined(BOARD_CONFIG_QSD8250_LEO)
     unsigned leo_wait = ios7leo_wait_claim(ios7leo_wait_service(service));
