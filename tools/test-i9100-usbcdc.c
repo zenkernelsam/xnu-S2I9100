@@ -8,7 +8,7 @@ typedef int boolean_t;
 #define FALSE 0
 #define BOARD_CONFIG_EXYNOS4210_I9100 1
 #define I9100_USB_SIM 1
-static uint32_t regs[0x1000], rx[2];
+static uint32_t regs[0x1000], rx[128];
 static unsigned rx_pos;
 static boolean_t interrupts = 1;
 static boolean_t ml_set_interrupts_enabled(boolean_t state)
@@ -16,7 +16,13 @@ static boolean_t ml_set_interrupts_enabled(boolean_t state)
 static vm_offset_t ml_io_map(vm_offset_t p, unsigned n)
 { (void)p; (void)n; return 1; }
 #define UREG(off) regs[(off) / 4]
-#define URXFIFO() rx[rx_pos++ & 1]
+#define URXFIFO() rx[rx_pos++]
+static unsigned pmu_offsets[4], pmu_values[4], pmu_count, barriers, halts;
+#define UPMU_WRITE(off, value) do { pmu_offsets[pmu_count] = off; pmu_values[pmu_count++] = value; } while (0)
+#define UCTL_BARRIER() (++barriers)
+#define UCTL_HALT() (++halts)
+static int PE_parse_boot_argn(const char *s, void *p, unsigned n)
+{ (void)s; (void)p; (void)n; return 0; }
 #include "../pexpert/arm/i9100_usbcdc.c"
 static unsigned fails, checks;
 #define CHECK(c) do { checks++; if (!(c)) { fails++; printf("FAIL line %u: %s\n", __LINE__, #c); } } while (0)
@@ -33,6 +39,69 @@ static void setup(unsigned rt, unsigned rq, unsigned value, unsigned length)
     CHECK(rx_pos == 2);
     CHECK(UGRXSTSP == ((6 << 17) | (8 << 4)));
     CHECK((UDOEPCTL(0) & (UEPCTL_EPENA | UEPCTL_ACT)) == (UEPCTL_EPENA | UEPCTL_ACT));
+}
+
+static void out(const char *s, unsigned n)
+{
+    memset(rx, 0, sizeof(rx)); memcpy(rx, s, n); rx_pos = 0;
+    UGRXSTSP = (2 << 17) | (n << 4) | 1;
+    i9100_usb_rxlvl();
+    CHECK(rx_pos == (n + 3) / 4);
+    UGRXSTSP = (3 << 17) | 1;
+    i9100_usb_rxlvl();
+    CHECK(UDOEPTSIZ(1) == ((1u << 19) | i9100_usb_bulk_mps));
+}
+static void command(const char *s) { out(s, strlen(s)); }
+static void control_tests(void)
+{
+    uctl_cancel(); uctl_last = 0; i9100_usb_busy1 = 0;
+    uctl_ready();
+    CHECK(uctl_len < 64);
+    CHECK(!memcmp(uctl_reply, "\nI9CTL1 READY control=0\nI9CTL1 BUILD 0000000000000000\n", uctl_len));
+    uctl_cancel();
+    i9100_usb_h = i9100_usb_t = 0;
+    i9100_pmu_map = 1; uctl_enabled = 0;
+    command("I9CTL1 00000001 reboot-download\n");
+    CHECK(uctl_action == 0 && strstr(uctl_reply, "ERR disabled"));
+    uctl_cancel(); uctl_enabled = 1;
+    command("I9CTL1 00000002 pi"); CHECK(!uctl_len);
+    command("ng\n"); CHECK(uctl_len && !uctl_action);
+    /* Logs cannot overwrite or starve the response. */
+    i9100_usb_h = UTXRING - 1;
+    i9100_usb_drain(); CHECK(uctl_flight && i9100_usb_t == 0);
+    command("I9CTL1 00000003 reboot-download\n"); CHECK(!uctl_action);
+    uctl_complete(UEPINT_XFC); CHECK(!pmu_count);
+    i9100_usb_busy1 = 0;
+    command("I9CTL1 00000002 reboot-download\n");
+    CHECK(!uctl_action && strstr(uctl_reply, "ERR sequence"));
+    uctl_cancel();
+    command("I9CTL1 00000004 write-memory\n"); CHECK(!uctl_action);
+    uctl_cancel();
+    char flood[512]; memset(flood, 'x', sizeof(flood));
+    out(flood, sizeof(flood)); command("I9CTL1 00000005 reboot-download\n");
+    CHECK(!uctl_len && !uctl_action);
+    const char binary[] = "I9CTL1 00000006 reboot\0-download\n";
+    out(binary, sizeof(binary) - 1); CHECK(!uctl_action && !uctl_len);
+    command("I9CTL1 00000007 reboot-download\r\n"); CHECK(!uctl_action);
+    command("I9CTL1 00000008 reboot-download\n");
+    CHECK(uctl_action == 2 && !pmu_count);
+    uctl_complete(UEPINT_XFC); CHECK(!pmu_count); /* queued is not sent */
+    i9100_usb_drain(); CHECK(uctl_flight && !pmu_count);
+    uctl_complete(UEPINT_AHBERR | UEPINT_XFC); CHECK(!pmu_count && !uctl_action);
+    i9100_usb_busy1 = 0;
+    command("I9CTL1 00000009 reboot-download\n"); i9100_usb_drain();
+    UGINTSTS = UGINT_USBRST | UGINT_IEP; UDAINT = 2; UDIEPINT(1) = UEPINT_XFC;
+    i9100_usb_poll(); CHECK(!pmu_count && !uctl_action);
+    i9100_usb_configured = 1; i9100_usb_h = i9100_usb_t = 0;
+    command("I9CTL1 0000000a reboot-download\n"); i9100_usb_drain();
+    uctl_complete(UEPINT_XFC);
+    CHECK(pmu_count == 2 && pmu_offsets[0] == 0x808 && pmu_values[0] == 0x12345678);
+    CHECK(pmu_offsets[1] == 0x400 && pmu_values[1] == 1 && barriers == 3 && halts == 1);
+    CHECK(!interrupts);
+    uctl_complete(UEPINT_XFC); CHECK(pmu_count == 2); /* no duplicate reset */
+    i9100_usb_busy1 = 0; pmu_count = 0;
+    command("I9CTL1 0000000b reboot\n"); i9100_usb_drain(); uctl_complete(UEPINT_XFC);
+    CHECK(pmu_count == 2 && pmu_values[0] == 0);
 }
 
 int main(void)
@@ -119,6 +188,7 @@ int main(void)
     i9100_usbcdc_poll();
     CHECK(i9100_usb_t == 7);
     CHECK(interrupts == 1);
+    control_tests();
     printf("kernel CDC: %u checks, %u failures (no hardware emulation)\n", checks, fails);
     return fails ? 1 : 0;
 }
