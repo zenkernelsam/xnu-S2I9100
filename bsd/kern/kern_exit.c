@@ -545,6 +545,14 @@ proc_exit(proc_t p)
 	proc_unlock(p);
 	pid = p->p_pid;
 	exitval = p->p_xstat;
+	/* i9100 forensic: surface abnormal exits so crash-respawn loops
+	 * (e.g. mDNSResponder, no register dump = silent signal/exit) are
+	 * distinguishable on the console. */
+	if (WIFSIGNALED(exitval) || (WIFEXITED(exitval) && WEXITSTATUS(exitval)))
+		printf("i9100exit: %s[%d] xstat=0x%x sig=%d code=%d\n",
+			p->p_comm, pid, exitval,
+			WIFSIGNALED(exitval) ? WTERMSIG(exitval) : 0,
+			WIFEXITED(exitval) ? WEXITSTATUS(exitval) : -1);
 #if BOARD_CONFIG_ARMPBA8
     ios7lab_preferences_lifecycle_note(lab_preferences_proc_exit_target, pid,
         "PROC-EXIT-ENTRY", 1, exitval, WIFSIGNALED(exitval), WIFSIGNALED(exitval) ? WTERMSIG(exitval) : 0);

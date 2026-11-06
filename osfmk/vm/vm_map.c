@@ -9055,8 +9055,27 @@ submap_recurse:
 		}
 		*real_map = map;
 
-		if ((fault_type & VM_PROT_EXECUTE) && prot)
+		if ((fault_type & VM_PROT_EXECUTE) && prot) {
 		        log_stack_execution_failure((addr64_t)vaddr, prot);
+			/* i9100 forensic: identify which mapping lacks EXEC so the
+			 * offending segment can be pinpointed from the console log. */
+			printf("  i9100nx: entry 0x%llx-0x%llx prot=%x max=%x alias=%u "
+			       "shared=%u sub=%u jit=%u nc=%u obj=%p off=0x%llx",
+				(unsigned long long)entry->vme_start,
+				(unsigned long long)entry->vme_end,
+				entry->protection, entry->max_protection,
+				entry->alias, entry->is_shared, entry->is_sub_map,
+				entry->used_for_jit, entry->no_cache,
+				entry->object.vm_object,
+				(unsigned long long)entry->offset);
+			if (!entry->is_sub_map && entry->object.vm_object)
+				printf(" pager=%p ref=%d resident=%u vosize=0x%llx",
+					entry->object.vm_object->pager,
+					entry->object.vm_object->ref_count,
+					entry->object.vm_object->resident_page_count,
+					(unsigned long long)entry->object.vm_object->vo_size);
+			printf("\n");
+		}
 
 		DTRACE_VM2(prot_fault, int, 1, (uint64_t *), NULL);
 		return KERN_PROTECTION_FAILURE;
