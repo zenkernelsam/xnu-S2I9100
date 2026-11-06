@@ -1603,21 +1603,24 @@ void ios7leo_register_display(IOService *platform)
             "<key>value</key><integer>255</integer>"
             "</dict>"
             "<key>commit</key><integer>1</integer>"
+            /* no <real> in OSUnserializeXML; OSNumber integers carry the
+             * same numeric payload for CFNumber readers. */
             "<key>fade</key><dict>"
-            "<key>at</key><real>0.0</real>"
-            "<key>down-to</key><real>0.65</real>"
-            "<key>period</key><real>0.6</real>"
-            "<key>up-to</key><real>1.0</real>"
+            "<key>at</key><integer>0</integer>"
+            "<key>down-to</key><integer>65</integer>"
+            "<key>period</key><integer>60</integer>"
+            "<key>up-to</key><integer>100</integer>"
             "</dict>"
             "<key>display</key><dict>"
-            "<key>brightness-adjustment</key><real>1.0</real>"
+            "<key>brightness-adjustment</key><integer>1</integer>"
             "</dict>"
             "</dict>";
         OSObject *dp = OSUnserializeXML(i9100DisplayParametersXML);
         if (dp) {
             display->setProperty("IODisplayParameters", dp);
             dp->release();
-        }
+        } else
+            IOLog("i9100 IODisplayParameters XML failed to parse\n");
     }
     surfaces->registerService();display->registerService();
     IOLog("i9100 native display provider published 480x800 BGRA row1920 bytes1536000; dynamicbudget=%u\n",displayBudget);
