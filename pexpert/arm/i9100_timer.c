@@ -58,6 +58,7 @@ extern void rtclock_intr(arm_saved_state_t *regs);
 extern void ios7i9100_timer_observe(uint32_t raw_ticks, uint32_t actual_irq_count, uint32_t pc);
 extern void ios7i9100_debug_putc(char c);
 extern void i9100_usbcdc_poll(void);
+extern void i9100_usbcdc_control_init(void);
 
 uint64_t clock_decrementer;
 static vm_offset_t i9100_mct, i9100_gic_dist, i9100_gic_cpu;
@@ -197,6 +198,8 @@ void I9100_timebase_init(void)
         for(i=0;i<4;i++){ i9100_put_hex(v[i]); ios7i9100_debug_putc(i==3?'\n':' '); }
     }
     I9100_timer_enabled(TRUE);
+    /* The panel and exception paths are established before maintenance. */
+    i9100_usbcdc_control_init();
     ml_set_interrupts_enabled(was_enabled);
 }
 

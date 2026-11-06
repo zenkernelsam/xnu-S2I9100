@@ -49,12 +49,20 @@ static void out(const char *s, unsigned n)
     CHECK(rx_pos == (n + 3) / 4);
     UGRXSTSP = (3 << 17) | 1;
     i9100_usb_rxlvl();
-    CHECK(UDOEPTSIZ(1) == ((1u << 19) | i9100_usb_bulk_mps));
+    if (uctl_started) CHECK(UDOEPTSIZ(1) == ((1u << 19) | i9100_usb_bulk_mps));
 }
 static void command(const char *s) { out(s, strlen(s)); }
 static void control_tests(void)
 {
     uctl_cancel(); uctl_last = 0; i9100_usb_busy1 = 0;
+    uctl_ready(); CHECK(!uctl_len);
+    command("I9CTL1 00000001 reboot-download\n");
+    CHECK(!uctl_len && !uctl_action && !uctl_last);
+    i9100_usb_h = i9100_usb_t = 0;
+    UDOEPCTL(1) = UEPCTL_ACT | UEPCTL_EPTYPE(2) | i9100_usb_bulk_mps;
+    i9100_usbcdc_control_init();
+    CHECK(uctl_started && (UDOEPCTL(1) & UEPCTL_EPENA));
+    CHECK(UDOEPTSIZ(1) == ((1u << 19) | i9100_usb_bulk_mps));
     uctl_ready();
     CHECK(uctl_len < 64);
     CHECK(!memcmp(uctl_reply, "\nI9CTL1 READY control=0\nI9CTL1 BUILD 0000000000000000\n", uctl_len));

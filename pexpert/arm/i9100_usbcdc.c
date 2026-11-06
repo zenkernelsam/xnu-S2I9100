@@ -17,6 +17,7 @@ void i9100_usbcdc_putc(char c);
 void i9100_usbcdc_setmap(void);
 void i9100_usbcdc_init(void);
 void i9100_usbcdc_poll(void);
+void i9100_usbcdc_control_init(void);
 
 #define I9100_DWC2_PA	0x12480000U
 #define I9100_PHY_PA	0x125B0000U
@@ -118,7 +119,7 @@ static volatile unsigned int i9100_usb_h, i9100_usb_t;
 static char uctl_line[256], uctl_reply[64];
 static char uctl_build[17] = "0000000000000000";
 static unsigned int uctl_used, uctl_len, uctl_last;
-static int uctl_drop, uctl_flight, uctl_action, uctl_enabled;
+static int uctl_drop, uctl_flight, uctl_action, uctl_enabled, uctl_started;
 
 #ifndef UPMU_WRITE
 #define UPMU_WRITE(off, value) \
@@ -135,6 +136,7 @@ static void uctl_cancel(void)
 
 static void uctl_ready(void)
 {
+	if (!uctl_started) return;
 	const char *s = uctl_enabled ? "\nI9CTL1 READY control=1\n" :
 		"\nI9CTL1 READY control=0\n";
 	if (!uctl_len && !uctl_flight) {
@@ -187,6 +189,7 @@ static void uctl_command(void)
 
 static void uctl_byte(unsigned char c)
 {
+	if (!uctl_started) return;
 	if (c == '\n') {
 		if (!uctl_drop) uctl_command();
 		uctl_used = 0;
@@ -283,7 +286,7 @@ static void i9100_usb_e0arm(void)
 
 static void i9100_usb_e1outarm(void)
 {
-	if (!i9100_usb_configured) return;
+	if (!uctl_started || !i9100_usb_configured) return;
 	UDOEPTSIZ(1) = (1u << 19) | i9100_usb_bulk_mps;
 	UDOEPCTL(1) = (UDOEPCTL(1) & ~(UEPCTL_EPDIS | UEPCTL_SNAK |
 		UEPCTL_STALL)) | UEPCTL_EPENA | UEPCTL_CNAK;
@@ -447,9 +450,11 @@ static void i9100_usb_e0setup(void)
 		UDIEPCTL(2) = UEPCTL_ACT | UEPCTL_EPTYPE(3) | (2 << 22) |
 			UEPCTL_MPS(8) | UEPCTL_SNAK;
 		UDOEPCTL(1) = UEPCTL_ACT | UEPCTL_EPTYPE(2) |
-			UEPCTL_MPS(i9100_usb_bulk_mps) | UEPCTL_SD0;
+			UEPCTL_MPS(i9100_usb_bulk_mps) |
+			(uctl_started ? UEPCTL_SD0 : UEPCTL_EPENA | UEPCTL_CNAK);
 		i9100_usb_configured = 1;
 		i9100_usb_e1outarm();
+		uctl_ready();
 		i9100_usb_e0sin();
 		return;
 	}
@@ -549,6 +554,7 @@ static void i9100_usb_drain(void)
 	if (n > sizeof(pkt)) n = sizeof(pkt);
 	if (space < (n + 3) / 4) return;
 	if (uctl_len) {
+		UDIEPINT(1) = 0x3ff; /* clear stale completions only for control replies */
 		memcpy(pkt, uctl_reply, n);
 		uctl_len = 0;
 		uctl_flight = 1;
@@ -556,7 +562,6 @@ static void i9100_usb_drain(void)
 		pkt[i] = i9100_usb_ring[i9100_usb_t];
 		i9100_usb_t = (i9100_usb_t + 1) & (UTXRING - 1);
 	}
-	UDIEPINT(1) = 0x3ff; /* never associate a stale completion with this ACK */
 	UDIEPTSIZ(1) = (1 << 19) | (1u << 29) | n;
 	UDIEPCTL(1) = (UDIEPCTL(1) & ~(UEPCTL_EPDIS | UEPCTL_SNAK |
 		UEPCTL_STALL)) | UEPCTL_EPENA | UEPCTL_CNAK;
@@ -581,9 +586,9 @@ static void i9100_usb_poll(void)
 		i9100_usb_newaddr = 0;
 		i9100_usb_mode = USB_OURS;
 		i9100_usb_devinit();
-		return; /* remaining bits belong to the previous USB session */
+		if (uctl_started) return; /* remaining bits belong to the previous USB session */
 	}
-	if (st & ((1u << 29) | (1u << 11))) {
+	if (uctl_started && (st & ((1u << 29) | (1u << 11)))) {
 		UGINTSTS = st & ((1u << 29) | (1u << 11));
 		uctl_cancel();
 		return;
@@ -613,7 +618,8 @@ static void i9100_usb_poll(void)
 			unsigned int e = UDIEPINT(1);
 			UDIEPINT(1) = e;
 			uctl_complete(e);
-			if (e & (UEPINT_XFC | UEPINT_AHBERR | (1u << 1) | (1u << 3)))
+			if ((e & (UEPINT_XFC | UEPINT_AHBERR)) ||
+			    (uctl_started && (e & ((1u << 1) | (1u << 3)))))
 				i9100_usb_busy1 = 0;
 		}
 	}
@@ -676,11 +682,7 @@ void i9100_usbcdc_setmap(void)
 	}
 	i9100_phy_map = ml_io_map(I9100_PHY_PA, 0x1000);
 	i9100_pmu_map = ml_io_map(I9100_PMU_PA, 0x4000);
-	(void)PE_parse_boot_argn("i9100control", &uctl_enabled, sizeof(uctl_enabled));
-	uctl_enabled = uctl_enabled == 1;
-	(void)PE_parse_boot_argn("i9100build", uctl_build, sizeof(uctl_build));
 	i9100_usbcdc_init();
-	uctl_ready();
 	{
 		static const char msg[] = "\n[i9100-usbcdc] kernel CDC up, mode ";
 		const char *p = msg;
@@ -691,6 +693,25 @@ void i9100_usbcdc_setmap(void)
 				  i9100_usb_mode == USB_OURS ? 'H' : 'D');
 		i9100_usbcdc_putc('\n');
 	}
+}
+
+/* USB maps before the framebuffer console. Keep that proven early path
+ * log-only; enable maintenance only after the MCT timebase is running. */
+void i9100_usbcdc_control_init(void)
+{
+	boolean_t enabled;
+	if (uctl_started || !i9100_usb_map || !i9100_usb_probed ||
+	    i9100_usb_mode == USB_DEAD) return;
+	enabled = ml_set_interrupts_enabled(FALSE);
+	(void)PE_parse_boot_argn("i9100control", &uctl_enabled, sizeof(uctl_enabled));
+	uctl_enabled = uctl_enabled == 1;
+	/* An underscore forces a string even when all 16 hash digits are numeric. */
+	(void)PE_parse_boot_argn("_i9100build", uctl_build, sizeof(uctl_build));
+	uctl_started = 1;
+	UDOEPMSK |= 0x0d;
+	if (!(UDOEPCTL(1) & UEPCTL_EPENA)) i9100_usb_e1outarm();
+	uctl_ready();
+	ml_set_interrupts_enabled(enabled);
 }
 
 /* Probe/adopt or hard-init.  Called lazily on the first putc and again
@@ -720,10 +741,6 @@ void i9100_usbcdc_init(void)
 		usb_cfg_desc[58] = usb_cfg_desc[65] = i9100_usb_bulk_mps >> 8;
 		UGINTMSK = 0x800c3810U;
 		UDAINTMSK |= (1 << 17) | (1 << 16) | (1 << 1) | 1;
-		UDOEPMSK |= 0x0d;
-		/* Loader has no command receiver. Preserve any active OUT transfer;
-		 * its RX completion rearms us, otherwise start receiving now. */
-		if (!(UDOEPCTL(1) & UEPCTL_EPENA)) i9100_usb_e1outarm();
 	} else {
 		i9100_usb_hardinit();
 	}
