@@ -8,6 +8,7 @@
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/IOTimerEventSource.h>
 #include <libkern/OSAtomic.h>
+#include <libkern/c++/OSUnserialize.h>
 #include "IOS7LabSurfaceGeometry.h"
 #if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
 /* J1 backend: direct-FB present/ready/completed (see pe_exynos3475_j1.c). */
@@ -1588,6 +1589,34 @@ void ios7leo_register_display(IOService *platform)
      * property the notification never fires and the display stays closed. */
     display->setName("AppleCLCD");display->setProperty("IOS7LabBackend","Samsung Galaxy S2 FIMD direct RGB565 480x800");
     display->setProperty("backlight-control",kOSBooleanTrue);
+    /* Once first-matched, backboardd and prdaily immediately read
+     * IODisplayParameters on the display service (live probe evidence).
+     * Publish the retail-shaped plist so the discovery chain continues. */
+    {
+        static const char i9100DisplayParametersXML[] =
+            "<plist version=\"1.0\"><dict>"
+            "<key>brightness</key><dict>"
+            "<key>min</key><integer>0</integer>"
+            "<key>max</key><integer>255</integer>"
+            "<key>value</key><integer>255</integer>"
+            "</dict>"
+            "<key>commit</key><integer>1</integer>"
+            "<key>fade</key><dict>"
+            "<key>at</key><real>0.0</real>"
+            "<key>down-to</key><real>0.65</real>"
+            "<key>period</key><real>0.6</real>"
+            "<key>up-to</key><real>1.0</real>"
+            "</dict>"
+            "<key>display</key><dict>"
+            "<key>brightness-adjustment</key><real>1.0</real>"
+            "</dict>"
+            "</dict></plist>";
+        OSObject *dp = OSUnserializeXML(i9100DisplayParametersXML);
+        if (dp) {
+            display->setProperty("IODisplayParameters", dp);
+            dp->release();
+        }
+    }
     surfaces->registerService();display->registerService();
     IOLog("i9100 native display provider published 480x800 BGRA row1920 bytes1536000; dynamicbudget=%u\n",displayBudget);
 #else
