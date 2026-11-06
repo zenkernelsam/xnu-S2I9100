@@ -9096,6 +9096,18 @@ submap_recurse:
 						for (i = -4; i < 4; i++)
 							printf(" %08x", ml_phys_read(pa + fo + i * 4));
 					}
+					if (uc) {
+						pn = pmap_find_phys(th->map->pmap,
+							(addr64_t)(uc[14] & ~1u));
+						if (pn) {
+							vm_offset_t pa = ((vm_offset_t)pn) << 12;
+							vm_offset_t fo = (uc[14] & ~1u) & 0xff0;
+							printf(" lrpc(%x):", (unsigned int)fo);
+							for (i = -8; i < 8; i++)
+								printf(" %08x",
+									ml_phys_read(pa + fo + i * 4));
+						}
+					}
 				}
 			}
 			printf("\n");
