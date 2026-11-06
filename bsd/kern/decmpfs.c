@@ -44,6 +44,7 @@ char unregister_decmpfs_decompressor;
 #include <sys/decmpfs.h>
 #include <sys/uio_internal.h>
 #include <libkern/zlib.h>
+#include "ios7lab_decmpfs_decode.h"
 #include <kern/kalloc.h>
 #include <libkern/OSByteOrder.h>
 
@@ -1591,7 +1592,10 @@ decompress:
 		decmpfs_vector vec = { .buf = data, .size = MIN(allocSize, remaining) };
 		err = decmpfs_fetch_uncompressed_data(vp, cp, hdr, offset, vec.size, 1, &vec, &bytes_read);
 		if (err != 0) {
-			ErrorLog("decmpfs_fetch_uncompressed_data err %d\n", err);
+			const char *name = vnode_getname(vp);
+			ErrorLog("decmpfs_fetch_uncompressed_data err %d type=%u file=%s\n",
+			    err, hdr->compression_type, name ? name : "?");
+			if (name) vnode_putname(name);
 			goto out;
 		}
 		
@@ -1911,6 +1915,7 @@ decmpfs_fetch_uncompressed_data_Type4(vnode_t vp, vfs_context_t ctx, decmpfs_hea
 		uint64_t usize, copy_from, copy_len;
 		z_stream zs;
 		int zr;
+		uInt decoded;
 
 		if (!csize || csize > TYPE4_CHUNK * 2) {
 			err = EINVAL;
@@ -1923,23 +1928,13 @@ decmpfs_fetch_uncompressed_data_Type4(vnode_t vp, vfs_context_t ctx, decmpfs_hea
 		base += csize;
 
 		bzero(&zs, sizeof(zs));
-		zs.next_in = (Bytef *)cbuf;
-		zs.avail_in = csize;
-		zs.next_out = (Bytef *)ubuf;
-		zs.avail_out = TYPE4_CHUNK;
 		zs.zalloc = type4_zalloc;
 		zs.zfree = type4_zfree;
-		stage = 5;
-		if (inflateInit(&zs) != Z_OK) {
-			err = EIO;
-			goto out;
-		}
-		zr = inflate(&zs, Z_FINISH);
-		usize = zs.total_out;
-		inflateEnd(&zs);
+		zr = ios7lab_decmpfs_decode(&zs, cbuf, csize, ubuf, TYPE4_CHUNK, &decoded);
+		usize = decoded;
 		stage = 6;
-		if (zr != Z_STREAM_END || usize == 0 ||
-		    (i < nchunks - 1 && usize != TYPE4_CHUNK)) {
+		if (zr != Z_OK || usize != MIN((uint64_t)TYPE4_CHUNK,
+		    hdr->uncompressed_size - (uint64_t)i * TYPE4_CHUNK)) {
 			err = EIO;
 			goto out;
 		}
@@ -2018,6 +2013,7 @@ decmpfs_fetch_uncompressed_data_Type3(vnode_t vp, vfs_context_t ctx, decmpfs_hea
 	uint8_t *ubuf;
 	z_stream zs;
 	int zr;
+	uInt decoded;
 	uint64_t produced = 0;
 	int vi = 0;
 	user_ssize_t vec_off = 0;
@@ -2028,25 +2024,21 @@ decmpfs_fetch_uncompressed_data_Type3(vnode_t vp, vfs_context_t ctx, decmpfs_hea
 		return EINVAL;
 	if ((uint64_t)offset >= hdr->uncompressed_size)
 		return 0;
+	if (hdr->attr_size < sizeof(decmpfs_disk_header) ||
+	    (uint64_t)(uInt)hdr->uncompressed_size != hdr->uncompressed_size)
+		return EINVAL;
 
 	MALLOC(ubuf, uint8_t *, hdr->uncompressed_size, M_TEMP, M_WAITOK);
 	if (!ubuf)
 		return ENOMEM;
 
 	bzero(&zs, sizeof(zs));
-	zs.next_in = (Bytef *)hdr->attr_bytes;
-	zs.avail_in = hdr->attr_size - sizeof(decmpfs_disk_header);
-	zs.next_out = (Bytef *)ubuf;
-	zs.avail_out = (uInt)hdr->uncompressed_size;
 	zs.zalloc = type4_zalloc;
 	zs.zfree = type4_zfree;
-	if (inflateInit(&zs) != Z_OK) {
-		FREE(ubuf, M_TEMP);
-		return EIO;
-	}
-	zr = inflate(&zs, Z_FINISH);
-	inflateEnd(&zs);
-	if (zr != Z_STREAM_END || zs.total_out != hdr->uncompressed_size) {
+	zr = ios7lab_decmpfs_decode(&zs, (const unsigned char *)hdr->attr_bytes,
+	    hdr->attr_size - sizeof(decmpfs_disk_header), ubuf,
+	    (uInt)hdr->uncompressed_size, &decoded);
+	if (zr != Z_OK || decoded != hdr->uncompressed_size) {
 		FREE(ubuf, M_TEMP);
 		return EIO;
 	}

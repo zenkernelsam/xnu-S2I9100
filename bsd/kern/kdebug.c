@@ -2396,6 +2396,11 @@ stack_snapshot(struct proc *p, register struct stack_snapshot_args *uap, int32_t
 int
 stack_snapshot2(pid_t pid, user_addr_t tracebuf, uint32_t tracebuf_size, uint32_t flags, uint32_t dispatch_offset, int32_t *retval)
 {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    /* This port has no debugger stackshot transport. ReportCrash must
+     * receive an unsupported error rather than entering TRAP_DEBUGGER. */
+    return ENOTSUP;
+#endif
 	int error = 0;
 	unsigned bytesTraced = 0;
 	boolean_t istate;

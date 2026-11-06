@@ -65,6 +65,28 @@ void i9100_usbcdc_setmap(void);
 static void i9100_puts(const char *s);
 static void i9100_puthex(unsigned int v);
 
+/* Independent of USB/printf: PMU INFORM6/7 and a reserved top-DRAM
+ * record survive a warm reset. Map once while VM services are usable;
+ * fatal paths only write existing mappings and never allocate. */
+static vm_offset_t i9100_trace_pmu, i9100_trace_cell;
+static void i9100_trace(unsigned int stage, unsigned int reason,
+    unsigned int pc, unsigned int lr, unsigned int far, unsigned int fsr)
+{
+    if (i9100_trace_pmu) {
+        *(volatile unsigned int *)(i9100_trace_pmu + 0x818) = 0x77660000U | stage;
+        *(volatile unsigned int *)(i9100_trace_pmu + 0x81c) = reason;
+    }
+    if (i9100_trace_cell) {
+        volatile unsigned int *cell = (volatile unsigned int *)i9100_trace_cell;
+        cell[0] = 0;
+        cell[1] = stage; cell[2] = reason; cell[3] = pc;
+        cell[4] = lr; cell[5] = far; cell[6] = fsr;
+        __asm__ volatile("dsb sy" ::: "memory");
+        cell[0] = 0xcafebabeU;
+    }
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+
 /* A fault in the panic/debugger path must not re-enter VM, printf or Debugger.
  * Keep the primary header and show the first secondary fault below it. Even
  * the emergency output may fault, so close the gate before touching it. */
@@ -108,6 +130,7 @@ int ios7i9100_fatal_report(unsigned int cat, unsigned int cs,
 {
     if(i9100_fatal_active) return 0;
     i9100_fatal_active=1;
+    i9100_trace(0x8000U | (i9100_stage & 0xffU), cat, pc ? pc : cs, lr, far, fsr);
     i9100_fatal_callsite=cs;
     /* Reclaim an existing framebuffer before panic_prologue can take locks.
      * No IO mapping, allocation, timebase or IOKit calls on this path. */
@@ -505,6 +528,7 @@ void ios7i9100_checkpoint(boot_args *a, unsigned int stage)
         if(!(stage==6&&i9100_stage==0)) ios7i9100_final_boundary(3);
     }
     i9100_stage=stage;
+    i9100_trace(0x100U | stage, 0, 0, 0, 0, 0);
     if(stage==7) i9100_puts("i9100 stage7\n");
     else if(stage==8) i9100_puts("i9100 stage8\n");
     else if(stage==9) i9100_puts("i9100 stage9\n");
@@ -519,6 +543,9 @@ void PE_init_SocSupport_stub(void)
     boot_args *args=(boot_args *)PE_state.bootArgs;
     vm_offset_t fb;
     static ios7lab_i9100_handoff i9100_default_handoff;
+    i9100_trace_pmu=ml_io_map(0x10020000, 0x4000);
+    i9100_trace_cell=ml_io_map(0x7ffe0000, 0x1000);
+    i9100_trace(0x108, 0, 0, 0, 0, 0);
     if(!i9100_video_ok(args)) ios7i9100_final_boundary(4);
 
     if(DTLookupEntry(0,"/chosen",&chosen)==kSuccess &&

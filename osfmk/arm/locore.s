@@ -61,6 +61,17 @@ EnterARM(_start)
     beq     mmu_initialized
 
 mmu_reinitialize:
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    /* Only on the MMU-off path may these physical registers be used. */
+    movw    r1, #0x0818
+    movt    r1, #0x1002
+    movw    r2, #0x0010
+    movt    r2, #0x7766
+    str     r2, [r1]
+    mov     r2, #0
+    str     r2, [r1, #4]
+    dsb     sy
+#endif
     /*
      * MMU initialization part begins here. -----------------------
      *

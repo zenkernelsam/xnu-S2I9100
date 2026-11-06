@@ -1484,7 +1484,8 @@ exec_handle_port_actions(struct image_params *imgp, short psa_flags)
 		act = &pacts->pspa_actions[i];
 #if IOS7_COMPAT_PLATFORM
         {
-            if (ios7_compat_vmabi_enabled()) {
+            /* PSPA_IMP_WATCHPORTS is also sent by iOS6 libSystem. */
+            {
 #if BOARD_CONFIG_ARMPBA8
                 if (p->p_pid < 32)
                     printf("IOS7LAB spawn_port pid=%d index=%d type=%d port=%x which=%d flags=%x\n",

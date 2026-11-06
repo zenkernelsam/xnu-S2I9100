@@ -2,12 +2,13 @@
  * Continuation of uniLoader's dwc2cdc4210 gadget: the DWC2 OTG device
  * at 0x12480000 is adopted as-is when uniLoader enumerated it, so the
  * COM port on the PC stays open across the loader->kernel boundary.
- * Pure polled slave mode driven from ios7i9100_debug_putc; EP0 control
- * traffic is serviced as a side effect.  No IRQs, no DMA, every wait
- * bounded. */
+ * Polled slave mode, serviced by putc and the existing MCT tick. No
+ * dedicated USB IRQ or DMA; no logging/allocation in the poll path. */
+#ifndef I9100_USB_SIM
 #include <mach/mach_types.h>
 #include <pexpert/pexpert.h>
 #include <machine/machine_routines.h>
+#endif
 #include <string.h>
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
@@ -15,6 +16,7 @@
 void i9100_usbcdc_putc(char c);
 void i9100_usbcdc_setmap(void);
 void i9100_usbcdc_init(void);
+void i9100_usbcdc_poll(void);
 
 #define I9100_DWC2_PA	0x12480000U
 #define I9100_PHY_PA	0x125B0000U
@@ -25,13 +27,16 @@ static vm_offset_t i9100_usb_map;
 static vm_offset_t i9100_phy_map;
 static vm_offset_t i9100_pmu_map;
 
+#ifndef UREG
 #define UREG(x) (*(volatile unsigned int *) \
 		 (i9100_usb_map ? i9100_usb_map + (x) : I9100_DWC2_PA + (x)))
+#endif
 #define UGOTGCTL	UREG(0x000)
 #define UGAHBCFG	UREG(0x008)
 #define UGUSBCFG	UREG(0x00C)
 #define UGRSTCTL	UREG(0x010)
 #define UGINTSTS	UREG(0x014)
+#define UGINTMSK	UREG(0x018)
 #define UGRXSTSP	UREG(0x020)
 #define UGRXFSIZ	UREG(0x024)
 #define UGNPTXFSIZ	UREG(0x028)
@@ -55,6 +60,9 @@ static vm_offset_t i9100_pmu_map;
 #define UDOEPTSIZ(n)	UREG(0xB10 + (n) * 0x20)
 #define UDTXFSTS(n)	UREG(0x918 + (n) * 0x20)
 #define UFIFO(n)	UREG(0x1000 + (n) * 0x1000)
+#ifndef URXFIFO
+#define URXFIFO()	UFIFO(0)
+#endif
 #define UPCGCCTL	UREG(0xE00)
 #define UPHYREG(x)	(*(volatile unsigned int *) \
 		 (i9100_phy_map ? i9100_phy_map + (x) : I9100_PHY_PA + (x)))
@@ -107,26 +115,30 @@ static volatile unsigned int i9100_usb_h, i9100_usb_t;
 static const unsigned char usb_dev_desc[] = {
 	18, 1, 0, 2, 2, 0, 0, 64, 0x25, 0x05, 0xa7, 0xa4, 0x01, 0,
 	1, 2, 3, 1 };
-static const unsigned char usb_cfg_desc[] = {
+static unsigned char usb_cfg_desc[] = {
 	9, 2, 67, 0, 2, 1, 0, 0x80, 0xfa,
 	9, 4, 0, 0, 1, 2, 2, 1, 0,
 	5, 0x24, 0, 0x10, 0x01,
 	5, 0x24, 1, 0, 1,
 	4, 0x24, 2, 0x02,
 	5, 0x24, 6, 0, 1,
-	7, 5, 0x82, 3, 8, 0, 255,
+	7, 5, 0x82, 3, 8, 0, 16,
 	9, 4, 1, 0, 2, 10, 0, 0, 0,
-	7, 5, 0x81, 2, 64, 0, 0,
-	7, 5, 0x01, 2, 64, 0, 0 };
+	7, 5, 0x81, 2, 0, 2, 0,
+	7, 5, 0x01, 2, 0, 2, 0 };
+static unsigned int i9100_usb_bulk_mps = 512;
 static const unsigned char usb_str0[] = { 4, 3, 9, 4 };
 static const unsigned char usb_str1[] = {
-	30, 3, 'i',0,'9',0,'1',0,'0',0,'0',0,' ',0,'u',0,'n',0,'i',0,
+	32, 3, 'i',0,'9',0,'1',0,'0',0,'0',0,' ',0,'u',0,'n',0,'i',0,
 	'L',0,'o',0,'a',0,'d',0,'e',0,'r',0 };
 static const unsigned char usb_str2[] = {
-	26, 3, 'X',0,'N',0,'U',0,' ',0,'C',0,'D',0,'C',0,' ',0,'L',0,
+	24, 3, 'X',0,'N',0,'U',0,' ',0,'C',0,'D',0,'C',0,' ',0,'L',0,
 	'O',0,'G',0 };
 static const unsigned char usb_str3[] = {
-	20, 3, 'S',0,'2',0,'I',0,'9',0,'1',0,'0',0,'0',0,'-',0,'1',0 };
+	24, 3, 'S',0,'2',0,'I',0,'9',0,'1',0,'0',0,'0',0,'-',0,
+	'O',0,'S',0,'6',0 };
+static const unsigned char usb_qual_desc[] = {
+	10, 6, 0, 2, 2, 0, 0, 64, 1, 0 };
 
 static void i9100_usb_spin(unsigned int n)
 {
@@ -151,37 +163,29 @@ static int i9100_usb_wait(volatile unsigned int *r, unsigned int m,
 static void i9100_usb_fifos(void)
 {
 	UGRXFSIZ = 0x200;
-	UGNPTXFSIZ = (0x80 << 16) | 0x200;
-	UDPTXF(1) = (0x80 << 16) | 0x280;
-	UDPTXF(2) = (0x20 << 16) | 0x300;
-	UGRSTCTL = UGRST_RXFFLSH;
-	i9100_usb_wait(&UGRSTCTL, UGRST_RXFFLSH, 0);
-	UGRSTCTL = UGRST_TXFNUM(0x10) | UGRST_TXFFLSH;
-	i9100_usb_wait(&UGRSTCTL, UGRST_TXFFLSH, 0);
+	UGNPTXFSIZ = (0x100 << 16) | 0x200;
+	UDPTXF(1) = (0x180 << 16) | 0x300;
+	/* Reset-time flushing previously broke this core's live RX path.
+	 * Initial CSRST already clears it; USBRST needs no FIFO flush. */
 }
 
 static void i9100_usb_e0arm(void)
 {
-	UDOEPTSIZ(0) = (3 << 29) | (1 << 19) | 24;
-	UDOEPCTL(0) |= UEPCTL_EPENA;
+	UDOEPTSIZ(0) = (1 << 29) | (1 << 19) | 8;
+	UDOEPCTL(0) = UEPCTL_ACT | UEPCTL_EPENA | UEPCTL_CNAK;
 }
 
 static void i9100_usb_devinit(void)
 {
-	int i;
-
 	UDCFG = (1 << 18) | 0;
-	UDCTL |= UDCTL_SFTDIS;
-	i9100_usb_spin(20);
-	UDCTL &= ~UDCTL_SFTDIS;
-	for (i = 0; i < 4; i++) {
-		UDOEPCTL(i) = UEPCTL_EPDIS | UEPCTL_SNAK;
-		UDIEPCTL(i) = UEPCTL_EPDIS | UEPCTL_SNAK;
-	}
-	UDIEPMSK = 7;
-	UDOEPMSK = 0xB;
-	UDAINTMSK = (1 << 16) | 1;
+	UDIEPMSK = 0x1d;
+	UDOEPMSK = 0x0d;
+	UDAINTMSK = (1 << 17) | (1 << 16) | (1 << 1) | 1;
 	i9100_usb_fifos();
+	UDIEPINT(0) = UDIEPINT(1) = 0x3ff;
+	UDOEPINT(0) = UDOEPINT(1) = 0x3ff;
+	UDIEPCTL(0) = UEPCTL_ACT;
+	UGINTMSK = 0x800c3810U;
 	i9100_usb_e0st = UE0_WAIT;
 	i9100_usb_e0len = 0;
 	i9100_usb_busy1 = 0;
@@ -200,19 +204,23 @@ static void i9100_usb_pmu_set(unsigned int off, unsigned int bits)
 static void i9100_usb_hardinit(void)
 {
 	i9100_usb_pmu_set(I9100_PMU_USBPHY, 1);
-	UPHYREG(0) &= ~(0x39u);
-	UPHYREG(4) = (UPHYREG(4) & ~0x14) | 0x3;
-	UPHYREG(8) = (UPHYREG(8) & ~6) | 1;
-	i9100_usb_spin(20);
-	UPHYREG(8) &= ~7;
-	i9100_usb_spin(20);
+	UPHYREG(0) = 0x1f80;
+	UPHYREG(4) = 3;
+	UPHYREG(8) = 1;
+	i9100_usb_spin(20000);
+	UPHYREG(8) = 0;
+	i9100_usb_spin(20000);
+	UPHYREG(0x24) = 0x001819bb;
 
 	i9100_usb_wait(&UGRSTCTL, UGRST_AHBIDLE, UGRST_AHBIDLE);
 	UGRSTCTL = UGRST_CSFT;
 	i9100_usb_wait(&UGRSTCTL, UGRST_CSFT, 0);
-	UGUSBCFG = (1 << 30) | (1 << 14) | (0x5 << 10) | 0x7;
-	i9100_usb_fifos();
+	UGAHBCFG = 1;
+	UGUSBCFG = (1 << 30) | 0x540f;
 	i9100_usb_devinit();
+	UDCTL |= UDCTL_SFTDIS;
+	i9100_usb_spin(10000);
+	UDCTL &= ~UDCTL_SFTDIS;
 	i9100_usb_mode = USB_OURS;
 }
 
@@ -221,14 +229,17 @@ static int i9100_usb_e0tx(unsigned int len)
 	unsigned int words = (len + 3) >> 2, i;
 	unsigned int w;
 
-	if ((UGNPTXSTS & 0xffff) < words)
+	if ((UDTXFSTS(0) & 0xffff) < words)
 		return -1;
 	UDIEPTSIZ(0) = (1 << 19) | len;
+	UDIEPCTL(0) = UEPCTL_ACT | UEPCTL_EPENA | UEPCTL_CNAK;
 	for (i = 0; i < words; i++) {
-		memcpy(&w, i9100_usb_e0buf + i * 4, 4);
+		unsigned int j;
+		w = 0;
+		for (j = 0; j < 4 && i * 4 + j < len; j++)
+			w |= (unsigned int)i9100_usb_e0buf[i * 4 + j] << (j * 8);
 		UFIFO(0) = w;
 	}
-	UDIEPCTL(0) |= UEPCTL_EPENA | UEPCTL_CNAK;
 	i9100_usb_e0buf += len;
 	i9100_usb_e0len -= len;
 	return 0;
@@ -248,7 +259,7 @@ static void i9100_usb_e0sin(void)
 {
 	i9100_usb_e0st = UE0_SIN;
 	UDIEPTSIZ(0) = 1 << 19;
-	UDIEPCTL(0) |= UEPCTL_EPENA | UEPCTL_CNAK;
+	UDIEPCTL(0) = UEPCTL_ACT | UEPCTL_EPENA | UEPCTL_CNAK;
 }
 
 static void i9100_usb_e0stall(void)
@@ -279,27 +290,41 @@ static void i9100_usb_e0setup(void)
 		case 3:
 			switch (wv & 0xff) {
 			case 0: i9100_usb_e0reply(usb_str0, 4, wl); return;
-			case 1: i9100_usb_e0reply(usb_str1, 30, wl); return;
-			case 2: i9100_usb_e0reply(usb_str2, 26, wl); return;
-			default: i9100_usb_e0reply(usb_str3, 20, wl); return;
+			case 1: i9100_usb_e0reply(usb_str1, sizeof(usb_str1), wl); return;
+			case 2: i9100_usb_e0reply(usb_str2, sizeof(usb_str2), wl); return;
+			default: i9100_usb_e0reply(usb_str3, sizeof(usb_str3), wl); return;
 			}
+		case 6:
+			i9100_usb_e0reply(usb_qual_desc, sizeof(usb_qual_desc), wl);
+			return;
+		case 7: {
+			static unsigned char other[sizeof(usb_cfg_desc)];
+			memcpy(other, usb_cfg_desc, sizeof(other));
+			other[1] = 7;
+			unsigned int mps = i9100_usb_bulk_mps == 512 ? 64 : 512;
+			other[57] = other[64] = mps & 255;
+			other[58] = other[65] = mps >> 8;
+			i9100_usb_e0reply(other, sizeof(other), wl);
+			return;
+		}
 		}
 		i9100_usb_e0stall();
 		return;
 	}
 	if (rt == 0x00 && rq == 5) {
-		i9100_usb_newaddr = wv & 0x7f;
+		UDCFG = (UDCFG & ~0x7f0U) | ((wv & 0x7f) << 4);
+		i9100_usb_newaddr = 0;
 		i9100_usb_e0sin();
 		return;
 	}
 	if (rt == 0x00 && rq == 9) {
 		UDIEPCTL(1) = UEPCTL_ACT | UEPCTL_EPTYPE(2) | (1 << 22) |
-			UEPCTL_MPS(64) | UEPCTL_EPENA | UEPCTL_CNAK |
+			UEPCTL_MPS(i9100_usb_bulk_mps) |
 			UEPCTL_SD0;
 		UDIEPCTL(2) = UEPCTL_ACT | UEPCTL_EPTYPE(3) | (2 << 22) |
 			UEPCTL_MPS(8) | UEPCTL_SNAK;
 		UDOEPCTL(1) = UEPCTL_ACT | UEPCTL_EPTYPE(2) |
-			UEPCTL_MPS(64) | UEPCTL_EPENA | UEPCTL_CNAK;
+			UEPCTL_MPS(i9100_usb_bulk_mps) | UEPCTL_EPENA | UEPCTL_CNAK;
 		i9100_usb_configured = 1;
 		i9100_usb_e0sin();
 		return;
@@ -352,18 +377,19 @@ static void i9100_usb_e0indone(void)
 static void i9100_usb_rxlvl(void)
 {
 	unsigned int gs = UGRXSTSP, ps = URX_PKTSTS(gs), bc = URX_BYTECNT(gs);
-	unsigned int i;
+	unsigned int i, ep = gs & 0xf;
 
 	if (ps == 6) {
-		unsigned int lo = UGRXSTSP, hi = UGRXSTSP;
+		/* GRXSTSP pops STATUS. Payload always comes from DFIFO0. */
+		unsigned int lo = URXFIFO(), hi = URXFIFO();
 		memcpy(i9100_usb_setup, &lo, 4);
 		memcpy(i9100_usb_setup + 4, &hi, 4);
-	} else if (ps == 4) {
+		UDIEPINT(0) = 0x3ff; /* a new SETUP aborts the previous control transfer */
 		i9100_usb_e0setup();
 	} else if (ps == 2) {
 		for (i = 0; i < (bc + 3) / 4; i++)
-			(void)UGRXSTSP;
-		if (i9100_usb_e0st == UE0_DOUT)
+			(void)URXFIFO();
+		if (ep == 0 && i9100_usb_e0st == UE0_DOUT)
 			i9100_usb_e0sin();
 	} else if (ps == 3) {
 		if (i9100_usb_e0st == UE0_SOUT)
@@ -371,35 +397,39 @@ static void i9100_usb_rxlvl(void)
 		i9100_usb_e0arm();
 	} else {
 		for (i = 0; i < (bc + 3) / 4; i++)
-			(void)UGRXSTSP;
+			(void)URXFIFO();
 	}
+	if (ep == 0)
+		i9100_usb_e0arm();
 }
 
 static void i9100_usb_drain(void)
 {
-	unsigned char pkt[64];
+	unsigned char pkt[64] = { 0 };
 	unsigned int n = 0, i, w, space;
 
 	if (i9100_usb_busy1 || !i9100_usb_configured ||
-	    !i9100_usb_hostopen || i9100_usb_h == i9100_usb_t)
+	    i9100_usb_h == i9100_usb_t)
 		return;
 	space = UDTXFSTS(1) & 0xffff;
 	if (!space)
 		return;
-	while (n < sizeof(pkt) && i9100_usb_t != i9100_usb_h) {
-		pkt[n++] = i9100_usb_ring[i9100_usb_t];
+	n = (i9100_usb_h - i9100_usb_t) & (UTXRING - 1);
+	if (n > sizeof(pkt)) n = sizeof(pkt);
+	if (space < (n + 3) / 4) return;
+	for (i = 0; i < n; i++) {
+		pkt[i] = i9100_usb_ring[i9100_usb_t];
 		i9100_usb_t = (i9100_usb_t + 1) & (UTXRING - 1);
 	}
-	if (space < (n + 3) / 4)
-		return;
 	UDIEPTSIZ(1) = (1 << 19) | (1u << 29) | n;
+	UDIEPCTL(1) = (UDIEPCTL(1) & ~(UEPCTL_EPDIS | UEPCTL_SNAK |
+		UEPCTL_STALL)) | UEPCTL_EPENA | UEPCTL_CNAK;
 	for (i = 0; i < (n + 3) / 4; i++) {
-		w = pkt[i * 4] | (pkt[i * 4 + 1] << 8) |
-		    (pkt[i * 4 + 2] << 16) |
-		    ((i * 4 + 3 < n ? pkt[i * 4 + 3] : 0) << 24);
+		w = (unsigned int)pkt[i * 4] | ((unsigned int)pkt[i * 4 + 1] << 8) |
+		    ((unsigned int)pkt[i * 4 + 2] << 16) |
+		    ((unsigned int)pkt[i * 4 + 3] << 24);
 		UFIFO(1) = w;
 	}
-	UDIEPCTL(1) |= UEPCTL_EPENA | UEPCTL_CNAK;
 	i9100_usb_busy1 = 1;
 }
 
@@ -419,8 +449,10 @@ static void i9100_usb_poll(void)
 	if (st & UGINT_ENUM) {
 		UGINTSTS = UGINT_ENUM;
 		i9100_usb_enum = 1;
-		UDIEPCTL(0) = (UDIEPCTL(0) & ~3u) | UEPCTL_CNAK;
-		UDOEPCTL(0) = (UDOEPCTL(0) & ~3u) | UEPCTL_CNAK;
+		i9100_usb_bulk_mps = ((UDSTS >> 1) & 3) == 0 ? 512 : 64;
+		usb_cfg_desc[57] = usb_cfg_desc[64] = i9100_usb_bulk_mps & 255;
+		usb_cfg_desc[58] = usb_cfg_desc[65] = i9100_usb_bulk_mps >> 8;
+		UDIEPCTL(0) = UEPCTL_ACT;
 		i9100_usb_e0arm();
 	}
 	if (st & UGINT_RXFLVL) {
@@ -442,12 +474,32 @@ static void i9100_usb_poll(void)
 				i9100_usb_busy1 = 0;
 		}
 	}
+	if (st & UGINT_OEP) {
+		unsigned int d = (UDAINT >> 16) & 0xffff;
+		if (d & 1) UDOEPINT(0) = UDOEPINT(0);
+		if (d & 2) UDOEPINT(1) = UDOEPINT(1);
+	}
 	i9100_usb_drain();
+}
+
+void i9100_usbcdc_poll(void)
+{
+	boolean_t enabled;
+	if (!i9100_usb_map || !i9100_usb_probed || i9100_usb_mode == USB_DEAD)
+		return;
+	enabled = ml_set_interrupts_enabled(FALSE);
+	if (!i9100_usb_in) {
+		i9100_usb_in = 1;
+		i9100_usb_poll();
+		i9100_usb_in = 0;
+	}
+	ml_set_interrupts_enabled(enabled);
 }
 
 void i9100_usbcdc_putc(char c)
 {
 	unsigned int nx;
+	boolean_t enabled;
 
 	/* No MMIO until i9100_usbcdc_setmap() gave us a real kernel VA:
 	 * the early identity map does not cover 0x12480000.  Chars still
@@ -459,18 +511,14 @@ void i9100_usbcdc_putc(char c)
 	if (i9100_usb_mode == USB_DEAD)
 		return;
 ring_only:
+	enabled = ml_set_interrupts_enabled(FALSE);
 	nx = (i9100_usb_h + 1) & (UTXRING - 1);
 	if (nx != i9100_usb_t) {
 		i9100_usb_ring[i9100_usb_h] = c;
 		i9100_usb_h = nx;
 	}
-	if (!i9100_usb_map || i9100_usb_mode == USB_DEAD)
-		return;
-	if (i9100_usb_in)
-		return;
-	i9100_usb_in = 1;
-	i9100_usb_poll();
-	i9100_usb_in = 0;
+	i9100_usbcdc_poll();
+	ml_set_interrupts_enabled(enabled);
 }
 
 /* ml_io_map() became usable: swap the register base from the
@@ -517,6 +565,14 @@ void i9100_usbcdc_init(void)
 		i9100_usb_mode = USB_ADOPT;
 		i9100_usb_configured = 1;
 		i9100_usb_hostopen = 1;
+		/* Adopt an in-flight loader packet. Wait for its XFRC before
+		 * writing TSIZ or FIFO; the loader's software busy flag is gone. */
+		i9100_usb_busy1 = !!(ctl1 & UEPCTL_EPENA);
+		i9100_usb_bulk_mps = ctl1 & 0x7ff;
+		usb_cfg_desc[57] = usb_cfg_desc[64] = i9100_usb_bulk_mps & 255;
+		usb_cfg_desc[58] = usb_cfg_desc[65] = i9100_usb_bulk_mps >> 8;
+		UGINTMSK = 0x800c3810U;
+		UDAINTMSK |= (1 << 17) | (1 << 16) | (1 << 1) | 1;
 	} else {
 		i9100_usb_hardinit();
 	}

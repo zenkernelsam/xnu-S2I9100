@@ -291,6 +291,30 @@ static int arm_syscall_store_args(uint32_t *arguments, unsigned capacity,
     return 0;
 }
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+/* iOS6 also calls the descriptor-guard extensions above this kernel's
+ * sysent table. Preserve descriptor operations; this bring-up port does
+ * not enforce userland guard tokens (same policy as guarded_kqueue). */
+static int i9100_fdguard_dispatch(struct proc *p, unsigned int code,
+    const uint32_t *args, int32_t *retval)
+{
+    if (code == 441) {
+        struct open_nocancel_args a;
+        bzero(&a, sizeof(a));
+        a.path = (user_addr_t)args[0]; a.flags = args[3]; a.mode = args[4];
+        return open_nocancel(p, &a, retval);
+    }
+    if (code == 442) {
+        struct close_nocancel_args a;
+        bzero(&a, sizeof(a)); a.fd = args[0];
+        return close_nocancel(p, &a, retval);
+    }
+    if (code == 443) return kqueue(p, NULL, retval);
+    if (code == 444) return 0;
+    return ENOSYS;
+}
+#endif
+
 void unix_syscall(arm_saved_state_t * state)
 {
     thread_t thread;
@@ -437,6 +461,12 @@ void unix_syscall(arm_saved_state_t * state)
         unsigned int first = shift_args ? 1 : 0;
         error = ios7lab_guarded_kqueue(p, (user_addr_t)state->r[first],
                                       state->r[first + 1], &uthread->uu_rval[0]);
+    } else
+#endif
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    if (code >= 441 && code <= 444) {
+        error = i9100_fdguard_dispatch(p, code, &state->r[shift_args ? 1 : 0],
+            &uthread->uu_rval[0]);
     } else
 #endif
     error = (*(callp->sy_call)) (p, (void *) uthread->uu_arg, &(uthread->uu_rval[0]));
