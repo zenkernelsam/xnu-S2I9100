@@ -216,7 +216,16 @@ vm_page_t commpage;
 uint64_t pmap_nesting_size_min = 0x8000000;
 uint64_t pmap_nesting_size_max = 0x8000000;
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+/* The iOS 6.1.3 userland relocates code into anonymous maps and executes
+ * it (private dyld image fallback: PIC functions + pointer tables in RW
+ * pages, observed as exec faults into read-write memory killing
+ * backboardd/mediaserverd).  Grant the ABI32 data-exec allowance that
+ * Darwin 13-era binaries expect. */
+int allow_data_exec = VM_ABI_32;
+#else
 int allow_data_exec = 0;        /* no exec from data, embedded is hardcore like that */
+#endif
 int allow_stack_exec = 0;       /* No apps may execute from the stack by default */
 int nx_enabled = 1;
 
