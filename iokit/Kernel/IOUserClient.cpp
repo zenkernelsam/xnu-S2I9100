@@ -2490,6 +2490,21 @@ kern_return_t is_io_registry_entry_get_property(
     CHECK( IORegistryEntry, registry_entry, entry );
 
     obj = entry->copyProperty(property_name);
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    {
+        char who[17]; bzero(who, sizeof(who));
+        proc_selfname(who, sizeof(who) - 1);
+        const OSSymbol * nm = entry->copyName();
+        const char * ent = nm ? nm->getCStringNoCopy() : "?";
+        if (i9100_has(who, "backboard") || i9100_has(who, "SpringBoard") ||
+            i9100_has(property_name, "isplay") || i9100_has(property_name, "hosen") ||
+            i9100_has(ent, "hosen") || i9100_has(ent, "CLCD") ||
+            i9100_has(ent, "Framebuffer"))
+            IOLog("i9100prop %s ent=%s key=%s hit=%u\n", who, ent,
+                  property_name, (unsigned)(obj != 0));
+        if (nm) nm->release();
+    }
+#endif
 #if BOARD_CONFIG_ARMPBA8
     if (entry->getProperty("IOS7LabBackend")) {
         static unsigned ios7lab_hid_properties;
@@ -2538,6 +2553,21 @@ kern_return_t is_io_registry_entry_get_property_recursively(
 
     obj = entry->copyProperty( property_name,
                                IORegistryEntry::getPlane( plane ), options);
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    {
+        char who[17]; bzero(who, sizeof(who));
+        proc_selfname(who, sizeof(who) - 1);
+        const OSSymbol * nm = entry->copyName();
+        const char * ent = nm ? nm->getCStringNoCopy() : "?";
+        if (i9100_has(who, "backboard") || i9100_has(who, "SpringBoard") ||
+            i9100_has(property_name, "isplay") || i9100_has(property_name, "hosen") ||
+            i9100_has(ent, "hosen") || i9100_has(ent, "CLCD") ||
+            i9100_has(ent, "Framebuffer"))
+            IOLog("i9100rprop %s ent=%s key=%s hit=%u\n", who, ent,
+                  property_name, (unsigned)(obj != 0));
+        if (nm) nm->release();
+    }
+#endif
     if( !obj)
         return( kIOReturnNotFound );
 
