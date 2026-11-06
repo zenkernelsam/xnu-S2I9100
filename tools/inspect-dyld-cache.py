@@ -9,6 +9,7 @@ p = argparse.ArgumentParser()
 p.add_argument('cache')
 p.add_argument('--runtime-base',type=lambda s:int(s,0),required=True)
 p.add_argument('--disassemble', action='store_true')
+p.add_argument('--arm', action='store_true', help='ARM state (CPSR.T=0), instead of Thumb')
 p.add_argument('pcs',nargs='+',type=lambda s:int(s,0))
 a=p.parse_args()
 with open(a.cache,'rb') as f:
@@ -49,8 +50,8 @@ with open(a.cache,'rb') as f:
             'symbol_address':hex(nearest[0]+slide),'displacement':hex(va-nearest[0])})
         if a.disassemble:
             import capstone
-            md=capstone.Cs(capstone.CS_ARCH_ARM,capstone.CS_MODE_THUMB)
-            begin=nearest[0]
+            md=capstone.Cs(capstone.CS_ARCH_ARM,capstone.CS_MODE_ARM if a.arm else capstone.CS_MODE_THUMB)
+            begin=max(nearest[0], va - 128)
             result[-1]['instructions']=['%08x %s %s'%(i.address,i.mnemonic,i.op_str)
                 for i in md.disasm(d[fileoff(begin):fileoff(va)+4],begin)]
     print(json.dumps({'slide':hex(slide),'locations':result},indent=2))

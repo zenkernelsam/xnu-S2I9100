@@ -1030,6 +1030,26 @@ void sleh_undef(arm_saved_state_t * state)
                arm_ctx->pc, arm_ctx->cpsr);
         printf("dyld_all_image_info_addr: 0x%08x   dyld_all_image_info_size: 0x%08x\n",
             thread->task->all_image_info_addr, thread->task->all_image_info_size);
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        /* Bounded, fault-safe evidence for repeated powerd/CoreFoundation
+         * traps. Keep the exception behavior; never bypass an immutable-object
+         * assertion. ARM r7 frame pairs are hints, not a full unwinder. */
+        {
+            static unsigned int frame_reports;
+            unsigned int fp = arm_ctx->r[7], pair[2], depth;
+            if (frame_reports < 8) {
+                frame_reports++;
+                for (depth = 0; depth < 4; depth++) {
+                    if (fp < 0x1000 || fp > 0x3ffffff8 || (fp & 3) ||
+                        copyin((void *)fp, pair, sizeof(pair))) break;
+                    printf("I9100 UFRAME depth=%u fp=%08x next=%08x lr=%08x\n",
+                        depth, fp, pair[0], pair[1]);
+                    if (pair[0] <= fp || pair[0] - fp > 0x10000) break;
+                    fp = pair[0];
+                }
+            }
+        }
+#endif
 /* IOS7LEO_DYLD_BEGIN */
 #if defined(BOARD_CONFIG_QSD8250_LEO)
         }
