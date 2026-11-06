@@ -192,9 +192,9 @@ static const unsigned char *uctl_sim_mem; /* test supplies a DRAM stand-in */
 #define UCTL_PREAD(pa, dst, n) \
 	memcpy(dst, uctl_sim_mem + ((pa) - 0x40000000U), n)
 #else
-/* Direct map: kernel VA = PA + 0x80000000 covers all of DRAM. */
+/* Direct map via the platform physmap: VA = PA - gPhysBase + gVirtBase. */
 #define UCTL_PREAD(pa, dst, n) \
-	memcpy(dst, (const void *)((pa) + 0x80000000U), n)
+	memcpy(dst, (const void *)phystokv(pa), n)
 #endif
 
 static void uctl_ready(void)
