@@ -548,11 +548,28 @@ proc_exit(proc_t p)
 	/* i9100 forensic: surface abnormal exits so crash-respawn loops
 	 * (e.g. mDNSResponder, no register dump = silent signal/exit) are
 	 * distinguishable on the console. */
-	if (WIFSIGNALED(exitval) || (WIFEXITED(exitval) && WEXITSTATUS(exitval)))
-		printf("i9100exit: %s[%d] xstat=0x%x sig=%d code=%d\n",
-			p->p_comm, pid, exitval,
-			WIFSIGNALED(exitval) ? WTERMSIG(exitval) : 0,
-			WIFEXITED(exitval) ? WEXITSTATUS(exitval) : -1);
+	if (WIFSIGNALED(exitval) || (WIFEXITED(exitval) && WEXITSTATUS(exitval))) {
+		/* Same (comm,xstat) repeating = respawn loop; keep first and
+		 * every 64th so the forensic survives without flooding CDC. */
+		static char i9_exit_last_comm[MAXCOMLEN + 1];
+		static unsigned int i9_exit_last_xstat, i9_exit_suppressed;
+		if (strncmp(p->p_comm, i9_exit_last_comm, MAXCOMLEN + 1) ||
+		    exitval != (int)i9_exit_last_xstat) {
+			strlcpy(i9_exit_last_comm, p->p_comm, sizeof(i9_exit_last_comm));
+			i9_exit_last_xstat = exitval;
+			i9_exit_suppressed = 0;
+			printf("i9100exit: %s[%d] xstat=0x%x sig=%d code=%d\n",
+				p->p_comm, pid, exitval,
+				WIFSIGNALED(exitval) ? WTERMSIG(exitval) : 0,
+				WIFEXITED(exitval) ? WEXITSTATUS(exitval) : -1);
+		} else if (!(i9_exit_suppressed++ & 0x3f)) {
+			printf("i9100exit: %s[%d] xstat=0x%x sig=%d code=%d (x%u)\n",
+				p->p_comm, pid, exitval,
+				WIFSIGNALED(exitval) ? WTERMSIG(exitval) : 0,
+				WIFEXITED(exitval) ? WEXITSTATUS(exitval) : -1,
+				i9_exit_suppressed);
+		}
+	}
 #if BOARD_CONFIG_ARMPBA8
     ios7lab_preferences_lifecycle_note(lab_preferences_proc_exit_target, pid,
         "PROC-EXIT-ENTRY", 1, exitval, WIFSIGNALED(exitval), WIFSIGNALED(exitval) ? WTERMSIG(exitval) : 0);

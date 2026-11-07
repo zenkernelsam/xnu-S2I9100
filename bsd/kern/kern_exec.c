@@ -3361,10 +3361,26 @@ exec_check_permissions(struct image_params *imgp)
 		return (error);
 	}
 
-	printf("exec_check_permissions: fileid=%llu size=%llu mode=0%o\n",
-	       (unsigned long long)vap->va_fileid,
-	       (unsigned long long)vap->va_data_size,
-	       (unsigned)vap->va_mode);
+	/* Rate-limit repeats of the same fileid: launchd respawn loops
+	 * (blocked mDNSResponder fires this once per second) otherwise flood
+	 * the console/CDC channel. First sighting and every 64th print. */
+	{
+		static unsigned long long i9_exec_last_fid;
+		static unsigned i9_exec_suppressed;
+		if (vap->va_fileid != i9_exec_last_fid) {
+			i9_exec_last_fid = vap->va_fileid;
+			i9_exec_suppressed = 0;
+			printf("exec_check_permissions: fileid=%llu size=%llu mode=0%o\n",
+			       (unsigned long long)vap->va_fileid,
+			       (unsigned long long)vap->va_data_size,
+			       (unsigned)vap->va_mode);
+		} else if (!(i9_exec_suppressed++ & 0x3f)) {
+			printf("exec_check_permissions: fileid=%llu size=%llu mode=0%o (x%u)\n",
+			       (unsigned long long)vap->va_fileid,
+			       (unsigned long long)vap->va_data_size,
+			       (unsigned)vap->va_mode, i9_exec_suppressed);
+		}
+	}
 
 	/*
 	 * Ensure that at least one execute bit is on - otherwise root
