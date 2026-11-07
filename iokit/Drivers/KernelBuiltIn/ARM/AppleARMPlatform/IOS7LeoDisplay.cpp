@@ -2221,6 +2221,12 @@ void ios7leo_register_display(IOService *platform)
     {
         IOAcceleratorES *accel = new IOAcceleratorES;
         if (accel && accel->init() && accel->attach(platform) && accel->start(platform)) {
+            /* libGFXShared resolves the GLDriver plugin via
+             * /System/Library/Extensions/<IOGLESBundleName>.bundle/ —
+             * the iOS6 rootfs ships IMGSGX535GLDriver.bundle only.
+             * backboardd queried this property (hit=0) right before
+             * abandoning the display object (no vsync arm, no swap). */
+            accel->setProperty("IOGLESBundleName", "IMGSGX535GLDriver");
             IOLog("IOS7ACC accelerator attached\n");
         } else if (accel) {
             accel->release();
