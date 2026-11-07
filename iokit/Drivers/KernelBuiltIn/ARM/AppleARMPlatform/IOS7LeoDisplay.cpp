@@ -1341,25 +1341,33 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
         note->reason=LEO_GRAPHICS_REASON_DESCRIPTOR;return kIOReturnUnsupported;
     }
     if (selector == 5) {
-        /* Original SwapEnd submits 0x138 bytes beginning at handle+0x10;
-         * SwapBegin's ID at handle+0x28 therefore occupies offset0x18.
-         * Accept only a full-size frame in a currently owned surface.
-         */
+        /* Two observed SwapEnd wire formats:
+         *   iOS7: 0x138 bytes, transaction at words[6], surface words[7].
+         *   iOS6: 0x0D8 bytes = IMF client object slice from +0x10;
+         *         transaction at words[0] (SwapBegin stores obj+0x10),
+         *         layer0..2 surface refs at words[1..3] (obj+0x14+i*4),
+         *         layer-enable bitmask at words[46] (obj+0xc8),
+         *         flags mask at words[47] (obj+0xcc). */
         uint32_t words[0x138 / 4];
         static unsigned int captures;
+        unsigned insz = args->structureInputSize;
+        bool ios6 = insz == 0xd8;
         if (args->scalarInputCount || !args->structureInput ||
-            args->structureInputSize != sizeof(words) ||
+            (insz != sizeof(words) && !ios6) ||
             args->scalarOutputCount || args->structureOutputSize)
             return kIOReturnBadArgument;
-        memcpy(words, args->structureInput, sizeof(words));
-        note->transaction=words[6];note->surface=words[7];
+        memset(words, 0, sizeof(words));
+        memcpy(words, args->structureInput, insz);
+        uint32_t transaction = ios6 ? words[0] : words[6];
+        uint32_t surface = ios6 ? words[1] : words[7];
+        note->transaction=transaction;note->surface=surface;
         uint64_t metadataBegin = mach_absolute_time();
         IOLockLock(transactionLock);
-        bool valid = activeTransaction && words[6] == activeTransaction;
+        bool valid = activeTransaction && transaction == activeTransaction;
         if (valid) activeTransaction = 0;
         IOLockUnlock(transactionLock);
         static bool capturedOffscreen;
-        bool captureOffscreen = words[7] > primarySurfaceID && !capturedOffscreen;
+        bool captureOffscreen = surface > primarySurfaceID && !capturedOffscreen;
         if (captureOffscreen) capturedOffscreen = true;
         if (captures++ < 4 || captureOffscreen) {
             IOLog("IOS7LAB framebuffer swap-payload valid-transaction=%u words=", (unsigned)valid);
@@ -1373,22 +1381,34 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
             return kIOReturnBadArgument;
         }
         uint32_t metadataReason = 0, metadataMismatch = 0xffffffffU;
-        bool originalLayout = ios7lab_fullframe_scanout_layout(words, words[7],
-            &metadataReason, &metadataMismatch);
+        bool originalLayout = true;
+        if (ios6) {
+            /* iOS6 client-object slice: layer0 must be enabled (obj+0xc8 bit0)
+             * and carry a surface ref. Layout indices past word[53] do not
+             * exist in the 0xD8 form — skip the iOS7 full-frame check. */
+            if (!(words[46] & 1U) || !surface) {
+                metadataReason = IOS7LabSwapMetaLayout;
+                metadataMismatch = words[46];
+                originalLayout = false;
+            }
+        } else {
+            originalLayout = ios7lab_fullframe_scanout_layout(words, surface,
+                &metadataReason, &metadataMismatch);
+        }
         if (!originalLayout || !ios7lab_primary_ready()) {
             if (originalLayout) metadataReason = IOS7LabSwapMetaPrimaryReady;
             note->reason=metadataReason;note->mismatch=metadataMismatch;
             static unsigned int rejected;
             if (rejected++ < 12)
                 IOLog("IOS7LAB framebuffer unsupported transaction=%u surface=%u masks=%x,%x source=%ux%u output=%ux%u\n",
-                      words[6], words[7], words[67], words[68], words[13], words[14], words[53], words[54]);
+                      transaction, surface, words[67], words[68], words[13], words[14], words[53], words[54]);
             noteSwapMetadata(metadataReason, originalLayout ? 0xfU : 0x7U, metadataMismatch, words, args,
                 metadataBegin, 0, mach_absolute_time(), kIOReturnUnsupported);
             return kIOReturnUnsupported;
         }
         uint64_t metadataBackendBegin = mach_absolute_time();
         note->backend=true;
-        IOReturn displayed = ios7lab_present_owned_scanout(words[7]);
+        IOReturn displayed = ios7lab_present_owned_scanout(surface);
         uint64_t metadataEnd = mach_absolute_time();
         if (displayed != kIOReturnSuccess) {
             note->reason=IOS7LabSwapMetaBackend;
@@ -1397,15 +1417,15 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
             return displayed;
         }
         IOLockLock(transactionLock);
-        ScanoutCompletion *completion = &completions[words[6] % 32];
-        completion->transaction = words[6];
-        completion->surface = words[7];
+        ScanoutCompletion *completion = &completions[transaction % 32];
+        completion->transaction = transaction;
+        completion->surface = surface;
         completion->completed = true; /* CPUconversion + new realMDP31 DMA_P_DONE, not physicalVSYNC. */
         IOLockUnlock(transactionLock);
         static unsigned int presented;
         if (presented++ < 24)
             IOLog("IOS7LAB framebuffer presented transaction=%u surface=%u actualCPU-conversion-MDP31-DMA-done %s\n",
-                  words[6], words[7], "BGRA-to-realRGB565-conversion");
+                  transaction, surface, "BGRA-to-realRGB565-conversion");
         noteSwapMetadata(IOS7LabSwapMetaCompleted, 0x7fU, 0xffffffffU, words, args,
             metadataBegin, metadataBackendBegin, metadataEnd, kIOReturnSuccess);
         note->reason=IOS7LabSwapMetaCompleted;
@@ -1507,6 +1527,53 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
             result==kIOReturnSuccess?LEO_GRAPHICS_REASON_NONE:LEO_GRAPHICS_REASON_TIMER;
         return result;
     }
+    /* Input-bearing selectors MUST precede the scalar-input gate below —
+     * every call CA ran on the RGBOUT stub (which accepted all) should also
+     * succeed on the real provider. */
+    /* 0x11 SetGammaTable: 0xC00 struct-in, accept and ignore (linear panel). */
+    if (selector == 17 && args->structureInput &&
+        args->structureInputSize == 0xC00)
+        return kIOReturnSuccess;
+    /* Scalar setters from the QuartzCore display-config sequence:
+     * 0x01 SwapSurface(2), 0x02 SwapSetTimestamp(2), 0x0C(1),
+     * 0x0F(2in/1out), 0x13 SetWhiteOnBlackMode(1), 0x15(2),
+     * 0x16 SetDisplayDevice(1), 0x21 EnableDisableVideoPowerSavings(1). */
+    if (selector == 1 || selector == 2 || selector == 12 || selector == 21) {
+        if (!args->structureInputSize && !args->scalarOutputCount &&
+            !args->structureOutputSize)
+            return kIOReturnSuccess;
+        return kIOReturnBadArgument;
+    }
+    if (selector == 15 && args->scalarInputCount == 2 &&
+        args->scalarOutput && args->scalarOutputCount == 1) {
+        args->scalarOutput[0] = 0;
+        return kIOReturnSuccess;
+    }
+    if ((selector == 19 || selector == 22 || selector == 33) &&
+        args->scalarInputCount == 1 && !args->scalarOutputCount &&
+        !args->structureInputSize && !args->structureOutputSize) {
+        return kIOReturnSuccess;
+    }
+    /* 0x1B GetGammaTable: 256*3 float ramp. i9100 scanout is linear.
+     * Kernel has no soft-float builtins — emit IEEE754 bits for i/255 via
+     * integer math: v=i/255 in (0,1], e=floor(log2(i))-8 for i<255,
+     * frac = (i*2^-e/255 - 1) * 2^23. */
+    if (selector == 27 && args->structureOutput &&
+        args->structureOutputSize == 0xC00) {
+        uint32_t *table = (uint32_t *)args->structureOutput;
+        for (unsigned i = 0; i < 256; ++i) {
+            uint32_t bits;
+            if (!i) bits = 0;
+            else if (i == 255) bits = 0x3F800000u;
+            else {
+                unsigned d = 8 - (31 - __builtin_clz(i));
+                uint32_t frac = (((i << d) - 255) << 23) / 255;
+                bits = ((127 - d) << 23) | (frac & 0x7fffff);
+            }
+            table[i * 3 + 0] = table[i * 3 + 1] = table[i * 3 + 2] = bits;
+        }
+        return kIOReturnSuccess;
+    }
     if (args->scalarInputCount || args->structureInputSize || args->structureOutputSize)
         return kIOReturnUnsupported;
     if (selector == 4 && args->scalarOutput && args->scalarOutputCount == 1) {
@@ -1538,33 +1605,6 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
     if (selector == 8 && args->scalarOutput && args->scalarOutputCount == 2) {
         args->scalarOutput[0] = PE_state.video.v_width;
         args->scalarOutput[1] = PE_state.video.v_height;
-        return kIOReturnSuccess;
-    }
-    /* 0x1B GetGammaTable: 256*3 float ramp. i9100 scanout is linear.
-     * Kernel has no soft-float builtins — emit IEEE754 bits for i/255 via
-     * integer math: v=i/255 in (0,1], e=floor(log2(i))-8 for i<255,
-     * frac = (i*2^-e/255 - 1) * 2^23. */
-    if (selector == 27 && args->structureOutput &&
-        args->structureOutputSize == 0xC00) {
-        uint32_t *table = (uint32_t *)args->structureOutput;
-        for (unsigned i = 0; i < 256; ++i) {
-            uint32_t bits;
-            if (!i) bits = 0;
-            else if (i == 255) bits = 0x3F800000u;
-            else {
-                unsigned d = 8 - (31 - __builtin_clz(i));
-                uint32_t frac = (((i << d) - 255) << 23) / 255;
-                bits = ((127 - d) << 23) | (frac & 0x7fffff);
-            }
-            table[i * 3 + 0] = table[i * 3 + 1] = table[i * 3 + 2] = bits;
-        }
-        return kIOReturnSuccess;
-    }
-    /* Scalar setters observed in the QuartzCore display-config sequence:
-     * 0x13 SetWhiteOnBlackMode, 0x16 SetDisplayDevice,
-     * 0x21 EnableDisableVideoPowerSavings. Accept and ignore. */
-    if ((selector == 19 || selector == 22 || selector == 33) &&
-        args->scalarInputCount == 1 && !args->scalarOutputCount) {
         return kIOReturnSuccess;
     }
     /* Original GetMainDisplay filters selector18 for the primary display. */
@@ -2126,7 +2166,12 @@ void ios7leo_register_display(IOService *platform)
     }
     i9stub_publish_AppleDiagnosticDataAccessReadOnly(platform);
     i9stub_publish_AppleM2ScalerCSCDriver(platform);
-    i9stub_publish_AppleRGBOUT(platform);
+    /* AppleRGBOUT stub disabled: on iOS this class is a real display driver,
+     * so CA enumerated it as a display candidate and ran the FULL present
+     * sequence (SwapBegin sel4 + SwapEnd sel5 + SetGammaTable sel17) on the
+     * do-nothing stub — frames went to a fake RGB-out path instead of the
+     * physical AppleCLCD. Only one display provider may answer. */
+    /* i9stub_publish_AppleRGBOUT(platform); */
     /* CA also queries AppleM2TVOut for EDID UUID during display enumeration;
      * hand it the same panel identity so it can't poison the display check. */
     {
