@@ -113,7 +113,7 @@ static int i9100_usb_configured, i9100_usb_hostopen, i9100_usb_enum;
 static volatile unsigned i9100_usb_npoll, i9100_usb_nrxl, i9100_usb_nrxb,
 	i9100_usb_ntx, i9100_usb_ncmd, i9100_usb_st_or, i9100_usb_reconn;
 static uint64_t i9100_usb_armed_at, i9100_usb_last_txok,
-	i9100_usb_last_reconn;
+	i9100_usb_last_reconn, i9100_usb_disconnect_at;
 static unsigned char i9100_usb_newaddr;
 static unsigned char i9100_usb_setup[8];
 static const unsigned char *i9100_usb_e0buf;
@@ -351,6 +351,15 @@ static int i9100_usb_wait(volatile unsigned int *r, unsigned int m,
 static void uctl_reset_poll(void)
 {
 	int action = uctl_reset_action;
+	/* Phase 2 of a host-dead reconnect: hold the soft disconnect ~125ms so
+	 * the host actually observes the detach (a ~3ms pulse left a zombie
+	 * session where the core dropped state but the host never noticed). */
+	if (i9100_usb_disconnect_at) {
+		if (UCTL_NOW() < i9100_usb_disconnect_at)
+			return;
+		UDCTL &= ~UDCTL_SFTDIS;
+		i9100_usb_disconnect_at = 0;
+	}
 	if (uctl_flight && UCTL_NOW() - uctl_flight_at > UCTL_ACK_TICKS * 4U) {
 		/* The armed EP1-IN packet whose completion vanished holds stale
 		 * FIFO data. Flush EP1 TX FIFO and clear busy so the drain can
@@ -373,15 +382,16 @@ static void uctl_reset_poll(void)
 		i9100_usb_wait(&UGRSTCTL, UGRST_TXFFLSH, 0);
 		i9100_usb_busy1 = 0;
 	}
-	/* Host-dead reconnect: console/commands pending but no EP1-IN
-	 * completion for 30s means the host stopped servicing pipes entirely
-	 * (no reset, no XFC, no OUT traffic). Pulse soft-disconnect; the host
-	 * sees unplug+replug and re-enumerates fresh endpoints. Rate-limited
-	 * to once per minute so a genuinely absent host doesn't flap. */
+	/* Host-dead reconnect: a control reply or staged DATA has waited 30s
+	 * with zero EP1-IN completions - the host stopped servicing pipes.
+	 * Pulse soft-disconnect (125ms, re-armed in phase 2 above); the host
+	 * sees unplug+replug and re-enumerates fresh endpoints. Conversational
+	 * data only: idle console chatter must not flap the link, and the 60s
+	 * rate-limit bounds recovery attempts for a genuinely absent host. */
 	{
-		int pending = uctl_len || uctl_doff < uctl_dlen ||
-		    i9100_usb_h != i9100_usb_t;
-		if (pending && i9100_usb_configured && i9100_usb_hostopen &&
+		int pending = uctl_len || uctl_doff < uctl_dlen;
+		if (pending && uctl_started && i9100_usb_configured &&
+		    i9100_usb_hostopen && !i9100_usb_disconnect_at &&
 		    UCTL_NOW() - i9100_usb_last_txok >
 		        (uint64_t)I9100_MCT_HZ * 30U &&
 		    UCTL_NOW() - i9100_usb_last_reconn >
@@ -389,8 +399,8 @@ static void uctl_reset_poll(void)
 			i9100_usb_last_reconn = UCTL_NOW();
 			i9100_usb_reconn++;
 			UDCTL |= UDCTL_SFTDIS;
-			i9100_usb_spin(20000);
-			UDCTL &= ~UDCTL_SFTDIS;
+			i9100_usb_disconnect_at = UCTL_NOW() +
+			    (uint64_t)I9100_MCT_HZ / 8U;
 		}
 	}
 	if (!action || UCTL_NOW() < uctl_reset_at) return;
