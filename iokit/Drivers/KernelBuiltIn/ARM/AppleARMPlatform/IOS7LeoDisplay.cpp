@@ -1333,7 +1333,7 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
     static unsigned int logs;
     if (!args)
         return kIOReturnBadArgument;
-    if (logs++ < 128)
+    if (logs++ < 1024)
         IOLog("IOS7LAB framebuffer method=%u scalar-in=%u struct-in=%u scalar-out=%u struct-out=%u\n",
               selector, args->scalarInputCount, args->structureInputSize,
               args->scalarOutputCount, args->structureOutputSize);
@@ -2144,6 +2144,40 @@ void ios7leo_register_display(IOService *platform)
         display->setProperty("IOSurfaceAccelerator", OSNumber::withNumber(1ULL, 32));
     }
     surfaces->registerService();display->registerService();
+    /* SpringBoard reads no-sdio-devices + software-behavior off the DT root
+     * (lockdownd/mediaserverd read software-behavior off /chosen). Missing
+     * no-sdio-devices may make UIKit wait on a WiFi/SDIO bring-up that can
+     * never complete — we have no working radio path. Publish them on the
+     * registry entries so the rprop probe sees hit=1 without touching SD. */
+    {
+        static const unsigned char i9_swbeh[16] = {0};
+        /* The rprop probe prints copyName(): SpringBoard queried an entry
+         * literally named "samsung,i9100" — find it by name anywhere in the
+         * DT plane rather than assuming a path. */
+        IORegistryIterator *it = IORegistryIterator::iterateOver(
+            gIODTPlane, kIORegistryIterateRecursively);
+        if (it) {
+            IORegistryEntry *e;
+            while ((e = it->getNextObject())) {
+                const char *nm = e->getName();
+                if (nm && !strcmp(nm, "samsung,i9100")) {
+                    e->setProperty("no-sdio-devices", kOSBooleanTrue);
+                    e->setProperty("software-behavior",
+                        OSData::withBytes(i9_swbeh, sizeof(i9_swbeh)));
+                }
+            }
+            it->release();
+        }
+        IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane);
+        if (chosen) {
+            chosen->setProperty("software-behavior",
+                OSData::withBytes(i9_swbeh, sizeof(i9_swbeh)));
+            chosen->release();
+        }
+        /* Backlight-bring-up queries observed on AppleCLCD. */
+        display->setProperty("new-backlight-architecture", kOSBooleanTrue);
+        display->setProperty("use-AAP", kOSBooleanFalse);
+    }
     IOLog("i9100 native display provider published 480x800 BGRA row1920 bytes1536000; dynamicbudget=%u\n",displayBudget);
 #else
     surfaces->setProperty("IOS7LabBackend","Leo owned BGRA CPU surface / real MDP RGB565");
