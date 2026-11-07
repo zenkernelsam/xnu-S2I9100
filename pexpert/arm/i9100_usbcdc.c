@@ -267,13 +267,14 @@ static void uctl_command(void)
 			else if (addr < 0x40000000U || addr + len > 0x80000000U ||
 			         addr + len < addr) answer = "ERR addr";
 			else {
-				static char hdr[24];
+				static char hdr[26];
 				UCTL_PREAD(addr, uctl_data, len);
 				uctl_doff = 0; uctl_dlen = len;
 				memcpy(hdr, "OK DATA ", 8);
 				uctl_hex8(hdr + 8, addr);
 				hdr[16] = ' ';
 				uctl_hex8(hdr + 17, len);
+				hdr[25] = '\0';
 				answer = hdr;
 			}
 		} else if (!strncmp(verb, "threads", 7)) {
@@ -286,12 +287,13 @@ static void uctl_command(void)
 				while (*want == ' ') want++;
 				unsigned used = i9ctl_thread_dump((char *)uctl_data,
 				    sizeof(uctl_data), want);
-				static char hdr[24];
+				static char hdr[26];
 				uctl_doff = 0; uctl_dlen = used;
 				memcpy(hdr, "OK DATA ", 8);
 				uctl_hex8(hdr + 8, 0);
 				hdr[16] = ' ';
 				uctl_hex8(hdr + 17, used);
+				hdr[25] = '\0';
 				answer = hdr;
 			}
 		} else answer = "ERR verb";
