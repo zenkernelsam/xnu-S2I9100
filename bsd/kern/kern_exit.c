@@ -148,6 +148,10 @@ extern void dtrace_lazy_dofs_destroy(proc_t);
 
 #include <sys/sdt.h>
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+extern unsigned i9ctl_thread_winfo(thread_t th, uint32_t *out, unsigned n);
+#endif
+
 #if BOARD_CONFIG_ARMPBA8
 #include <pexpert/pexpert.h>
 #include <libkern/OSAtomic.h>
@@ -2213,19 +2217,30 @@ i9ctl_thread_dump(char *buf, unsigned cap, const char *want)
 			const char *wm = uth->uu_wmesg;
 			thread_info_data_t tinfo;
 			mach_msg_type_number_t tic = THREAD_INFO_MAX;
+			uint32_t wi[10];
+			unsigned nwi = 0;
 			int rs = -1, slp = -1;
-			if (I9CTL_KVA_OK(uth->uu_thread) &&
-			    thread_info(uth->uu_thread, THREAD_BASIC_INFO,
-			        (thread_info_t)&tinfo, &tic) == KERN_SUCCESS) {
-				thread_basic_info_t tbi =
-				    (thread_basic_info_t)&tinfo;
-				rs = tbi->run_state;
-				slp = tbi->sleep_time;
+			if (I9CTL_KVA_OK(uth->uu_thread)) {
+				if (thread_info(uth->uu_thread, THREAD_BASIC_INFO,
+				    (thread_info_t)&tinfo, &tic) == KERN_SUCCESS) {
+					thread_basic_info_t tbi =
+					    (thread_basic_info_t)&tinfo;
+					rs = tbi->run_state;
+					slp = tbi->sleep_time;
+				}
+				nwi = i9ctl_thread_winfo(
+				    (thread_t)uth->uu_thread, wi, 10);
 			}
 			used += snprintf(buf + used, cap - used,
 			    "  uth=%p thr=%p wchan=%p wmesg=%s rs=%d slp=%d\n",
 			    uth, uth->uu_thread, uth->uu_wchan,
 			    I9CTL_KSTR_OK(wm) ? wm : "-", rs, slp);
+			if (nwi == 10)
+				used += snprintf(buf + used, cap - used,
+				    "    st=%x wq=%p wev=%x ist=%x iobj=%p rnam=%x cont=%p pc=%x r12=%x lr=%x\n",
+				    wi[0], (void *)(uintptr_t)wi[1], wi[2], wi[3],
+				    (void *)(uintptr_t)wi[4], wi[5],
+				    (void *)(uintptr_t)wi[6], wi[7], wi[8], wi[9]);
 			if (used + 128 >= cap || ++nt > 32)
 				goto out;
 		}

@@ -25,6 +25,7 @@ void i9100_usbcdc_putc(char c);
 void i9100_usbcdc_setmap(void);
 void i9100_usbcdc_init(void);
 void i9100_usbcdc_poll(void);
+static void i9100_usb_spin(unsigned int n);
 void i9100_usbcdc_control_init(void);
 
 #define I9100_DWC2_PA	0x12480000U
@@ -106,6 +107,13 @@ enum { USB_DEAD, USB_ADOPT, USB_OURS } ;
 static int i9100_usb_mode;
 static int i9100_usb_probed, i9100_usb_in, i9100_usb_busy1;
 static int i9100_usb_configured, i9100_usb_hostopen, i9100_usb_enum;
+/* Liveness forensics for the "CDC dies silently a few minutes in" wedge.
+ * Cheap counters bumped in interrupt-context code only; read out from
+ * the POWER workloop print so the death signature stays on screen. */
+static volatile unsigned i9100_usb_npoll, i9100_usb_nrxl, i9100_usb_nrxb,
+	i9100_usb_ntx, i9100_usb_ncmd, i9100_usb_st_or, i9100_usb_reconn;
+static uint64_t i9100_usb_armed_at, i9100_usb_last_txok,
+	i9100_usb_last_reconn;
 static unsigned char i9100_usb_newaddr;
 static unsigned char i9100_usb_setup[8];
 static const unsigned char *i9100_usb_e0buf;
@@ -225,6 +233,7 @@ static void uctl_ready(void)
 
 static void uctl_command(void)
 {
+	i9100_usb_ncmd++;
 	unsigned int i, seq = 0, n;
 	const char *answer, *verb;
 	if (uctl_len || uctl_flight || uctl_used < 18 ||
@@ -353,6 +362,37 @@ static void uctl_reset_poll(void)
 		i9100_usb_busy1 = 0;
 		uctl_flight = uctl_action = 0;
 	}
+	/* Orphan armed packet: busy1 set without a flight owner means a packet
+	 * was armed for a host that never collects (selective suspend/dropped
+	 * pipe). The uctl_flight watchdog above cannot see this state. Flush
+	 * the stale FIFO contents after 2s so console TX un-wedges. */
+	if (i9100_usb_busy1 && !uctl_flight && i9100_usb_armed_at &&
+	    UCTL_NOW() - i9100_usb_armed_at > (uint64_t)I9100_MCT_HZ * 2U) {
+		i9100_usb_wait(&UGRSTCTL, UGRST_AHBIDLE, UGRST_AHBIDLE);
+		UGRSTCTL = UGRST_TXFNUM(1) | UGRST_TXFFLSH;
+		i9100_usb_wait(&UGRSTCTL, UGRST_TXFFLSH, 0);
+		i9100_usb_busy1 = 0;
+	}
+	/* Host-dead reconnect: console/commands pending but no EP1-IN
+	 * completion for 30s means the host stopped servicing pipes entirely
+	 * (no reset, no XFC, no OUT traffic). Pulse soft-disconnect; the host
+	 * sees unplug+replug and re-enumerates fresh endpoints. Rate-limited
+	 * to once per minute so a genuinely absent host doesn't flap. */
+	{
+		int pending = uctl_len || uctl_doff < uctl_dlen ||
+		    i9100_usb_h != i9100_usb_t;
+		if (pending && i9100_usb_configured && i9100_usb_hostopen &&
+		    UCTL_NOW() - i9100_usb_last_txok >
+		        (uint64_t)I9100_MCT_HZ * 30U &&
+		    UCTL_NOW() - i9100_usb_last_reconn >
+		        (uint64_t)I9100_MCT_HZ * 60U) {
+			i9100_usb_last_reconn = UCTL_NOW();
+			i9100_usb_reconn++;
+			UDCTL |= UDCTL_SFTDIS;
+			i9100_usb_spin(20000);
+			UDCTL &= ~UDCTL_SFTDIS;
+		}
+	}
 	if (!action || UCTL_NOW() < uctl_reset_at) return;
 	uctl_reset_action = 0;
 	/* S-Boot check_reboot reads INFORM3, verifies 0x12345670 in its high
@@ -457,6 +497,7 @@ static void i9100_usb_devinit(void)
 	i9100_usb_hostopen = 0;
 	uctl_cancel();
 	uctl_last = 0;
+	i9100_usb_last_txok = UCTL_NOW();
 	i9100_usb_e0arm();
 }
 
@@ -658,6 +699,8 @@ static void i9100_usb_rxlvl(void)
 	unsigned int gs = UGRXSTSP, ps = URX_PKTSTS(gs), bc = URX_BYTECNT(gs);
 	unsigned int i, ep = gs & 0xf;
 
+	i9100_usb_nrxl++;
+
 	if (ps == 6) {
 		/* GRXSTSP pops STATUS. Payload always comes from DFIFO0. */
 		unsigned int lo = URXFIFO(), hi = URXFIFO();
@@ -666,6 +709,7 @@ static void i9100_usb_rxlvl(void)
 		UDIEPINT(0) = 0x3ff; /* a new SETUP aborts the previous control transfer */
 		i9100_usb_e0setup();
 	} else if (ps == 2) {
+		i9100_usb_nrxb += bc;
 		for (i = 0; i < (bc + 3) / 4; i++) {
 			unsigned int word = URXFIFO(), j;
 			if (ep == 1 && i9100_usb_configured)
@@ -727,6 +771,8 @@ static void i9100_usb_drain(void)
 		    ((unsigned int)pkt[i * 4 + 3] << 24);
 		UFIFO(1) = w;
 	}
+	i9100_usb_ntx += n;
+	i9100_usb_armed_at = UCTL_NOW();
 	i9100_usb_busy1 = 1;
 }
 
@@ -736,8 +782,10 @@ static void i9100_usb_poll(void)
 
 	if (!i9100_usb_probed)
 		return;
+	i9100_usb_npoll++;
 	uctl_reset_poll();
 	st = UGINTSTS;
+	i9100_usb_st_or |= st;
 	if (st & UGINT_USBRST) {
 		UGINTSTS = UGINT_USBRST;
 		i9100_usb_newaddr = 0;
@@ -776,8 +824,10 @@ static void i9100_usb_poll(void)
 			UDIEPINT(1) = e;
 			uctl_complete(e);
 			if ((e & (UEPINT_XFC | UEPINT_AHBERR)) ||
-			    (uctl_started && (e & ((1u << 1) | (1u << 3)))))
+			    (uctl_started && (e & ((1u << 1) | (1u << 3))))) {
 				i9100_usb_busy1 = 0;
+				i9100_usb_last_txok = UCTL_NOW();
+			}
 		}
 	}
 	if (st & UGINT_OEP) {
@@ -902,6 +952,34 @@ void i9100_usbcdc_init(void)
 		i9100_usb_hardinit();
 	}
 	i9100_usb_probed = 1;
+}
+
+/* On-screen post-mortem for CDC wedge: POWER tick prints these so the last
+ * line before death shows whether polling ran (p), whether the dwc2 raised
+ * any interrupt bits (st), whether host bytes arrived (rx) and whether our
+ * TX armed (tx), plus the live stuck-flags. */
+void i9100_usbcdc_stats(unsigned *o)
+{
+	unsigned g = i9100_usb_map ? UGINTSTS : 0;
+	o[0] = i9100_usb_mode;
+	o[1] = i9100_usb_in;
+	o[2] = i9100_usb_npoll;
+	o[3] = i9100_usb_st_or;
+	o[4] = i9100_usb_nrxl;
+	o[5] = i9100_usb_nrxb;
+	o[6] = i9100_usb_ntx;
+	o[7] = i9100_usb_busy1;
+	o[8] = i9100_usb_configured;
+	o[9] = i9100_usb_hostopen;
+	o[10] = uctl_flight;
+	o[11] = uctl_len;
+	o[12] = i9100_usb_ncmd;
+	o[13] = g;
+	o[14] = i9100_usb_map ? UDAINT : 0;
+	o[15] = i9100_usb_map ? UDIEPCTL(1) : 0;
+	o[16] = i9100_usb_reconn;
+	o[17] = (unsigned)((UCTL_NOW() - i9100_usb_last_txok) /
+	    I9100_MCT_HZ);
 }
 
 #endif /* BOARD_CONFIG_EXYNOS4210_I9100 */

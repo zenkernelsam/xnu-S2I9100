@@ -1097,3 +1097,32 @@ void sleh_undef(arm_saved_state_t * state)
      */
     return;
 }
+
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+#include <ipc/ipc_mqueue.h>
+/* i9ctl "threads" verb backend (osfmk side): pull the Mach-level wait
+ * identity that BSD's uu_wchan cannot see. Called from polled CDC context
+ * with no thread lock; torn reads acceptable.
+ * out[0]=state out[1]=wait_queue out[2]=wait_event(lo)
+ * out[3]=ith_state out[4]=ith_object out[5]=ith_receiver_name
+ * out[6]=continuation out[7]=user pc out[8]=user r12 out[9]=user lr */
+unsigned
+i9ctl_thread_winfo(thread_t th, uint32_t *out, unsigned n)
+{
+	const arm_saved_state_t *u;
+	if (!th || !out || n < 10)
+		return 0;
+	out[0] = (uint32_t)th->state;
+	out[1] = (uint32_t)(uintptr_t)th->wait_queue;
+	out[2] = (uint32_t)(uint64_t)th->wait_event;
+	out[3] = (uint32_t)th->ith_state;
+	out[4] = (uint32_t)(uintptr_t)th->ith_object;
+	out[5] = (uint32_t)th->ith_receiver_name;
+	out[6] = (uint32_t)(uintptr_t)th->continuation;
+	u = th->machine.uss;
+	out[7] = u ? u->pc : 0;
+	out[8] = u ? u->r[12] : 0;
+	out[9] = u ? u->lr : 0;
+	return 10;
+}
+#endif

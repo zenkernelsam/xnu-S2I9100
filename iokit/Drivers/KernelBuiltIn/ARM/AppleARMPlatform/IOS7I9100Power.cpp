@@ -11,6 +11,7 @@ extern "C" {
 #include <mach/mach_time.h>
 void _disable_preemption(void);
 void _enable_preemption(void);
+void i9100_usbcdc_stats(unsigned *);
 /* Read-only panel diagnostics; one power workloop is the sole writer. */
 volatile uint32_t i9100_power_valid,i9100_power_percent,i9100_power_mv;
 volatile uint32_t i9100_power_connected,i9100_power_charging;
@@ -127,6 +128,18 @@ void IOS7I9100Power::sample(void)
    battery.valid,battery.percent,battery.millivolts,battery.temperature_deci_c,battery.adc,
    battery.connected,battery.enabled,battery.charging,battery.reason,battery.errors);
   lastReason=battery.reason;lastConnected=battery.connected;lastCharging=battery.charging;
+ }
+ {
+  /* CDC liveness line: when the control channel wedges the on-screen log
+   * keeps the last poll/rx/tx/flag signature instead of dying silently. */
+  static unsigned lp,lrx,ltx,lst,lmode,lin,lb,lh,lrc;
+  unsigned s[18];i9100_usbcdc_stats(s);
+  if(s[2]!=lp||s[3]!=lst||s[5]!=lrx||s[6]!=ltx||s[0]!=lmode||s[1]!=lin||
+   s[7]!=lb||s[9]!=lh||s[16]!=lrc||polls%15==0){
+   IOLog("I9100 CDC m=%u in=%u p=%u st=%x rl=%u rx=%u tx=%u b=%u cf=%u h=%u f=%u ul=%u nc=%u gs=%x da=%x dc=%x rc=%u ls=%u\n",
+    s[0],s[1],s[2],s[3],s[4],s[5],s[6],s[7],s[8],s[9],s[10],s[11],s[12],s[13],s[14],s[15],s[16],s[17]);
+   lp=s[2];lrx=s[5];ltx=s[6];lst=s[3];lmode=s[0];lin=s[1];lb=s[7];lh=s[9];lrc=s[16];
+  }
  }
 }
 void IOS7I9100Power::tick(OSObject *owner,IOTimerEventSource *timer)
