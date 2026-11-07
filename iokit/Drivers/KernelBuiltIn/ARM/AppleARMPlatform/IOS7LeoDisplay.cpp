@@ -1540,14 +1540,23 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
         args->scalarOutput[1] = PE_state.video.v_height;
         return kIOReturnSuccess;
     }
-    /* 0x1B GetGammaTable: 256*3 float ramp. i9100 scanout is linear. */
+    /* 0x1B GetGammaTable: 256*3 float ramp. i9100 scanout is linear.
+     * Kernel has no soft-float builtins — emit IEEE754 bits for i/255 via
+     * integer math: v=i/255 in (0,1], e=floor(log2(i))-8 for i<255,
+     * frac = (i*2^-e/255 - 1) * 2^23. */
     if (selector == 27 && args->structureOutput &&
         args->structureOutputSize == 0xC00) {
-        float *table = (float *)args->structureOutput;
+        uint32_t *table = (uint32_t *)args->structureOutput;
         for (unsigned i = 0; i < 256; ++i) {
-            table[i * 3 + 0] = i / 255.0f;
-            table[i * 3 + 1] = i / 255.0f;
-            table[i * 3 + 2] = i / 255.0f;
+            uint32_t bits;
+            if (!i) bits = 0;
+            else if (i == 255) bits = 0x3F800000u;
+            else {
+                unsigned d = 8 - (31 - __builtin_clz(i));
+                uint32_t frac = (((i << d) - 255) << 23) / 255;
+                bits = ((127 - d) << 23) | (frac & 0x7fffff);
+            }
+            table[i * 3 + 0] = table[i * 3 + 1] = table[i * 3 + 2] = bits;
         }
         return kIOReturnSuccess;
     }
@@ -2118,7 +2127,13 @@ void ios7leo_register_display(IOService *platform)
     i9stub_publish_AppleDiagnosticDataAccessReadOnly(platform);
     i9stub_publish_AppleM2ScalerCSCDriver(platform);
     i9stub_publish_AppleRGBOUT(platform);
-    i9stub_publish_AppleM2TVOut(platform);
+    /* CA also queries AppleM2TVOut for EDID UUID during display enumeration;
+     * hand it the same panel identity so it can't poison the display check. */
+    {
+        IOService *tv = i9stub_publish_AppleM2TVOut(platform);
+        static const unsigned char i9edid[16] = { 0x49,0x39,0x31,0x30,0x00,0x00,0x4a,0x31,0x80,0x08,0x01,0xe0,0x03,0x20,0x42,0x10 };
+        if (tv) tv->setProperty("EDID UUID", OSData::withBytes(i9edid, sizeof(i9edid)));
+    }
     /* i9stub_publish_AppleWirelessDisplay disabled: fake wireless-display hw makes backboardd poll com.apple.coremedia.wirelessdisplayserver forever */
     i9stub_publish_IOSurfaceAccelerator(platform);
     i9stub_publish_IOAVController(platform);
