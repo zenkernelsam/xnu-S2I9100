@@ -112,9 +112,11 @@ static int i9100_usb_configured, i9100_usb_hostopen, i9100_usb_enum;
  * Cheap counters bumped in interrupt-context code only; read out from
  * the POWER workloop print so the death signature stays on screen. */
 static volatile unsigned i9100_usb_npoll, i9100_usb_nrxl, i9100_usb_nrxb,
-	i9100_usb_ntx, i9100_usb_ncmd, i9100_usb_st_or, i9100_usb_reconn;
+	i9100_usb_ntx, i9100_usb_ncmd, i9100_usb_st_or, i9100_usb_reconn,
+	i9100_usb_rearm, i9100_usb_rearm_st, i9100_usb_last_rxb;
 static uint64_t i9100_usb_armed_at, i9100_usb_last_txok,
-	i9100_usb_last_reconn, i9100_usb_disconnect_at;
+	i9100_usb_last_reconn, i9100_usb_disconnect_at, i9100_usb_last_rxb_at,
+	i9100_usb_rearm_at;
 static unsigned char i9100_usb_newaddr;
 static unsigned char i9100_usb_setup[8];
 static const unsigned char *i9100_usb_e0buf;
@@ -143,6 +145,7 @@ static unsigned int uctl_used, uctl_len, uctl_last;
 static int uctl_drop, uctl_flight, uctl_action, uctl_enabled, uctl_started;
 static int uctl_reset_action;
 static uint64_t uctl_reset_at;
+static unsigned int i9100_usb_bulk_mps = 512;
 /* Lost EP1-IN completion would wedge uctl_flight forever: while a reply is
  * marked in-flight every incoming command byte is dropped, so the channel
  * looks dead until the next USB reset. Timestamp the flight so a poll
@@ -403,6 +406,39 @@ static void uctl_reset_poll(void)
 		i9100_usb_wait(&UGRSTCTL, UGRST_TXFFLSH, 0);
 		i9100_usb_busy1 = 0;
 	}
+	/* EP1-OUT keepalive: an adopted uniLoader session (or an OUT-complete
+	 * status entry that never surfaced) leaves the endpoint armed but
+	 * with its transfer budget exhausted - it NAKs every host write
+	 * forever while IN traffic still looks alive. After 10s of RX
+	 * silence with a host attached, two-phase disable + fresh re-arm:
+	 * EPDIS now, re-program on the next poll once EPDISd lands. */
+	if (i9100_usb_rearm_st) {
+		if ((UDOEPINT(1) & (1u << 1)) ||
+		    UCTL_NOW() - i9100_usb_rearm_at >
+		        (uint64_t)I9100_MCT_HZ / 20U) {
+			UDOEPINT(1) = 0x3ff;
+			UDOEPTSIZ(1) = (1u << 19) | i9100_usb_bulk_mps;
+			UDOEPCTL(1) = (UDOEPCTL(1) & ~(UEPCTL_EPDIS |
+			    UEPCTL_SNAK | UEPCTL_STALL)) |
+			    UEPCTL_EPENA | UEPCTL_CNAK;
+			i9100_usb_rearm_st = 0;
+			i9100_usb_rearm++;
+		}
+	} else if (uctl_started && i9100_usb_configured &&
+	    i9100_usb_hostopen && !i9100_usb_disconnect_at) {
+		if (i9100_usb_nrxb != i9100_usb_last_rxb) {
+			i9100_usb_last_rxb = i9100_usb_nrxb;
+			i9100_usb_last_rxb_at = UCTL_NOW();
+		} else if (i9100_usb_last_rxb_at &&
+		    UCTL_NOW() - i9100_usb_last_rxb_at >
+		        (uint64_t)I9100_MCT_HZ * 10U &&
+		    UCTL_NOW() - i9100_usb_rearm_at >
+		        (uint64_t)I9100_MCT_HZ * 30U) {
+			UDOEPCTL(1) |= UEPCTL_EPDIS | UEPCTL_SNAK;
+			i9100_usb_rearm_at = UCTL_NOW();
+			i9100_usb_rearm_st = 1;
+		}
+	}
 	/* Host-dead reconnect: a control reply or staged DATA has waited 30s
 	 * with zero EP1-IN completions - the host stopped servicing pipes.
 	 * Pulse soft-disconnect (125ms, re-armed in phase 2 above); the host
@@ -453,7 +489,7 @@ static unsigned char usb_cfg_desc[] = {
 	9, 4, 1, 0, 2, 10, 0, 0, 0,
 	7, 5, 0x81, 2, 0, 2, 0,
 	7, 5, 0x01, 2, 0, 2, 0 };
-static unsigned int i9100_usb_bulk_mps = 512;
+/* shared with the reset-poll keepalive above; initialised at devinit */
 static const unsigned char usb_str0[] = { 4, 3, 9, 4 };
 static const unsigned char usb_str1[] = {
 	32, 3, 'i',0,'9',0,'1',0,'0',0,'0',0,' ',0,'u',0,'n',0,'i',0,
@@ -691,13 +727,23 @@ static void i9100_usb_e0setup(void)
 	if (rt == 0x21 && rq == 0x22) {
 		i9100_usb_hostopen = 1;
 		if (!(wv & 1)) uctl_cancel();
+		/* Every COM open toggles DTR - cheap moment to guarantee the
+		 * command endpoint has a fresh transfer budget. */
+		i9100_usb_e1outarm();
 		uctl_ready();
 		i9100_usb_e0sin();
 		return;
 	}
-	if (rq == 1 || rq == 3)
+	if (rq == 1 || rq == 3) {
+		/* CLEAR_FEATURE/SET_FEATURE aimed at EP1-OUT: usbser issues a
+		 * pipe reset (or a raw CLEAR_FEATURE(ENDPOINT_HALT)) when its
+		 * write pipe jams. Re-arming the endpoint here gives host-side
+		 * recovery a working revive that needs no cable replug and no
+		 * admin rights. */
+		if (i9100_usb_setup[4] == 1)
+			i9100_usb_e1outarm();
 		i9100_usb_e0sin();
-	else if (rt & 0x80)
+	} else if (rt & 0x80)
 		i9100_usb_e0reply((const unsigned char *)"\0\0", 2, wl);
 	else
 		i9100_usb_e0sin();
@@ -947,7 +993,10 @@ void i9100_usbcdc_control_init(void)
 	(void)PE_parse_boot_argn("_i9100build", uctl_build, sizeof(uctl_build));
 	uctl_started = 1;
 	UDOEPMSK |= 0x0d;
-	if (!(UDOEPCTL(1) & UEPCTL_EPENA)) i9100_usb_e1outarm();
+	/* Always re-arm EP1-OUT with a fresh transfer budget: an adopted
+	 * loader session can leave EPENA set with PKTCNT already spent,
+	 * which NAKs host writes forever while IN keeps looking alive. */
+	i9100_usb_e1outarm();
 	uctl_ready();
 	ml_set_interrupts_enabled(enabled);
 }
@@ -1011,6 +1060,9 @@ void i9100_usbcdc_stats(unsigned *o)
 	o[16] = i9100_usb_reconn;
 	o[17] = (unsigned)((UCTL_NOW() - i9100_usb_last_txok) /
 	    I9100_MCT_HZ);
+	o[18] = i9100_usb_map ? UDOEPCTL(1) : 0;
+	o[19] = i9100_usb_map ? UDOEPTSIZ(1) : 0;
+	o[20] = i9100_usb_rearm;
 }
 
 #endif /* BOARD_CONFIG_EXYNOS4210_I9100 */
