@@ -919,6 +919,8 @@ public:
     virtual IOReturn clientClose(void);
     virtual IOReturn registerNotificationPort(mach_port_t port, UInt32 type,
         io_user_reference_t refCon);
+    virtual IOReturn clientMemoryForType(UInt32 type, IOOptionBits *options,
+        IOMemoryDescriptor **memory);
     virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
         IOExternalMethodDispatch *dispatch = 0, OSObject *target = 0, void *reference = 0);
 };
@@ -1308,6 +1310,23 @@ IOReturn IOS7LabFramebufferClient::externalMethod(uint32_t selector,
     return result;
 }
 
+IOReturn IOS7LabFramebufferClient::clientMemoryForType(UInt32 type,
+    IOOptionBits *options, IOMemoryDescriptor **memory)
+{
+    static unsigned int logs;
+    if (logs++ < 16)
+        IOLog("IOS7LAB framebuffer map-memory type=%u\n", (unsigned int)type);
+    if (!memory)
+        return kIOReturnBadArgument;
+    /* Original maps the default layer's pixel memory for the owning client. */
+    if (type == 0 && primaryPixels) {
+        primaryPixels->retain();
+        *memory = primaryPixels;
+        return kIOReturnSuccess;
+    }
+    return kIOReturnUnsupported;
+}
+
 IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
     IOExternalMethodArguments *args,LeoGraphicsCall *note)
 {
@@ -1508,10 +1527,35 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
         args->scalarOutput[0] = primarySurfaceID;
         return kIOReturnSuccess;
     }
+    /* Original 7.1.2 GetID: one scalar display identifier, cached client-side. */
+    if (selector == 7 && args->scalarOutput && args->scalarOutputCount == 1) {
+        IOService *provider = getProvider();
+        uint64_t id = provider ? provider->getRegistryEntryID() : 0;
+        args->scalarOutput[0] = id ? (uint32_t)id : 1;
+        return kIOReturnSuccess;
+    }
     /* Original 7.1.2 GetDisplaySize: two uint64 output values. */
     if (selector == 8 && args->scalarOutput && args->scalarOutputCount == 2) {
         args->scalarOutput[0] = PE_state.video.v_width;
         args->scalarOutput[1] = PE_state.video.v_height;
+        return kIOReturnSuccess;
+    }
+    /* 0x1B GetGammaTable: 256*3 float ramp. i9100 scanout is linear. */
+    if (selector == 27 && args->structureOutput &&
+        args->structureOutputSize == 0xC00) {
+        float *table = (float *)args->structureOutput;
+        for (unsigned i = 0; i < 256; ++i) {
+            table[i * 3 + 0] = i / 255.0f;
+            table[i * 3 + 1] = i / 255.0f;
+            table[i * 3 + 2] = i / 255.0f;
+        }
+        return kIOReturnSuccess;
+    }
+    /* Scalar setters observed in the QuartzCore display-config sequence:
+     * 0x13 SetWhiteOnBlackMode, 0x16 SetDisplayDevice,
+     * 0x21 EnableDisableVideoPowerSavings. Accept and ignore. */
+    if ((selector == 19 || selector == 22 || selector == 33) &&
+        args->scalarInputCount == 1 && !args->scalarOutputCount) {
         return kIOReturnSuccess;
     }
     /* Original GetMainDisplay filters selector18 for the primary display. */
@@ -2020,6 +2064,35 @@ void ios7leo_register_display(IOService *platform)
             display->attachToParent(clcd, gIODTPlane);
             clcd->release();
         }
+    }
+    /* QuartzCore display-capability reads observed live after IMF selector
+     * sequence: EDID UUID, IOMFBScalingLimits, DisplayPipeStrideReq(uirements),
+     * DisplayPipePlaneBaseAlignment, IOMFBMaxSrcPixels — all hit=0 previously.
+     * Values mirror the i9100 lab backend's real constraints. */
+    {
+        static const unsigned char i9edid[16] = { 0x49,0x39,0x31,0x30,0x00,0x00,0x4a,0x31,0x80,0x08,0x01,0xe0,0x03,0x20,0x42,0x10 };
+        display->setProperty("EDID UUID", OSData::withBytes(i9edid, sizeof(i9edid)));
+        OSDictionary *lim = OSDictionary::withCapacity(4);
+        if (lim) {
+            lim->setObject("RGBLayer_MinScaleFraction", OSNumber::withNumber(0x3E800000ULL, 32));
+            lim->setObject("RGBLayer_MaxScale", OSNumber::withNumber(0x40000000ULL, 32));
+            lim->setObject("YUVLayer_MinScaleFraction", OSNumber::withNumber(0x3E800000ULL, 32));
+            lim->setObject("YUVLayer_MaxScale", OSNumber::withNumber(0x40000000ULL, 32));
+            display->setProperty("IOMFBScalingLimits", lim);
+            lim->release();
+        }
+        OSDictionary *strd = OSDictionary::withCapacity(4);
+        if (strd) {
+            strd->setObject("StrideLinearHorizontal", OSNumber::withNumber(64ULL, 32));
+            strd->setObject("StrideLinearVertical", OSNumber::withNumber(64ULL, 32));
+            strd->setObject("StrideTiledHorizontal", OSNumber::withNumber(64ULL, 32));
+            strd->setObject("StrideTiledVertical", OSNumber::withNumber(64ULL, 32));
+            display->setProperty("DisplayPipeStrideRequirements", strd);
+            strd->release();
+        }
+        display->setProperty("DisplayPipePlaneBaseAlignment", OSNumber::withNumber(64ULL, 32));
+        display->setProperty("IOMFBMaxSrcPixels", OSNumber::withNumber(0x200000ULL, 32));
+        display->setProperty("IOSurfaceAccelerator", OSNumber::withNumber(1ULL, 32));
     }
     surfaces->registerService();display->registerService();
     IOLog("i9100 native display provider published 480x800 BGRA row1920 bytes1536000; dynamicbudget=%u\n",displayBudget);

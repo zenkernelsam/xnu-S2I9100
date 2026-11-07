@@ -128,6 +128,11 @@ static unsigned int uctl_used, uctl_len, uctl_last;
 static int uctl_drop, uctl_flight, uctl_action, uctl_enabled, uctl_started;
 static int uctl_reset_action;
 static uint64_t uctl_reset_at;
+/* Lost EP1-IN completion would wedge uctl_flight forever: while a reply is
+ * marked in-flight every incoming command byte is dropped, so the channel
+ * looks dead until the next USB reset. Timestamp the flight so a poll
+ * timeout can recover. */
+static uint64_t uctl_flight_at;
 /* Atomic word snapshots on the single-core bring-up target; IRQ-side queries
  * never acquire filesystem locks or allocate memory. */
 static volatile unsigned int i9100_root_state = I9100_ROOT_BOOTING;
@@ -305,9 +310,23 @@ static void uctl_complete(unsigned int status)
 	uctl_reset_at = UCTL_NOW() + UCTL_ACK_TICKS;
 }
 
+static int i9100_usb_wait(volatile unsigned int *r, unsigned int m,
+			  unsigned int v);
+
 static void uctl_reset_poll(void)
 {
 	int action = uctl_reset_action;
+	if (uctl_flight && UCTL_NOW() - uctl_flight_at > UCTL_ACK_TICKS * 4U) {
+		/* The armed EP1-IN packet whose completion vanished holds stale
+		 * FIFO data. Flush EP1 TX FIFO and clear busy so the drain can
+		 * re-arm and command input reopens. Staged data offsets already
+		 * advanced; a truncated stream fails host-side and is retried. */
+		i9100_usb_wait(&UGRSTCTL, UGRST_AHBIDLE, UGRST_AHBIDLE);
+		UGRSTCTL = UGRST_TXFNUM(1) | UGRST_TXFFLSH;
+		i9100_usb_wait(&UGRSTCTL, UGRST_TXFFLSH, 0);
+		i9100_usb_busy1 = 0;
+		uctl_flight = uctl_action = 0;
+	}
 	if (!action || UCTL_NOW() < uctl_reset_at) return;
 	uctl_reset_action = 0;
 	/* S-Boot check_reboot reads INFORM3, verifies 0x12345670 in its high
@@ -662,10 +681,12 @@ static void i9100_usb_drain(void)
 		memcpy(pkt, uctl_reply, n);
 		uctl_len = 0;
 		uctl_flight = 1;
+		uctl_flight_at = UCTL_NOW();
 	} else if (uctl_doff < uctl_dlen) {
 		memcpy(pkt, uctl_data + uctl_doff, n);
 		uctl_doff += n;
 		uctl_flight = 1;
+		uctl_flight_at = UCTL_NOW();
 	} else for (i = 0; i < n; i++) {
 		pkt[i] = i9100_usb_ring[i9100_usb_t];
 		i9100_usb_t = (i9100_usb_t + 1) & (UTXRING - 1);
