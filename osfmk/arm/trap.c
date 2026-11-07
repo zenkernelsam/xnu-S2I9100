@@ -1184,15 +1184,20 @@ i9ctl_task_ports(task_t task, char *buf, unsigned cap)
 			rt = "?";
 		used += snprintf(buf + used, cap - used,
 		    "pn=%x rt=%s obj=%p", name, rt, o);
-		if ((b & (MACH_PORT_TYPE_SEND|MACH_PORT_TYPE_SEND_ONCE|
+		if ((uintptr_t)o >= 0x80000000U && (uintptr_t)o < 0xf0000000U &&
+		    (b & (MACH_PORT_TYPE_SEND|MACH_PORT_TYPE_SEND_ONCE|
 		    MACH_PORT_TYPE_RECEIVE)) &&
 		    io_otype((ipc_object_t)o) == IOT_PORT) {
+			ipc_space_t rsp;
 			port = (ipc_port_t)o;
-			used += snprintf(buf + used, cap - used,
-			    " rsp=%p rtsk=%p",
-			    port->ip_receiver,
-			    port->ip_receiver ?
-			    port->ip_receiver->is_task : 0);
+			rsp = port->ip_receiver;
+			if ((uintptr_t)rsp >= 0x80000000U &&
+			    (uintptr_t)rsp < 0xf0000000U)
+				used += snprintf(buf + used, cap - used,
+				    " rsp=%p rtsk=%p", rsp, rsp->is_task);
+			else
+				used += snprintf(buf + used, cap - used,
+				    " rsp=%p rtsk=?", rsp);
 		}
 		used += snprintf(buf + used, cap - used, "\n");
 	}
