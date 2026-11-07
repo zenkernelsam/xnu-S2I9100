@@ -2179,6 +2179,11 @@ i9ctl_contains(const char *hay, const char *needle)
 	return 0;
 }
 
+#define I9CTL_KVA_OK(v) \
+	((v) >= (void *)0x80000000 && (v) < (void *)0xf0000000)
+#define I9CTL_KSTR_OK(v) \
+	((v) >= (const char *)0x80000000 && (v) < (const char *)0x80800000)
+
 unsigned
 i9ctl_thread_dump(char *buf, unsigned cap, const char *want)
 {
@@ -2188,23 +2193,31 @@ i9ctl_thread_dump(char *buf, unsigned cap, const char *want)
 	if (!buf || !cap)
 		return 0;
 	buf[0] = 0;
-	for (p = allproc.lh_first; p && used + 256 < cap; p = p->p_list.le_next) {
+	for (p = allproc.lh_first; p && used + 256 < cap;
+	    p = p->p_list.le_next) {
+		if (!I9CTL_KVA_OK(p))
+			break;
+		if (p->p_pid <= 0 || p->p_pid > 100000)
+			break;
+		np++;
+		if (np > 96)
+			break;
 		if (want && *want && !i9ctl_contains(p->p_comm, want))
 			continue;
 		used += snprintf(buf + used, cap - used,
 		    "proc %3d %-16s p=%p\n", p->p_pid, p->p_comm, p);
+		unsigned nt = 0;
 		TAILQ_FOREACH(uth, &p->p_uthlist, uu_list) {
+			if (!I9CTL_KVA_OK(uth))
+				break;
 			const char *wm = uth->uu_wmesg;
 			used += snprintf(buf + used, cap - used,
 			    "  uth=%p thr=%p wchan=%p wmesg=%s\n",
 			    uth, uth->uu_thread, uth->uu_wchan,
-			    (wm && wm > (const char *)0x80000000) ? wm : "-");
-			if (used + 128 >= cap)
+			    I9CTL_KSTR_OK(wm) ? wm : "-");
+			if (used + 128 >= cap || ++nt > 32)
 				goto out;
 		}
-		np++;
-		if (np > 48)
-			break;
 	}
 out:
 	return used;
