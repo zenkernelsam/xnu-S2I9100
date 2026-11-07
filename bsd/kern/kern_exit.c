@@ -2211,10 +2211,21 @@ i9ctl_thread_dump(char *buf, unsigned cap, const char *want)
 			if (!I9CTL_KVA_OK(uth))
 				break;
 			const char *wm = uth->uu_wmesg;
+			thread_info_data_t tinfo;
+			mach_msg_type_number_t tic = THREAD_INFO_MAX;
+			int rs = -1, slp = -1;
+			if (I9CTL_KVA_OK(uth->uu_thread) &&
+			    thread_info(uth->uu_thread, THREAD_BASIC_INFO,
+			        (thread_info_t)&tinfo, &tic) == KERN_SUCCESS) {
+				thread_basic_info_t tbi =
+				    (thread_basic_info_t)&tinfo;
+				rs = tbi->run_state;
+				slp = tbi->sleep_time;
+			}
 			used += snprintf(buf + used, cap - used,
-			    "  uth=%p thr=%p wchan=%p wmesg=%s\n",
+			    "  uth=%p thr=%p wchan=%p wmesg=%s rs=%d slp=%d\n",
 			    uth, uth->uu_thread, uth->uu_wchan,
-			    I9CTL_KSTR_OK(wm) ? wm : "-");
+			    I9CTL_KSTR_OK(wm) ? wm : "-", rs, slp);
 			if (used + 128 >= cap || ++nt > 32)
 				goto out;
 		}
