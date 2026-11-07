@@ -13,6 +13,12 @@
 #include <string.h>
 #include "i9100_root_wait.h"
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100) && !defined(I9100_USB_SIM)
+/* Thread/proc walk lives in kern_exit.c where MACH_KERNEL_PRIVATE struct
+ * visibility already exists; keeps private headers out of pexpert units. */
+extern unsigned i9ctl_thread_dump(char *buf, unsigned cap, const char *want);
+#endif
+
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 
 void i9100_usbcdc_putc(char c);
@@ -268,6 +274,24 @@ static void uctl_command(void)
 				uctl_hex8(hdr + 8, addr);
 				hdr[16] = ' ';
 				uctl_hex8(hdr + 17, len);
+				answer = hdr;
+			}
+		} else if (!strncmp(verb, "threads", 7)) {
+			/* threads [comm-substr]: forensic proc/thread snapshot streamed
+			 * as text via the DATA path. Polled context; torn snapshots ok. */
+			if (!uctl_enabled) answer = "ERR disabled";
+			else if (uctl_doff < uctl_dlen) answer = "ERR busy";
+			else {
+				const char *want = verb + 7;
+				while (*want == ' ') want++;
+				unsigned used = i9ctl_thread_dump((char *)uctl_data,
+				    sizeof(uctl_data), want);
+				static char hdr[24];
+				uctl_doff = 0; uctl_dlen = used;
+				memcpy(hdr, "OK DATA ", 8);
+				uctl_hex8(hdr + 8, 0);
+				hdr[16] = ' ';
+				uctl_hex8(hdr + 17, used);
 				answer = hdr;
 			}
 		} else answer = "ERR verb";

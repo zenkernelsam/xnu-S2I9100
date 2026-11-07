@@ -2163,3 +2163,49 @@ munge_user32_rusage(struct rusage *a_rusage_p, struct user32_rusage *a_user_rusa
 	a_user_rusage_p->ru_nvcsw = a_rusage_p->ru_nvcsw;
 	a_user_rusage_p->ru_nivcsw = a_rusage_p->ru_nivcsw;
 }
+
+/* i9ctl "threads" verb backend: polled-context forensic walk of allproc's
+ * uthread lists. No proc lock (torn snapshots acceptable); want filters
+ * p_comm by substring; empty matches all. Returns bytes written. */
+static int
+i9ctl_contains(const char *hay, const char *needle)
+{
+	const char *h;
+	for (h = hay; *h; h++) {
+		const char *a = h, *b = needle;
+		while (*b && *a == *b) { a++; b++; }
+		if (!*b) return 1;
+	}
+	return 0;
+}
+
+unsigned
+i9ctl_thread_dump(char *buf, unsigned cap, const char *want)
+{
+	struct proc *p;
+	struct uthread *uth;
+	unsigned used = 0, np = 0;
+	if (!buf || !cap)
+		return 0;
+	buf[0] = 0;
+	for (p = allproc.lh_first; p && used + 256 < cap; p = p->p_list.le_next) {
+		if (want && *want && !i9ctl_contains(p->p_comm, want))
+			continue;
+		used += snprintf(buf + used, cap - used,
+		    "proc %3d %-16s p=%p\n", p->p_pid, p->p_comm, p);
+		TAILQ_FOREACH(uth, &p->p_uthlist, uu_list) {
+			const char *wm = uth->uu_wmesg;
+			used += snprintf(buf + used, cap - used,
+			    "  uth=%p thr=%p wchan=%p wmesg=%s\n",
+			    uth, uth->uu_thread, uth->uu_wchan,
+			    (wm && wm > (const char *)0x80000000) ? wm : "-");
+			if (used + 128 >= cap)
+				goto out;
+		}
+		np++;
+		if (np > 48)
+			break;
+	}
+out:
+	return used;
+}
