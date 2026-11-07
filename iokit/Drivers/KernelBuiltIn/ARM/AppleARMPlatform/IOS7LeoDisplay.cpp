@@ -2150,7 +2150,6 @@ void ios7leo_register_display(IOService *platform)
      * never complete — we have no working radio path. Publish them on the
      * registry entries so the rprop probe sees hit=1 without touching SD. */
     {
-        static const unsigned char i9_swbeh[16] = {0};
         /* The rprop probe prints copyName(): SpringBoard queried an entry
          * literally named "samsung,i9100" — find it by name anywhere in the
          * DT plane rather than assuming a path. */
@@ -2162,18 +2161,15 @@ void ios7leo_register_display(IOService *platform)
                 const char *nm = e->getName();
                 if (nm && !strcmp(nm, "samsung,i9100")) {
                     e->setProperty("no-sdio-devices", kOSBooleanTrue);
-                    e->setProperty("software-behavior",
-                        OSData::withBytes(i9_swbeh, sizeof(i9_swbeh)));
+                    /* software-behavior deliberately NOT set here: an
+                     * all-zero blob made SpringBoard SIGABRT right after
+                     * reading it. Absent is safer than wrong. */
                 }
             }
             it->release();
         }
-        IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane);
-        if (chosen) {
-            chosen->setProperty("software-behavior",
-                OSData::withBytes(i9_swbeh, sizeof(i9_swbeh)));
-            chosen->release();
-        }
+        /* /chosen software-behavior also withheld — wrong content is worse
+         * than absent (see above). */
         /* Backlight-bring-up queries observed on AppleCLCD. */
         display->setProperty("new-backlight-architecture", kOSBooleanTrue);
         display->setProperty("use-AAP", kOSBooleanFalse);
