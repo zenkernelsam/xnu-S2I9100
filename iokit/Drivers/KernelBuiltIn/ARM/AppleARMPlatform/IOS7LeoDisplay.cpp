@@ -2160,10 +2160,10 @@ void ios7leo_register_display(IOService *platform)
             while ((e = it->getNextObject())) {
                 const char *nm = e->getName();
                 if (nm && !strcmp(nm, "samsung,i9100")) {
-                    e->setProperty("no-sdio-devices", kOSBooleanTrue);
-                    /* software-behavior deliberately NOT set here: an
-                     * all-zero blob made SpringBoard SIGABRT right after
-                     * reading it. Absent is safer than wrong. */
+                    /* BISECT: no-sdio-devices withheld — device evidence shows
+                     * SpringBoard SIGABRTs immediately after reading it hit=1;
+                     * software-behavior removed earlier was NOT the trigger
+                     * (crash persisted at same point with key absent). */
                 }
             }
             it->release();
