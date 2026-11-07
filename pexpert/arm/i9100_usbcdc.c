@@ -17,6 +17,7 @@
 /* Thread/proc walk lives in kern_exit.c where MACH_KERNEL_PRIVATE struct
  * visibility already exists; keeps private headers out of pexpert units. */
 extern unsigned i9ctl_thread_dump(char *buf, unsigned cap, const char *want);
+extern unsigned i9ctl_ports_dump(char *buf, unsigned cap, const char *want);
 #endif
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
@@ -295,6 +296,26 @@ static void uctl_command(void)
 				const char *want = verb + 7;
 				while (*want == ' ') want++;
 				unsigned used = i9ctl_thread_dump((char *)uctl_data,
+				    sizeof(uctl_data), want);
+				static char hdr[26];
+				uctl_doff = 0; uctl_dlen = used;
+				memcpy(hdr, "OK DATA ", 8);
+				uctl_hex8(hdr + 8, 0);
+				hdr[16] = ' ';
+				uctl_hex8(hdr + 17, used);
+				hdr[25] = '\0';
+				answer = hdr;
+			}
+		} else if (!strncmp(verb, "ports", 5)) {
+			/* ports [comm-substr]: IPC space dump - resolves the port
+			 * name a threads-line rnam is waiting on into object,
+			 * rights and receiver task. */
+			if (!uctl_enabled) answer = "ERR disabled";
+			else if (uctl_doff < uctl_dlen) answer = "ERR busy";
+			else {
+				const char *want = verb + 5;
+				while (*want == ' ') want++;
+				unsigned used = i9ctl_ports_dump((char *)uctl_data,
 				    sizeof(uctl_data), want);
 				static char hdr[26];
 				uctl_doff = 0; uctl_dlen = used;

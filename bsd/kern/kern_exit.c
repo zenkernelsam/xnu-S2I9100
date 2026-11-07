@@ -150,6 +150,7 @@ extern void dtrace_lazy_dofs_destroy(proc_t);
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 extern unsigned i9ctl_thread_winfo(thread_t th, uint32_t *out, unsigned n);
+extern unsigned i9ctl_task_ports(task_t task, char *buf, unsigned cap);
 #endif
 
 #if BOARD_CONFIG_ARMPBA8
@@ -2246,5 +2247,35 @@ i9ctl_thread_dump(char *buf, unsigned cap, const char *want)
 		}
 	}
 out:
+	return used;
+}
+
+/* i9ctl "ports" verb backend: for each proc matching want, dump the task's
+ * IPC space via the osfmk-side walker. Same polled-context caveats. */
+unsigned
+i9ctl_ports_dump(char *buf, unsigned cap, const char *want)
+{
+	struct proc *p;
+	unsigned used = 0, np = 0;
+	if (!buf || !cap)
+		return 0;
+	buf[0] = 0;
+	for (p = allproc.lh_first; p && used + 256 < cap;
+	    p = p->p_list.le_next) {
+		if (!I9CTL_KVA_OK(p))
+			break;
+		if (p->p_pid <= 0 || p->p_pid > 100000)
+			break;
+		if (++np > 96)
+			break;
+		if (want && *want && !i9ctl_contains(p->p_comm, want))
+			continue;
+		used += snprintf(buf + used, cap - used,
+		    "proc %3d %-16s p=%p task=%p\n",
+		    p->p_pid, p->p_comm, p, p->task);
+		if (!I9CTL_KVA_OK(p->task))
+			continue;
+		used += i9ctl_task_ports(p->task, buf + used, cap - used);
+	}
 	return used;
 }

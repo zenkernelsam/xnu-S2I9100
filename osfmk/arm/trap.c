@@ -1100,6 +1100,10 @@ void sleh_undef(arm_saved_state_t * state)
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 #include <ipc/ipc_mqueue.h>
+#include <ipc/ipc_space.h>
+#include <ipc/ipc_entry.h>
+#include <ipc/ipc_port.h>
+#include <mach/port.h>
 /* i9ctl "threads" verb backend (osfmk side): pull the Mach-level wait
  * identity that BSD's uu_wchan cannot see. Called from polled CDC context
  * with no thread lock; torn reads acceptable.
@@ -1124,5 +1128,74 @@ i9ctl_thread_winfo(thread_t th, uint32_t *out, unsigned n)
 	out[8] = u ? u->r[12] : 0;
 	out[9] = u ? u->lr : 0;
 	return 10;
+}
+
+/* i9ctl "ports" verb backend: walk a task's IPC space table and report each
+ * entry's name -> object -> rights, plus the port's receiver space/task.
+ * Answers "which port name is this thread waiting on" from threads' rnam.
+ * Polled context, no locks; torn reads acceptable.
+ * Line: pn=<name> obj=<ptr> rt=<right-bits> rsp=<recv-space> rtsk=<recv-task>
+ * rt: 1=recv 2=send(+sorights urefs) 4=send-once 8=port-set 16=dead-name */
+unsigned
+i9ctl_task_ports(task_t task, char *buf, unsigned cap)
+{
+	ipc_space_t space;
+	ipc_entry_t table;
+	ipc_entry_num_t size, i;
+	unsigned used = 0;
+	if (!buf || !cap)
+		return 0;
+	buf[0] = 0;
+	space = (ipc_space_t)(uintptr_t)task->itk_space;
+	if (!space ||
+	    (uintptr_t)space < 0x80000000U || (uintptr_t)space >= 0xf0000000U)
+		return snprintf(buf, cap, "no-space\n");
+	table = space->is_table;
+	size = space->is_table_size;
+	if (!table || size > 8192)
+		return snprintf(buf, cap, "bad-table %p %u\n", table, size);
+	used += snprintf(buf + used, cap - used,
+	    "space=%p tsize=%u\n", space, size);
+	for (i = 0; i < size && used + 128 < cap; i++) {
+		ipc_entry_t e = table + i;
+		ipc_object_t o;
+		ipc_port_t port;
+		const char *rt;
+		ipc_entry_bits_t b;
+		mach_port_name_t name;
+		if (!e)
+			break;
+		o = e->ie_object;
+		if (!o)
+			continue;
+		b = e->ie_bits;
+		name = MACH_PORT_MAKE(i, IE_BITS_GEN(b));
+		if (b & MACH_PORT_TYPE_PORT_SET)
+			rt = "pset";
+		else if (b & MACH_PORT_TYPE_DEAD_NAME)
+			rt = "dead";
+		else if (b & MACH_PORT_TYPE_RECEIVE)
+			rt = "recv";
+		else if (b & MACH_PORT_TYPE_SEND_ONCE)
+			rt = "sonce";
+		else if (b & MACH_PORT_TYPE_SEND)
+			rt = "send";
+		else
+			rt = "?";
+		used += snprintf(buf + used, cap - used,
+		    "pn=%x rt=%s obj=%p", name, rt, o);
+		if ((b & (MACH_PORT_TYPE_SEND|MACH_PORT_TYPE_SEND_ONCE|
+		    MACH_PORT_TYPE_RECEIVE)) &&
+		    io_otype((ipc_object_t)o) == IOT_PORT) {
+			port = (ipc_port_t)o;
+			used += snprintf(buf + used, cap - used,
+			    " rsp=%p rtsk=%p",
+			    port->ip_receiver,
+			    port->ip_receiver ?
+			    port->ip_receiver->is_task : 0);
+		}
+		used += snprintf(buf + used, cap - used, "\n");
+	}
+	return used;
 }
 #endif
