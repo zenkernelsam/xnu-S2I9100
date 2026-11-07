@@ -2195,7 +2195,37 @@ void ios7leo_register_display(IOService *platform)
             OSData::withBytes(i9_syscfg, sizeof(i9_syscfg)));
     }
     i9stub_publish_AppleDiagnosticDataAccessReadOnly(platform);
-    i9stub_publish_AppleM2ScalerCSCDriver(platform);
+    {
+        IOService *scaler = i9stub_publish_AppleM2ScalerCSCDriver(platform);
+        if (scaler) {
+            /* backboardd matches AppleM2ScalerCSCDriver then reads
+             * IOSurfaceAcceleratorCapabilitiesDict before arming vsync/swap;
+             * a missing dict makes the accel-create path fail and the display
+             * is dropped after IOSurface mapping (observed live). Publish a
+             * flat capability dict covering our 480x800 software pipeline. */
+            OSDictionary *caps = OSDictionary::withCapacity(10);
+            if (caps) {
+                static const struct { const char *k; unsigned long long v; } dim[] = {
+                    {"IOSurfaceAcceleratorCapabilitiesMinSourceWidth", 16},
+                    {"IOSurfaceAcceleratorCapabilitiesMinSourceHeight", 16},
+                    {"IOSurfaceAcceleratorCapabilitiesMaxSourceWidth", 2048},
+                    {"IOSurfaceAcceleratorCapabilitiesMaxSourceHeight", 2048},
+                    {"IOSurfaceAcceleratorCapabilitiesMinDestWidth", 16},
+                    {"IOSurfaceAcceleratorCapabilitiesMinDestHeight", 16},
+                    {"IOSurfaceAcceleratorCapabilitiesMaxDestWidth", 2048},
+                    {"IOSurfaceAcceleratorCapabilitiesMaxDestHeight", 2048},
+                };
+                for (unsigned i = 0; i < sizeof(dim)/sizeof(dim[0]); i++) {
+                    OSNumber *n = OSNumber::withNumber(dim[i].v, 32);
+                    if (n) { caps->setObject(dim[i].k, n); n->release(); }
+                }
+                caps->setObject("IOSurfaceAcceleratorCapabilitiesIdentityCSC", kOSBooleanTrue);
+                caps->setObject("IOSurfaceAcceleratorScalerVersion", OSNumber::withNumber(1ULL, 32));
+                scaler->setProperty("IOSurfaceAcceleratorCapabilitiesDict", caps);
+                caps->release();
+            }
+        }
+    }
     /* AppleRGBOUT stub disabled: on iOS this class is a real display driver,
      * so CA enumerated it as a display candidate and ran the FULL present
      * sequence (SwapBegin sel4 + SwapEnd sel5 + SetGammaTable sel17) on the
