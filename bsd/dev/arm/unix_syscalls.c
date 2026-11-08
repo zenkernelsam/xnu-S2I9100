@@ -107,6 +107,49 @@
 extern const char *syscallnames[];
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
+#include <pexpert/pexpert.h>
+#include <libkern/OSAtomic.h>
+
+/* Explicit i9100xpcdiag=1 only. No user buffers or queue state are read.
+ * count, then256 records of13 uint32: pid,syscall,stage,nargs,args[7],
+ * errno,result0. stage1=entered,2=returned, published last. */
+volatile uint32_t i9100_workq_boundary_diag[1 + 256 * 13];
+static unsigned int
+i9100_workq_boundary_enter(struct proc *p, unsigned int code,
+    const uint32_t *args, unsigned int count)
+{
+    int enabled = 0;
+    UInt32 slot;
+    volatile uint32_t *row;
+    if ((strcmp(p->p_comm, "lsd") && strcmp(p->p_comm, "installd")) ||
+        !PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) || enabled != 1)
+        return 0;
+    /* Thread-return and blocking kevent paths use continuations. Observe
+     * registration, opening, support/thread requests and nonblocking
+     * kevent change submission, whose normal returns are meaningful. */
+    if (code != 366 && code != 367 &&
+        !(code == 368 && count == 4 && (args[0] == 0x10 || args[0] == 0x20)) &&
+        !(code == 369 && count == 7 && args[2] && !args[4]))
+        return 0;
+    slot = i9100_workq_boundary_diag[0];
+    if (slot >= 256 || !OSCompareAndSwap(slot, slot + 1, &i9100_workq_boundary_diag[0])) return 0;
+    row = &i9100_workq_boundary_diag[1 + slot * 13];
+    row[0] = p->p_pid; row[1] = code; row[3] = count;
+    for (unsigned i = 0; i < 7; i++) row[4+i] = i < count ? args[i] : 0;
+    OSMemoryBarrier(); row[2] = 1;
+    return slot + 1;
+}
+
+static void
+i9100_workq_boundary_exit(unsigned int slot, int error, uint32_t result)
+{
+    volatile uint32_t *row;
+    if (!slot || slot > 256) return;
+    row = &i9100_workq_boundary_diag[1 + (slot - 1) * 13];
+    row[11] = error; row[12] = result;
+    OSMemoryBarrier(); row[2] = 2;
+}
+
 /* Read back after boot even if the early console ring has overflowed.
  * count, then eight {caller_pid, stage(1 enter/2 return), errno, value0}. */
 volatile uint32_t i9100_dist_spawn_diag[33];
@@ -425,6 +468,9 @@ void unix_syscall(arm_saved_state_t * state)
     uthread->uu_rval[1] = 0;
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
+    unsigned int i9100_workq_trace = arm_argument_error ? 0 :
+        i9100_workq_boundary_enter(p, code, (const uint32_t *)uthread->uu_arg,
+                                  (unsigned)callp->sy_narg);
     /* The distributed-notification service is demanded while SpringBoard
      * waits on LaunchServices. Observe its actual spawn result instead of
      * inferring absence from a missing process. At most eight attempts. */
@@ -514,6 +560,7 @@ void unix_syscall(arm_saved_state_t * state)
 #endif
     error = (*(callp->sy_call)) (p, (void *) uthread->uu_arg, &(uthread->uu_rval[0]));
 #if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_workq_boundary_exit(i9100_workq_trace, error, (uint32_t)uthread->uu_rval[0]);
     if (i9100_dist_spawn_trace) {
         i9100_dist_spawn_diag[3 + 4*i9100_dist_spawn_slot] = (unsigned)error;
         i9100_dist_spawn_diag[4 + 4*i9100_dist_spawn_slot] = (unsigned)uthread->uu_rval[0];

@@ -161,6 +161,14 @@ static int ios7lab_boundary_trace(mach_msg_header_t *header)
     int enabled = 0, kind;
     char name[32] = {0};
     if (!header) return 0;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    if (i9100_xpc_boundary_enabled()) {
+        proc_name(proc_selfpid(), name, sizeof(name));
+        /* Capture every LSD Mach boundary: a missing selected XPC ID does
+         * not establish that no message was sent through another path. */
+        if (!strcmp(name, "lsd")) return 1;
+    }
+#endif
     if (header->msgh_id == 0x10000000 || header->msgh_id == 0x77303074)
         kind = 1;
     else if (header->msgh_id == 118)
