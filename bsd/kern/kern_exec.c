@@ -85,6 +85,11 @@
 #include <machine/cpu_capabilities.h>
 
 #include <sys/param.h>
+
+#if BOARD_CONFIG_EXYNOS4210_I9100
+/* count, then eight {caller_pid, activation_errno}; survives log overflow. */
+volatile uint32_t i9100_dist_exec_diag[17];
+#endif
 #include <arm/ios7_compat.h>
 #include <sys/systm.h>
 #include <sys/filedesc.h>
@@ -1464,8 +1469,13 @@ bad_notrans:
 #if BOARD_CONFIG_EXYNOS4210_I9100
     if (imgp->ip_strings && !strcmp(imgp->ip_strings, "/usr/sbin/distnoted")) {
         static unsigned i9100_dist_exec_lines;
-        if (i9100_dist_exec_lines++ < 8)
+        if (i9100_dist_exec_lines < 8) {
+            unsigned slot = i9100_dist_exec_lines++;
+            i9100_dist_exec_diag[0] = i9100_dist_exec_lines;
+            i9100_dist_exec_diag[1 + 2*slot] = p->p_pid;
+            i9100_dist_exec_diag[2 + 2*slot] = (unsigned)error;
             printf("I9100 DISTEXEC path=%s error=%d\n", imgp->ip_strings, error);
+        }
     }
 #endif
 	if (imgp->ip_strings)

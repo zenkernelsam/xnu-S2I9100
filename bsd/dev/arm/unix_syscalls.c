@@ -106,6 +106,12 @@
 /* dynamically generated at build time based on syscalls.master */
 extern const char *syscallnames[];
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+/* Read back after boot even if the early console ring has overflowed.
+ * count, then eight {caller_pid, stage(1 enter/2 return), errno, value0}. */
+volatile uint32_t i9100_dist_spawn_diag[33];
+#endif
+
 #if BOARD_CONFIG_ARMPBA8
 extern volatile uint32_t ios7lab_preferences_mach_header;
 
@@ -424,13 +430,18 @@ void unix_syscall(arm_saved_state_t * state)
      * inferring absence from a missing process. At most eight attempts. */
     static unsigned i9100_dist_spawn_attempts;
     boolean_t i9100_dist_spawn_trace = FALSE;
+    unsigned i9100_dist_spawn_slot = 0;
     if (!arm_argument_error && code == 244 && i9100_dist_spawn_attempts < 8) {
         const struct posix_spawn_args *spawn_args = (const void *)uthread->uu_arg;
         char path[128]; size_t copied = 0;
         if (!copyinstr(spawn_args->path, path, sizeof(path), &copied) &&
             !strcmp(path, "/usr/sbin/distnoted")) {
             i9100_dist_spawn_trace = TRUE;
+            i9100_dist_spawn_slot = i9100_dist_spawn_attempts;
             ++i9100_dist_spawn_attempts;
+            i9100_dist_spawn_diag[0] = i9100_dist_spawn_attempts;
+            i9100_dist_spawn_diag[1 + 4*i9100_dist_spawn_slot] = p->p_pid;
+            i9100_dist_spawn_diag[2 + 4*i9100_dist_spawn_slot] = 1;
             printf("I9100 DISTSPAWN enter attempt=%u caller=%d path=%s\n",
                    i9100_dist_spawn_attempts, p->p_pid, path);
         }
@@ -503,9 +514,13 @@ void unix_syscall(arm_saved_state_t * state)
 #endif
     error = (*(callp->sy_call)) (p, (void *) uthread->uu_arg, &(uthread->uu_rval[0]));
 #if BOARD_CONFIG_EXYNOS4210_I9100
-    if (i9100_dist_spawn_trace)
+    if (i9100_dist_spawn_trace) {
+        i9100_dist_spawn_diag[3 + 4*i9100_dist_spawn_slot] = (unsigned)error;
+        i9100_dist_spawn_diag[4 + 4*i9100_dist_spawn_slot] = (unsigned)uthread->uu_rval[0];
+        i9100_dist_spawn_diag[2 + 4*i9100_dist_spawn_slot] = 2;
         printf("I9100 DISTSPAWN result caller=%d error=%d value0=%u value1=%u\n",
                p->p_pid, error, (unsigned)uthread->uu_rval[0], (unsigned)uthread->uu_rval[1]);
+    }
 #endif
     AUDIT_SYSCALL_EXIT(code, p, uthread, error);
 #if BOARD_CONFIG_ARMPBA8
