@@ -418,6 +418,25 @@ void unix_syscall(arm_saved_state_t * state)
     uthread->uu_rval[0] = 0;
     uthread->uu_rval[1] = 0;
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    /* The distributed-notification service is demanded while SpringBoard
+     * waits on LaunchServices. Observe its actual spawn result instead of
+     * inferring absence from a missing process. At most eight attempts. */
+    static unsigned i9100_dist_spawn_attempts;
+    boolean_t i9100_dist_spawn_trace = FALSE;
+    if (!arm_argument_error && code == 244 && i9100_dist_spawn_attempts < 8) {
+        const struct posix_spawn_args *spawn_args = (const void *)uthread->uu_arg;
+        char path[128]; size_t copied = 0;
+        if (!copyinstr(spawn_args->path, path, sizeof(path), &copied) &&
+            strstr(path, "distnoted")) {
+            i9100_dist_spawn_trace = TRUE;
+            ++i9100_dist_spawn_attempts;
+            printf("I9100 DISTSPAWN enter attempt=%u caller=%d path=%s\n",
+                   i9100_dist_spawn_attempts, p->p_pid, path);
+        }
+    }
+#endif
+
 #if BOARD_CONFIG_ARMPBA8
     unsigned int lab_syslog_io_index = ios7lab_syslogd_io_enter(p, code, (void *)uthread->uu_arg);
 #endif
@@ -483,6 +502,11 @@ void unix_syscall(arm_saved_state_t * state)
     } else
 #endif
     error = (*(callp->sy_call)) (p, (void *) uthread->uu_arg, &(uthread->uu_rval[0]));
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    if (i9100_dist_spawn_trace)
+        printf("I9100 DISTSPAWN result caller=%d error=%d value0=%u value1=%u\n",
+               p->p_pid, error, (unsigned)uthread->uu_rval[0], (unsigned)uthread->uu_rval[1]);
+#endif
     AUDIT_SYSCALL_EXIT(code, p, uthread, error);
 #if BOARD_CONFIG_ARMPBA8
     if (lab_syslog_io_index)
