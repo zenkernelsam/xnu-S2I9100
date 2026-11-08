@@ -6,7 +6,8 @@
 #include <IOKit/IOTimerEventSource.h>
 #include <pexpert/pexpert.h>
 #include <pexpert/arm/boot.h>
-#include <pexpert/arm/i9100_usb_stats.h>
+/* Private shared header; object-only rebuilds do not export new headers. */
+#include "../../../../../pexpert/arm/i9100_usb_stats.h"
 #include "i9100_power.h"
 extern "C" {
 #include <mach/mach_time.h>
