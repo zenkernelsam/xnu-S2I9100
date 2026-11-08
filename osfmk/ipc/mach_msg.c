@@ -117,7 +117,7 @@ extern int proc_pidversion(struct proc *);
 extern char *proc_name_address(void *);
 #include "IOS7LeoPreferencesRPC060.h"
 #endif
-#if BOARD_CONFIG_ARMPBA8
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
 #include <pexpert/pexpert.h>
 #include <libsa/string.h>
 #include <libkern/OSAtomic.h>
@@ -589,7 +589,7 @@ mach_msg_receive_results(void)
 #if BOARD_CONFIG_QSD8250_LEO
     uint32_t leo_rpc060_receive_seq=leo_rpc060_receive_begin(self,mr,mr==MACH_MSG_SUCCESS?kmsg->ikm_header:0);
 #endif
-#if BOARD_CONFIG_ARMPBA8
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
     int lab_receive = mr == MACH_MSG_SUCCESS && ios7lab_checkin_trace(kmsg->ikm_header);
     int lab_message_id = lab_receive ? kmsg->ikm_header->msgh_id : 0;
     int lab_ls_receive = mr == MACH_MSG_SUCCESS && ios7lab_ls_trace(kmsg->ikm_header);
@@ -663,7 +663,7 @@ mach_msg_receive_results(void)
 		mr = ipc_kmsg_copyout(kmsg, space, map, MACH_MSG_BODY_NULL);
 	}
 
-#if BOARD_CONFIG_ARMPBA8
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
     /* Copyout may contract internal OOL descriptors. kmsg is still live here. */
     if (lab_ls_receive)
         printf("IOS7LAB LSIPC COPYOUT pid=%d tid=%llu id=%d internal-size=%u converted-user-size=%u result=%x\n",
@@ -699,7 +699,7 @@ mach_msg_receive_results(void)
 #if BOARD_CONFIG_QSD8250_LEO
     leo_rpc060_note(leo_rpc060_receive_seq,LEO_RPC060_DONE,(uint32_t)mr,0);
 #endif
-#if BOARD_CONFIG_ARMPBA8
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
     if (lab_receive)
         printf("IOS7LAB checkin RECEIVE-RESULT pid=%d id=%d result=%x\n", proc_selfpid(), lab_message_id, mr);
     if (lab_ls_receive)
@@ -785,7 +785,7 @@ mach_msg_overwrite_trap(
 #if BOARD_CONFIG_QSD8250_LEO
     uint32_t leo_rpc060_seq=leo_rpc060_begin(args);
 #endif
-#if BOARD_CONFIG_ARMPBA8
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
     int lab_ls_send = 0, lab_ls_send_id = 0;
     int lab_boundary_send = 0, lab_boundary_send_id = 0;
     mach_msg_size_t lab_boundary_send_size = 0;
@@ -811,7 +811,7 @@ mach_msg_overwrite_trap(
             option, send_size, rcv_size, msg_timeout);
 #endif
 
-#if BOARD_CONFIG_ARMPBA8
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
         int lab_send = ios7lab_checkin_trace(kmsg->ikm_header);
         int lab_send_id = lab_send ? kmsg->ikm_header->msgh_id : 0;
         lab_ls_send = ios7lab_ls_trace(kmsg->ikm_header);
@@ -840,7 +840,7 @@ mach_msg_overwrite_trap(
         leo_rpc060_note(leo_rpc060_seq,mr==MACH_MSG_SUCCESS?LEO_RPC060_COPYIN:LEO_RPC060_DONE,(uint32_t)mr,0);
 #endif
 		if (mr != MACH_MSG_SUCCESS) {
-#if BOARD_CONFIG_ARMPBA8
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
             if (lab_send) printf("IOS7LAB checkin COPYIN-ERROR pid=%d id=%d result=%x\n", proc_selfpid(), lab_send_id, mr);
             if (lab_ls_send) printf("IOS7LAB LSIPC COPYIN-ERROR pid=%d id=%d result=%x\n", proc_selfpid(), lab_ls_send_id, mr);
             if (lab_boundary_send)
@@ -851,7 +851,7 @@ mach_msg_overwrite_trap(
 			return mr;
 		}
 
-#if BOARD_CONFIG_ARMPBA8
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
         if (lab_send) {
             ipc_port_t destination = (ipc_port_t)kmsg->ikm_header->msgh_remote_port;
             void *receiver_task = 0;
@@ -906,7 +906,7 @@ mach_msg_overwrite_trap(
 #if BOARD_CONFIG_QSD8250_LEO
         leo_rpc060_note(leo_rpc060_seq,mr==MACH_MSG_SUCCESS?LEO_RPC060_SEND:LEO_RPC060_DONE,(uint32_t)mr,0);
 #endif
-#if BOARD_CONFIG_ARMPBA8
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
         if (lab_send) printf("IOS7LAB checkin SEND-RESULT pid=%d id=%d result=%x\n", proc_selfpid(), lab_send_id, mr);
         if (lab_ls_send) printf("IOS7LAB LSIPC SEND-RESULT pid=%d id=%d result=%x\n", proc_selfpid(), lab_ls_send_id, mr);
         if (lab_boundary_send)
@@ -925,7 +925,7 @@ mach_msg_overwrite_trap(
 	}
 
 	if (option & MACH_RCV_MSG) {
-#if BOARD_CONFIG_ARMPBA8
+#if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
         if (lab_ls_send)
             printf("IOS7LAB LSIPC RECEIVE-WAIT pid=%d request-id=%d receive-name=%x limit=%u option=%x\n",
                 proc_selfpid(), lab_ls_send_id, rcv_name, rcv_size, option);
