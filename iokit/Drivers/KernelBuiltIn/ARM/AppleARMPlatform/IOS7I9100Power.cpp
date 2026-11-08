@@ -86,6 +86,7 @@ bool IOS7I9100Power::start(IOService *provider)
  i9100_power_revision_value=revision;
  i9100_power_io io;
  io.cookie=&hw;io.pmic_read=i9100_power_pmic_read;io.pmic_write=i9100_power_pmic_write;
+ io.muic_read=i9100_power_muic_read;io.muic_write=i9100_power_muic_write;
  io.fuel_read=i9100_power_fuel_read;io.adc_read=i9100_power_adc_read;
  io.sub_read=i9100_power_sub_read;io.sub_enable=i9100_power_sub_enable;io.now_ns=now;
  int result=i9100_power_init(&battery,&io,revision);
@@ -124,9 +125,9 @@ void IOS7I9100Power::sample(void)
  updateStatus();
  if(polls==1 || battery.reason!=lastReason || battery.connected!=lastConnected ||
   battery.charging!=lastCharging || polls%60==0){
-  IOLog("I9100 POWER valid=%u soc=%u mv=%u temp=%d adc=%u cable=%u en=%u charging=%u reason=%d errors=%u\n",
+  IOLog("I9100 POWER valid=%u soc=%u mv=%u temp=%d adc=%u cable=%u ct=%u en=%u charging=%u reason=%d errors=%u\n",
    battery.valid,battery.percent,battery.millivolts,battery.temperature_deci_c,battery.adc,
-   battery.connected,battery.enabled,battery.charging,battery.reason,battery.errors);
+   battery.connected,battery.cable_type,battery.enabled,battery.charging,battery.reason,battery.errors);
   lastReason=battery.reason;lastConnected=battery.connected;lastCharging=battery.charging;
  }
  {

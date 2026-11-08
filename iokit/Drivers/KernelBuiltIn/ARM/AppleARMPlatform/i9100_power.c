@@ -46,11 +46,28 @@ int i9100_power_init(struct i9100_power_state *s,const struct i9100_power_io *io
  if(!io->pmic_read(io->cookie,0,&id) || id==0xff ||
   !io->pmic_read(io->cookie,0,&again) || id!=again)goto failure;
  if(!i9100_power_stop(s))goto failure;
- /* Main charger: 4.2V CV, 450mA current, 100mA top-off, autonomous
-  * termination ON and five-hour hardware timer. Preserve unrelated fields. */
+ /* Main charger, per Samsung max8997_charger_u1.c: MBCCV=0 -> 4.2V CV,
+  * MBCICHFC=5 -> 450mA USB rate (TA types get 9 = 650mA at enable),
+  * ITOPOFF=5 -> 100mA, AUTOSTOP disabled (vendor relies on software
+  * monitoring like our timeout below), five-hour hardware TFCH kept as
+  * a safety net vendor lacks. */
  if(!s->use_sub && (!update(s,0x50,0x70,0x20) || !update(s,0x52,0x0f,0) ||
-  !update(s,0x53,0x0f,5) || !update(s,0x54,0x0f,5) || !update(s,0x55,0x20,0x20)))goto failure;
- s->ready=1;s->reason=I9100_POWER_OFFLINE;return 0;
+  !update(s,0x53,0x0f,5) || !update(s,0x54,0x0f,5) || !update(s,0x55,0x20,0)))goto failure;
+ /* mach-u1 max8997_muic_set_safeout(AP_USB_MODE): the VBUS-to-charger
+  * power rail runs through ESAFEOUT1 (SAFEOUTCTRL bit6). Without it the
+  * charger reports DCINOK+charging yet zero current reaches the cell. */
+ if(!s->use_sub && !update(s,0x5a,0x40,0x40))goto failure;
+ /* MUIC CONTROL2(0x0d): CPEn=bit2 routes VBUS into the charger path,
+  * LowPwr=bit5. Upstream extcon sets CPEn on every attach. Ensure it
+  * once at init; an absent MUIC (old boards) fails soft. */
+ if(s->io.muic_read && s->io.muic_write){
+  uint8_t c2;
+  if(s->io.muic_read(s->io.cookie,0x0d,&c2)){
+   uint8_t want=(uint8_t)((c2|0x04)&~0x20);
+   if(want!=c2)s->io.muic_write(s->io.cookie,0x0d,want);
+  }
+ }
+ s->cable_type=7;s->ready=1;s->reason=I9100_POWER_OFFLINE;return 0;
 failure:
  (void)i9100_power_stop(s);s->errors++;s->reason=I9100_POWER_IO;return s->reason;
 }
@@ -92,7 +109,19 @@ int i9100_power_poll(struct i9100_power_state *s)
  if(!s->enabled){
   if(s->use_sub){
    if(!update(s,0x51,0xc0,0) || !s->io.sub_enable(s->io.cookie,1))goto failure;
-  }else if(!update(s,0x51,0xc0,0xc0))goto failure;
+  }else{
+   /* Vendor cable-type selection: MUIC STATUS2(0x05) CHGTYP[2:0];
+    * 3/4/5 = TA adapter -> 650mA (code 9); USB/unknown -> 450mA (5). */
+   unsigned chgtyp=0,cur=5;
+   if(s->io.muic_read){
+    uint8_t st2;
+    if(s->io.muic_read(s->io.cookie,0x05,&st2)){
+     chgtyp=st2&7;s->cable_type=chgtyp;
+     if(chgtyp>=3 && chgtyp<=5)cur=9;
+    }
+   }
+   if(!update(s,0x53,0x0f,cur) || !update(s,0x51,0xc0,0xc0))goto failure;
+  }
   s->enabled=1;if(!s->charge_start)s->charge_start=now;
  }
  /* Status comes from the chip/pin, not just from the enable command. */

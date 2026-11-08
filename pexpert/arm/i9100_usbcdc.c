@@ -113,7 +113,7 @@ static int i9100_usb_configured, i9100_usb_hostopen, i9100_usb_enum;
  * the POWER workloop print so the death signature stays on screen. */
 static volatile unsigned i9100_usb_npoll, i9100_usb_nrxl, i9100_usb_nrxb,
 	i9100_usb_ntx, i9100_usb_ncmd, i9100_usb_st_or, i9100_usb_reconn,
-	i9100_usb_rearm, i9100_usb_rearm_st, i9100_usb_last_rxb;
+	i9100_usb_rearm, i9100_usb_last_rxb;
 static uint64_t i9100_usb_armed_at, i9100_usb_last_txok,
 	i9100_usb_last_reconn, i9100_usb_disconnect_at, i9100_usb_last_rxb_at,
 	i9100_usb_rearm_at;
@@ -339,6 +339,8 @@ static void uctl_command(void)
 	uctl_len = 18 + n;
 }
 
+static void i9100_usb_e1outarm(void);
+
 static void uctl_byte(unsigned char c)
 {
 	if (!uctl_started || uctl_reset_action) return;
@@ -410,21 +412,12 @@ static void uctl_reset_poll(void)
 	 * status entry that never surfaced) leaves the endpoint armed but
 	 * with its transfer budget exhausted - it NAKs every host write
 	 * forever while IN traffic still looks alive. After 10s of RX
-	 * silence with a host attached, two-phase disable + fresh re-arm:
-	 * EPDIS now, re-program on the next poll once EPDISd lands. */
-	if (i9100_usb_rearm_st) {
-		if ((UDOEPINT(1) & (1u << 1)) ||
-		    UCTL_NOW() - i9100_usb_rearm_at >
-		        (uint64_t)I9100_MCT_HZ / 20U) {
-			UDOEPINT(1) = 0x3ff;
-			UDOEPTSIZ(1) = (1u << 19) | i9100_usb_bulk_mps;
-			UDOEPCTL(1) = (UDOEPCTL(1) & ~(UEPCTL_EPDIS |
-			    UEPCTL_SNAK | UEPCTL_STALL)) |
-			    UEPCTL_EPENA | UEPCTL_CNAK;
-			i9100_usb_rearm_st = 0;
-			i9100_usb_rearm++;
-		}
-	} else if (uctl_started && i9100_usb_configured &&
+	 * silence with a host attached, re-program the transfer fresh. No
+	 * EPDIS round-trip: for an OUT endpoint that is merely NAKing (no
+	 * packet in flight) a TSIZ rewrite + CNAK + EPENA is the same
+	 * re-arm the RX-complete path uses, and it cannot hit the dwc2
+	 * "no EPENA while EPDIS pending" illegal-write window. */
+	if (uctl_started && i9100_usb_configured &&
 	    i9100_usb_hostopen && !i9100_usb_disconnect_at) {
 		if (i9100_usb_nrxb != i9100_usb_last_rxb) {
 			i9100_usb_last_rxb = i9100_usb_nrxb;
@@ -434,9 +427,9 @@ static void uctl_reset_poll(void)
 		        (uint64_t)I9100_MCT_HZ * 10U &&
 		    UCTL_NOW() - i9100_usb_rearm_at >
 		        (uint64_t)I9100_MCT_HZ * 30U) {
-			UDOEPCTL(1) |= UEPCTL_EPDIS | UEPCTL_SNAK;
+			i9100_usb_e1outarm();
 			i9100_usb_rearm_at = UCTL_NOW();
-			i9100_usb_rearm_st = 1;
+			i9100_usb_rearm++;
 		}
 	}
 	/* Host-dead reconnect: a control reply or staged DATA has waited 30s

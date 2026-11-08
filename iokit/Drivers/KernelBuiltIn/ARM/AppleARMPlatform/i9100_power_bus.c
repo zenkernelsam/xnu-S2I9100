@@ -54,10 +54,10 @@ static int receive(struct bus *b,uint8_t *byte,int last)
  delay(b,5);if(!clock_high(b))return 0;low(b,b->scl);release(b,b->sda);
  *byte=(uint8_t)value;return 1;
 }
-static int transfer(struct i9100_power_hw *hw,unsigned fuel,unsigned reg,
+static int transfer(struct i9100_power_hw *hw,unsigned fuel,unsigned slave,unsigned reg,
                     uint8_t *data,unsigned count,int writing)
 {
- if(!hw || !data || reg>255 || !count || count>2 || (fuel && writing))return 0;
+ if(!hw || !data || reg>255 || !count || count>2 || (fuel && writing) || slave>127)return 0;
  struct bus b={hw,fuel?1U:0U,fuel?0x1a0U:0x40U,fuel?0U:6U,fuel?1U:7U,0,0,0};
  hw->enter(hw->cookie);
  b.con=rd(&b,0);b.dat=rd(&b,4);b.pull=rd(&b,8);
@@ -71,9 +71,8 @@ static int transfer(struct i9100_power_hw *hw,unsigned fuel,unsigned reg,
   if(!stop(&b))ok=0;
   if(!(rd(&b,4)&(1U<<b.sda)))ok=0;
  }
- unsigned addr=fuel?0x36U:0x66U;
- if(ok)ok=start(&b) && send(&b,addr<<1) && send(&b,reg);
- if(ok && !writing)ok=start(&b) && send(&b,(addr<<1)|1U);
+ if(ok)ok=start(&b) && send(&b,slave<<1) && send(&b,reg);
+ if(ok && !writing)ok=start(&b) && send(&b,(slave<<1)|1U);
  if(ok)for(unsigned n=0;n<count;n++){
   if(writing)ok=send(&b,data[n]);else ok=receive(&b,data+n,n+1==count);
   if(!ok)break;
@@ -86,11 +85,16 @@ static int transfer(struct i9100_power_hw *hw,unsigned fuel,unsigned reg,
  hw->leave(hw->cookie);return ok;
 }
 int i9100_power_pmic_read(void *hw,unsigned reg,uint8_t *value)
-{uint8_t data=0;if(!value || !transfer(hw,0,reg,&data,1,0))return 0;*value=data;return 1;}
+{uint8_t data=0;if(!value || !transfer(hw,0,0x66,reg,&data,1,0))return 0;*value=data;return 1;}
 int i9100_power_pmic_write(void *hw,unsigned reg,uint8_t value)
-{return transfer(hw,0,reg,&value,1,1);}
+{return transfer(hw,0,0x66,reg,&value,1,1);}
+/* MAX8997 MUIC lives at 0x25 (0x4a>>1) on the same GPB[6:7] bus as the PMIC. */
+int i9100_power_muic_read(void *hw,unsigned reg,uint8_t *value)
+{uint8_t data=0;if(!value || !transfer(hw,0,0x25,reg,&data,1,0))return 0;*value=data;return 1;}
+int i9100_power_muic_write(void *hw,unsigned reg,uint8_t value)
+{return transfer(hw,0,0x25,reg,&value,1,1);}
 int i9100_power_fuel_read(void *hw,unsigned reg,uint16_t *value)
-{uint8_t data[2];if(!value || !transfer(hw,1,reg,data,2,0))return 0;*value=data[0]|((uint16_t)data[1]<<8);return 1;}
+{uint8_t data[2];if(!value || !transfer(hw,1,0x36,reg,data,2,0))return 0;*value=data[0]|((uint16_t)data[1]<<8);return 1;}
 unsigned i9100_power_revision(struct i9100_power_hw *hw)
 {
  /* Bootloader leaves revision straps as GPIO inputs; never change their mux. */

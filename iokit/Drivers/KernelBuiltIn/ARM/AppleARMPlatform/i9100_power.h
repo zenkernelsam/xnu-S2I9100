@@ -12,6 +12,8 @@ struct i9100_power_io {
  int (*adc_read)(void *,unsigned,unsigned *);
  int (*sub_read)(void *,unsigned *,unsigned *); /* connected, actually charging */
  int (*sub_enable)(void *,unsigned);
+ int (*muic_read)(void *,unsigned,uint8_t *);  /* MUIC @0x25 on the PMIC bus */
+ int (*muic_write)(void *,unsigned,uint8_t);
  uint64_t (*now_ns)(void *);
 };
 enum { I9100_POWER_OK=0,I9100_POWER_IO=-1,I9100_POWER_REVISION=-2,
@@ -20,6 +22,7 @@ enum { I9100_POWER_OK=0,I9100_POWER_IO=-1,I9100_POWER_REVISION=-2,
 struct i9100_power_state {
  struct i9100_power_io io;
  unsigned ready,revision,use_sub,enabled,valid,connected,present,charging;
+ unsigned cable_type; /* last MUIC STATUS2 CHGTYP read; 0x7 = unknown */
  unsigned millivolts,percent,adc,full,timeout,thermal_block,errors;
  int temperature_deci_c,reason;
  uint64_t charge_start;
@@ -40,6 +43,8 @@ struct i9100_power_hw {
 };
 int i9100_power_pmic_read(void *,unsigned,uint8_t *);
 int i9100_power_pmic_write(void *,unsigned,uint8_t);
+int i9100_power_muic_read(void *,unsigned,uint8_t *);
+int i9100_power_muic_write(void *,unsigned,uint8_t);
 int i9100_power_fuel_read(void *,unsigned,uint16_t *);
 int i9100_power_adc_read(void *,unsigned,unsigned *);
 int i9100_power_sub_read(void *,unsigned *,unsigned *);
