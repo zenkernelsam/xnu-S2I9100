@@ -932,6 +932,11 @@ void i9100_usbcdc_poll(void)
 	boolean_t enabled;
 	if (!i9100_usb_map || !i9100_usb_probed || i9100_usb_mode == USB_DEAD)
 		return;
+	/* control_init at timebase_init can still precede the lazy probe on
+	 * some boot paths - if so it returned forever. Retry here: the poll
+	 * already knows every piece is mapped and alive. */
+	if (!uctl_started)
+		i9100_usbcdc_control_init();
 	enabled = ml_set_interrupts_enabled(FALSE);
 	if (!i9100_usb_in) {
 		i9100_usb_in = 1;
@@ -1075,6 +1080,7 @@ void i9100_usbcdc_stats(unsigned *o)
 	o[18] = i9100_usb_map ? UDOEPCTL(1) : 0;
 	o[19] = i9100_usb_map ? UDOEPTSIZ(1) : 0;
 	o[20] = i9100_usb_rearm;
+	o[21] = uctl_started;
 }
 
 #endif /* BOARD_CONFIG_EXYNOS4210_I9100 */
