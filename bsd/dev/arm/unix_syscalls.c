@@ -210,7 +210,7 @@ ios7lab_syslogd_io_enter(struct proc *p, unsigned int code, void *arguments)
 #endif
 
 #if IOS7_COMPAT_PLATFORM
-/* Original iOS7 ARM psynch stubs save16bytes and expose r0..r6 only.
+/* iOS6 and iOS7 ARM psynch stubs save16bytes and expose r0..r6 only.
  * Their remaining4 argument words stay at the caller stack+12, hence
  * saved userSP+28. Native register layout and generated structs already
  * agree: do not reorder sequence words or alter synchronization semantics. */
@@ -227,6 +227,20 @@ ios7lab_psynch_stack_tail(uint32_t code, uint32_t userSP,
     if (error) return error;
     memcpy(arguments + 7, tail, sizeof(tail));
     return 0;
+}
+
+static boolean_t
+arm_psynch_needs_stack_tail(uint32_t code, boolean_t indirect)
+{
+    if (indirect || (code != 303 && code != 304 && code != 305)) return FALSE;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    /* This is native ARM syscall argument marshalling, also required by
+     * iOS6. The VM compatibility switch must not substitute r7..r10 for
+     * the caller's flags/timeouts and change mutex/cvar semantics. */
+    return TRUE;
+#else
+    return ios7_compat_vmabi_enabled();
+#endif
 }
 
 
@@ -391,8 +405,7 @@ void unix_syscall(arm_saved_state_t * state)
 
 #if IOS7_COMPAT_PLATFORM
     int lab_psynch_argument_error = 0;
-    if (!arm_argument_error && !shift_args && (code == 303 || code == 304 || code == 305) &&
-        ios7_compat_vmabi_enabled()) {
+    if (!arm_argument_error && arm_psynch_needs_stack_tail(code, shift_args)) {
         lab_psynch_argument_error = ios7lab_psynch_stack_tail((uint32_t)code,
             state->sp, (uint32_t *)uthread->uu_arg, (unsigned)callp->sy_narg);
     }
