@@ -245,6 +245,10 @@ uint64_t I9100_get_timebase(void)
     if(!timebase_ready) return 0;
     return mct_get_frc();
 }
+int I9100_timebase_initialized(void)
+{
+    return timebase_ready != 0;
+}
 
 uint64_t I9100_timer_value(void)
 {

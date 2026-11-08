@@ -22,6 +22,7 @@ void I9100_interrupt_init(void);
 void I9100_timebase_init(void);
 void I9100_handle_interrupt(void *context);
 uint64_t I9100_get_timebase(void);
+int I9100_timebase_initialized(void);
 uint64_t I9100_timer_value(void);
 void I9100_timer_enabled(int enable);
 void I9100_timer_snapshot(struct I9100TimerSnapshot *out);

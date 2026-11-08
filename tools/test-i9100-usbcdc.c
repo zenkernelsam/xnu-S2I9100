@@ -21,14 +21,40 @@ static unsigned pmu_offsets[4], pmu_values[4], pmu_count, barriers, halts;
 static uint64_t fake_ticks;
 #define UCTL_NOW() fake_ticks
 #define UCTL_ACK_TICKS 12000000U
+#define I9100_MCT_HZ 24000000U
+static int fake_timebase_ready;
+#define UCTL_TIMEBASE_READY() fake_timebase_ready
+static unsigned wait_calls, reset_calls, fail_wait;
+static int fake_wait(volatile unsigned int *, unsigned int, unsigned int);
+#define UWAIT(r, m, v) fake_wait((r), (m), (v))
 #define UPMU_WRITE(off, value) do { pmu_offsets[pmu_count] = off; pmu_values[pmu_count++] = value; } while (0)
 #define UCTL_BARRIER() (++barriers)
 #define UCTL_HALT() (++halts)
 static int PE_parse_boot_argn(const char *s, void *p, unsigned n)
 { (void)s; (void)p; (void)n; return 0; }
+/* These fixtures test the transport envelope, not private proc/IPC walks. */
+static unsigned i9ctl_thread_dump(char *p, unsigned n, const char *want)
+{ (void)want; const char s[] = "thread fixture\n"; if(n < sizeof(s))return 0; memcpy(p,s,sizeof(s)-1);return sizeof(s)-1; }
+static unsigned i9ctl_ports_dump(char *p, unsigned n, const char *want)
+{ (void)want; const char s[] = "port fixture\n"; if(n < sizeof(s))return 0; memcpy(p,s,sizeof(s)-1);return sizeof(s)-1; }
 #include "../pexpert/arm/i9100_usbcdc.c"
 static unsigned fails, checks;
 #define CHECK(c) do { checks++; if (!(c)) { fails++; printf("FAIL line %u: %s\n", __LINE__, #c); } } while (0)
+
+/* Inject only reset/wait outcomes. Ordinary registers remain plain memory;
+ * this checks driver policy and IRQ ordering, not physical DWC2 behavior. */
+static int fake_wait(volatile unsigned int *r, unsigned int mask, unsigned int value)
+{
+    wait_calls++;
+    if(wait_calls == fail_wait)return -1;
+    if(r == &UGRSTCTL && mask == UGRST_CSFT) {
+        reset_calls++;
+        memset(&regs[0x800/4],0,0x800);
+        UGINTSTS=0;
+    }
+    *r=(*r & ~mask) | value;
+    return 0;
+}
 
 static void setup(unsigned rt, unsigned rq, unsigned value, unsigned length)
 {
@@ -52,6 +78,10 @@ static void out(const char *s, unsigned n)
     CHECK(rx_pos == (n + 3) / 4);
     UGRXSTSP = (3 << 17) | 1;
     i9100_usb_rxlvl();
+    /* The hardware completion, then software W1C ACK, precede re-arm. */
+    UDOEPCTL(1) &= ~UEPCTL_EPENA;
+    UDOEPTSIZ(1) = 0;
+    i9100_usb_e1outdone(UEPINT_XFC);
     if (uctl_started) CHECK(UDOEPTSIZ(1) == ((1u << 19) | i9100_usb_bulk_mps));
 }
 static void command(const char *s) { out(s, strlen(s)); }
@@ -100,6 +130,8 @@ static void root_tests(void)
 }
 static void control_tests(void)
 {
+    fake_timebase_ready=1;
+    i9100_usb_mode=USB_OURS;
     uctl_cancel(); uctl_last = 0; i9100_usb_busy1 = 0;
     uctl_ready(); CHECK(!uctl_len);
     command("I9CTL1 00000001 reboot-download\n");
@@ -218,6 +250,152 @@ static void readmem_tests(void)
     uctl_cancel();
 }
 
+static void usb_fixture(int ready)
+{
+    memset(regs,0,sizeof(regs));
+    memset(rx,0,sizeof(rx));rx_pos=0;
+    interrupts=1;fake_timebase_ready=ready;fake_ticks=I9100_MCT_HZ;
+    i9100_usb_map=i9100_phy_map=i9100_pmu_map=1;
+    i9100_usb_mode=USB_OURS;i9100_usb_probed=1;i9100_usb_in=0;
+    i9100_usb_configured=1;i9100_usb_hostopen=1;i9100_usb_busy1=0;
+    i9100_usb_enum=0;i9100_usb_bulk_mps=512;
+    i9100_usb_npoll=i9100_usb_nrxl=i9100_usb_nrxb=0;
+    i9100_usb_ntx=i9100_usb_ncmd=i9100_usb_st_or=0;
+    i9100_usb_reconn=i9100_usb_rearm=i9100_usb_last_rxb=0;
+    i9100_usb_armed_at=i9100_usb_last_txok=i9100_usb_last_reconn=0;
+    i9100_usb_disconnect_at=i9100_usb_last_rxb_at=i9100_usb_rearm_at=0;
+    i9100_usb_init_attempts=i9100_usb_init_gate=0;
+    i9100_usb_out_arms=i9100_usb_reset_errors=0;
+    i9100_usb_h=i9100_usb_t=0;
+    uctl_started=uctl_enabled=uctl_last=0;uctl_cancel();
+    uctl_reset_action=0;uctl_reset_at=uctl_flight_at=0;
+    wait_calls=reset_calls=fail_wait=0;pmu_count=barriers=halts=0;
+    UGSNPSID=0x4f54280a;UGUSBCFG=0x540f;UGRSTCTL=UGRST_AHBIDLE;
+    UDIEPCTL(1)=UEPCTL_ACT | UEPCTL_EPTYPE(2) | (1u<<22) | 512;
+    UDOEPCTL(1)=UEPCTL_ACT | UEPCTL_EPTYPE(2) | 512;
+    UDTXFSTS(0)=256;
+}
+
+static void init_recovery_tests(void)
+{
+    /* MCT first, USB maps/probe later: no lost one-shot initialization. */
+    usb_fixture(1);i9100_usb_map=0;i9100_usb_probed=0;
+    i9100_usbcdc_control_init();
+    CHECK(!uctl_started && i9100_usb_init_attempts==1);
+    CHECK(i9100_usb_init_gate==(I9100_USB_INIT_NO_MAP|I9100_USB_INIT_NO_PROBE));
+    CHECK(!wait_calls && !(UDCTL & UDCTL_SFTDIS));
+    i9100_usb_map=1;UDCFG=7u<<4;
+    UDOEPCTL(1)=0x80088200U;UDOEPTSIZ(1)=0;
+    i9100_usbcdc_poll();
+    CHECK(i9100_usb_probed && uctl_started && !i9100_usb_init_gate);
+    CHECK(i9100_usb_disconnect_at && i9100_usb_reconn==1);
+    CHECK(!i9100_usb_configured && !uctl_len && !wait_calls);
+    CHECK(UDOEPTSIZ(1)==0 && UDOEPCTL(1)==0x80088200U);
+    CHECK(interrupts==1);
+
+    /* USB first, MCT later: early console polling must remain log-only. */
+    usb_fixture(0);i9100_usb_mode=USB_ADOPT;
+    UDOEPCTL(1)=0x80088200U;
+    i9100_usbcdc_poll();
+    CHECK(!uctl_started && i9100_usb_init_gate==I9100_USB_INIT_NO_TIMEBASE);
+    CHECK(!(UDCTL & UDCTL_SFTDIS) && !wait_calls);
+    fake_timebase_ready=1;i9100_usbcdc_poll();
+    CHECK(uctl_started && i9100_usb_reconn==1 && !uctl_len);
+    uint64_t deadline=i9100_usb_disconnect_at;
+    unsigned attempts=i9100_usb_init_attempts;
+    /* Nothing services old completion bits during the 125ms detach. */
+    UGINTSTS=UGINT_RXFLVL|UGINT_OEP;UDAINT=1u<<17;UDOEPINT(1)=UEPINT_XFC;
+    fake_ticks=deadline-1;i9100_usbcdc_poll();
+    CHECK(!reset_calls && !rx_pos && !i9100_usb_out_arms);
+    CHECK(i9100_usb_init_attempts==attempts && (UDCTL & UDCTL_SFTDIS));
+    fake_ticks=deadline;i9100_usbcdc_poll();
+    CHECK(reset_calls==1 && wait_calls==2 && !i9100_usb_reset_errors);
+    CHECK(!i9100_usb_disconnect_at && !(UDCTL & UDCTL_SFTDIS));
+    CHECK(i9100_usb_mode==USB_OURS && !i9100_usb_configured && !i9100_usb_busy1);
+    CHECK(!(UDCFG & (0x7fU<<4)) && UGAHBCFG==1);
+    CHECK(UGUSBCFG==((1u<<30)|0x540f));
+    CHECK(UGRXFSIZ==0x200 && UDPTXF(1)==((0x180u<<16)|0x300));
+    CHECK(!uctl_len && !i9100_usb_out_arms && !pmu_count);
+    /* New host setup is required; READY cannot precede SET_CONFIG. */
+    setup(0,5,9,0);setup(0,9,1,0);
+    CHECK(i9100_usb_configured && uctl_len && i9100_usb_out_arms==1);
+    CHECK(UDOEPTSIZ(1)==((1u<<19)|512));
+    CHECK(strstr(uctl_reply,"I9CTL1 READY control=0"));
+    uctl_cancel();uctl_enabled=1;
+    command("I9CTL1 00000001 ping\n");
+    CHECK(strstr(uctl_reply,"OK control=1") && i9100_usb_ncmd==1);
+    CHECK(i9100_usb_out_arms==2 && i9100_usb_reconn==1);
+    /* A repeat call neither queues another greeting nor resets state. */
+    unsigned queued=uctl_len;i9100_usbcdc_control_init();
+    CHECK(uctl_len==queued && i9100_usb_init_attempts==attempts);
+
+    /* Re-entry does not parse boot arguments or touch register state. */
+    usb_fixture(1);i9100_usb_in=1;
+    i9100_usbcdc_poll();i9100_usbcdc_control_init();
+    CHECK(!uctl_started && !i9100_usb_init_attempts && !wait_calls && interrupts==1);
+    i9100_usb_in=0;i9100_usbcdc_control_init();
+    CHECK(uctl_started && i9100_usb_out_arms==1);
+
+    /* Idle live budgets survive DTR, keepalive, and unrelated features. */
+    uctl_cancel();unsigned budget=UDOEPTSIZ(1), arms=i9100_usb_out_arms;
+    setup(0x21,0x22,1,0);
+    CHECK(UDOEPTSIZ(1)==budget && i9100_usb_out_arms==arms && !i9100_usb_reconn);
+    uctl_cancel();fake_ticks+=I9100_MCT_HZ*31ULL;uctl_reset_poll();
+    CHECK(UDOEPTSIZ(1)==budget && i9100_usb_out_arms==arms && !i9100_usb_reconn);
+    uctl_data[0]=42;uctl_doff=0;uctl_dlen=1;uctl_ready();
+    CHECK(!uctl_len && uctl_dlen==1);uctl_cancel();
+
+    /* RX OUT_DONE alone must not rewrite a still-enabled transfer. */
+    UGRXSTSP=(3u<<17)|1;i9100_usb_rxlvl();
+    CHECK(i9100_usb_out_arms==arms && UDOEPTSIZ(1)==budget);
+    UDOEPTSIZ(1)=0;UDOEPCTL(1)&=~UEPCTL_EPENA;
+    UGINTSTS=UGINT_OEP;UDAINT=1u<<17;UDOEPINT(1)=UEPINT_XFC;
+    i9100_usbcdc_poll();UGINTSTS=0;
+    CHECK(i9100_usb_out_arms==arms+1 && UDOEPTSIZ(1)==budget);
+    CHECK(!i9100_usb_reconn);
+
+    /* Exhaustion without completion requires a detached reset, no EPDIS. */
+    UDOEPCTL(1)=0x80088200U;UDOEPTSIZ(1)=0;
+    i9100_usb_e1outarm(0);
+    CHECK(i9100_usb_reconn==1 && (UDCTL & UDCTL_SFTDIS));
+    CHECK(UDOEPCTL(1)==0x80088200U && !wait_calls);
+    CHECK(!i9100_usb_configured && !uctl_len);
+    fake_ticks=i9100_usb_disconnect_at;i9100_usbcdc_poll();
+    CHECK(reset_calls==1 && !i9100_usb_disconnect_at);
+    i9100_usb_configured=1;UDOEPCTL(1)=0x80088200U;UDOEPTSIZ(1)=0;
+    i9100_usb_e1outarm(0);
+    CHECK(i9100_usb_reconn==1 && !i9100_usb_disconnect_at); /* bounded recovery */
+    fake_ticks+=I9100_MCT_HZ*60ULL;i9100_usb_e1outarm(0);
+    CHECK(i9100_usb_reconn==2 && i9100_usb_disconnect_at);
+
+    /* A failed reset remains detached and stops retries at either wait. */
+    for(unsigned stage=1;stage<=2;stage++) {
+        usb_fixture(1);i9100_usb_mode=USB_ADOPT;i9100_usbcdc_control_init();
+        fail_wait=stage;fake_ticks=i9100_usb_disconnect_at;i9100_usbcdc_poll();
+        CHECK(i9100_usb_mode==USB_DEAD && i9100_usb_reset_errors==1);
+        CHECK(i9100_usb_init_gate==I9100_USB_INIT_RESET_FAILED && (UDCTL & UDCTL_SFTDIS));
+        unsigned waits=wait_calls;
+        for(unsigned k=0;k<20;k++){fake_ticks+=I9100_MCT_HZ;i9100_usbcdc_poll();}
+        CHECK(wait_calls==waits && i9100_usb_reconn==1 && !pmu_count);
+    }
+
+    /* Producer/caller share the exact appended diagnostics layout. */
+    usb_fixture(1);i9100_usbcdc_control_init();
+    unsigned stats[I9100_USB_STATS_WORDS+1];
+    for(unsigned k=0;k<I9100_USB_STATS_WORDS+1;k++)stats[k]=0xdeadbeef;
+    i9100_usbcdc_stats(stats);
+    CHECK(stats[21]==1 && stats[22]==1 && !stats[23]);
+    CHECK(stats[24]==1 && !stats[25] && stats[26]==1);
+    for(unsigned k=0;k<I9100_USB_STATS_WORDS;k++)CHECK(stats[k]!=0xdeadbeef);
+    CHECK(stats[I9100_USB_STATS_WORDS]==0xdeadbeef && interrupts==1);
+    command("I9CTL1 00000001 threads\n"); /* READY owns reply: no new envelope */
+    uctl_cancel();uctl_enabled=1;
+    command("I9CTL1 00000002 threads\n");
+    CHECK(uctl_dlen==15 && strstr(uctl_reply,"OK DATA 00000000 0000000f"));
+    uctl_cancel();command("I9CTL1 00000003 ports\n");
+    CHECK(uctl_dlen==13 && strstr(uctl_reply,"OK DATA 00000000 0000000d"));
+}
+
 int main(void)
 {
     i9100_usb_map = 1;
@@ -305,6 +483,7 @@ int main(void)
     control_tests();
     root_tests();
     readmem_tests();
+    init_recovery_tests();
     printf("kernel CDC: %u checks, %u failures (no hardware emulation)\n", checks, fails);
     return fails ? 1 : 0;
 }
