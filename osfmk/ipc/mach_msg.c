@@ -134,10 +134,41 @@ volatile uint32_t i9100_xpc_boundary_diag[1 + 512 * 8];
 /* Failure-only metadata, independent of the normal trace's capacity.
  * count +64 rows {pid,stage(1 get/2 receive),addr-low,size,options,result}. */
 volatile uint32_t i9100_mach_failure_diag[1 + 64 * 6];
+/* Error MIG replies can have a successful transport result. count +128
+ * rows {pid,id,retcode,size,bits,options}; original reply remains untouched. */
+volatile uint32_t i9100_mig_error_diag[1 + 128 * 6];
 static int i9100_xpc_boundary_enabled(void)
 {
     int enabled = 0;
     return PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) && enabled == 1;
+}
+static void
+i9100_mig_error_record(ipc_kmsg_t kmsg, mach_msg_option_t option,
+    mach_msg_return_t result)
+{
+    mach_msg_header_t *header;
+    UInt32 slot, retcode;
+    char name[32] = {0};
+    volatile uint32_t *row;
+    const unsigned char *body;
+    if (result != MACH_MSG_SUCCESS || !kmsg ||
+        !(header = kmsg->ikm_header) || header->msgh_size != 36 ||
+        (header->msgh_bits & MACH_MSGH_BITS_COMPLEX) || !i9100_xpc_boundary_enabled()) return;
+    body = (const unsigned char *)(header + 1);
+    /* Native little-endian NDR: avoid mistaking unrelated simple payloads
+     * for a generated MIG error reply. */
+    if (body[0] || body[1] || body[2] || body[3] || body[4] != 1 ||
+        body[5] || body[6] || body[7]) return;
+    memcpy(&retcode, body + 8, sizeof(retcode));
+    if (!retcode) return;
+    proc_name(proc_selfpid(), name, sizeof(name));
+    if (strcmp(name, "lsd") && strcmp(name, "installd")) return;
+    slot = i9100_mig_error_diag[0];
+    if (slot >= 128 || !OSCompareAndSwap(slot, slot + 1, &i9100_mig_error_diag[0])) return;
+    row = &i9100_mig_error_diag[1 + slot * 6];
+    row[0] = proc_selfpid(); row[1] = header->msgh_id; row[2] = retcode;
+    row[3] = header->msgh_size; row[4] = header->msgh_bits; row[5] = option;
+    OSMemoryBarrier();
 }
 static void
 i9100_mach_failure_record(unsigned int stage, mach_vm_address_t address,
@@ -614,6 +645,7 @@ mach_msg_receive_results(void)
 	mach_msg_trailer_size_t trailer_size;
 #if BOARD_CONFIG_EXYNOS4210_I9100
     int i9100_store_reply = i9100_ls_bootstrap_store_reply(kmsg, mr);
+    i9100_mig_error_record(kmsg, option, mr);
 #endif
 #if BOARD_CONFIG_QSD8250_LEO
     uint32_t leo_rpc060_receive_seq=leo_rpc060_receive_begin(self,mr,mr==MACH_MSG_SUCCESS?kmsg->ikm_header:0);
