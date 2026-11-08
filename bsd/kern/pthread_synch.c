@@ -163,6 +163,37 @@ int proc_setalltargetconc(pid_t pid, int32_t * targetconcp);
 #define	WQ_FLAG_THREAD_REUSE		0x00020000	/* thread is being reused */
 #define	WQ_FLAG_THREAD_NEWSPI		0x00040000	/* the call is with new SPIs */
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+#include <pexpert/pexpert.h>
+#include <libkern/OSAtomic.h>
+/* Metadata only under i9100xpcdiag=1. count +128 records:
+ * pid,tid,stage,flags,priority,pc,sp,r0..r5,cpsr. Stage1 is the real
+ * ARM entry state; stage2 is worker return (registers unknown=UINT32_MAX).
+ * Published stage last, no allocation or user-memory reads. */
+volatile uint32_t i9100_wq_thread_diag[1 + 128 * 14];
+static void
+i9100_wq_thread_record(proc_t p, thread_t th, unsigned int stage,
+    uint32_t flags, uint32_t priority, const arm_thread_state_t *state)
+{
+    UInt32 slot;
+    int enabled = 0;
+    volatile uint32_t *row;
+    if ((strcmp(p->p_comm, "lsd") && strcmp(p->p_comm, "installd")) ||
+        !PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) || enabled != 1)
+        return;
+    slot = i9100_wq_thread_diag[0];
+    if (slot >= 128 || !OSCompareAndSwap(slot, slot + 1, &i9100_wq_thread_diag[0])) return;
+    row = &i9100_wq_thread_diag[1 + slot * 14];
+    row[0] = p->p_pid; row[1] = (uint32_t)thread_tid(th);
+    row[3] = flags; row[4] = priority;
+    row[5] = state ? state->pc : UINT32_MAX;
+    row[6] = state ? state->sp : UINT32_MAX;
+    for (unsigned int i = 0; i < 6; i++) row[7+i] = state ? state->r[i] : UINT32_MAX;
+    row[13] = state ? state->cpsr : UINT32_MAX;
+    OSMemoryBarrier(); row[2] = stage;
+}
+#endif
+
 /*
  * Flags filed passed to bsdthread_create and back in pthread_start 
 31  <---------------------------------> 0
@@ -1354,6 +1385,11 @@ workq_kernreturn(struct proc *p, struct workq_kernreturn_args  *uap, __unused in
 		case WQOPS_THREAD_RETURN: {
 		        thread_t th = current_thread();
 		        struct uthread *uth = get_bsdthread_info(th);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+            struct threadlist *entry = uth ? uth->uu_threadlist : NULL;
+            i9100_wq_thread_record(p, th, 2, entry ? entry->th_flags : 0,
+                entry ? entry->th_priority : UINT32_MAX, NULL);
+#endif
 
 			/* reset signal mask on the workqueue thread to default state */
 			if (uth->uu_sigmask != (sigset_t)(~workq_threadmask)) {
@@ -2325,6 +2361,9 @@ setup_wqthread(proc_t p, thread_t th, boolean_t overcommit, uint32_t priority, i
         ts->sp = pthread_addr - C_32_STK_ALIGN;
         ts->pc = (uint32_t)p->p_wqthread & ~1U;
         ts->cpsr = 0x10U | (((uint32_t)p->p_wqthread & 1U) ? 0x20U : 0);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        i9100_wq_thread_record(p, th, 1, flags, priority, ts);
+#endif
 #if BOARD_CONFIG_ARMPBA8
         if (lab_wq_logs++ < 24)
             printf("IOS7LAB workqueue pid=%d start=%08x sp=%08x pthread=%08x port=%x flags=%x cpsr=%08x\n",
