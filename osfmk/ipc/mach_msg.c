@@ -126,6 +126,36 @@ extern void proc_name(int pid, char *buffer, int size);
 
 /* Header-only protocol boundaries. These IDs do not identify an XPC command. */
 static volatile UInt32 ios7lab_xpc_lines, ios7lab_asl_lines;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+/* Opt-in metadata only, retained after the early console ring scrolls away.
+ * count, then512 records {pid,stage,id,size,user-size,bits,options,result}.
+ * stage is published last:0 means an incomplete reservation. No payloads. */
+volatile uint32_t i9100_xpc_boundary_diag[1 + 512 * 8];
+static int i9100_xpc_boundary_enabled(void)
+{
+    int enabled = 0;
+    return PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) && enabled == 1;
+}
+static void i9100_xpc_boundary_record(const char *stage, int id,
+    mach_msg_size_t size, mach_msg_size_t user_size, mach_msg_bits_t bits,
+    mach_msg_option_t option, mach_msg_return_t result)
+{
+    UInt32 slot = i9100_xpc_boundary_diag[0], phase = 0;
+    volatile uint32_t *row;
+    if (!i9100_xpc_boundary_enabled() || slot >= 512) return;
+    if (!strcmp(stage, "SEND-PRE-COPYIN")) phase = 1;
+    else if (!strcmp(stage, "COPYIN-ERROR")) phase = 2;
+    else if (!strcmp(stage, "SEND-RESULT")) phase = 3;
+    else if (!strcmp(stage, "RECEIVE-PRE-COPYOUT")) phase = 4;
+    else if (!strcmp(stage, "COPYOUT")) phase = 5;
+    else if (!strcmp(stage, "RECEIVE-RESULT")) phase = 6;
+    if (!phase || !OSCompareAndSwap(slot, slot + 1, &i9100_xpc_boundary_diag[0])) return;
+    row = &i9100_xpc_boundary_diag[1 + slot * 8];
+    row[0] = proc_selfpid(); row[2] = id; row[3] = size; row[4] = user_size;
+    row[5] = bits; row[6] = option; row[7] = result;
+    OSMemoryBarrier(); row[1] = phase;
+}
+#endif
 static int ios7lab_boundary_trace(mach_msg_header_t *header)
 {
     int enabled = 0, kind;
@@ -136,8 +166,13 @@ static int ios7lab_boundary_trace(mach_msg_header_t *header)
     else if (header->msgh_id == 118)
         kind = 2;
     else return 0;
-    if (!PE_parse_boot_argn("ios7lab_vmabi", &enabled, sizeof(enabled)) || enabled != 1)
+    if (!PE_parse_boot_argn("ios7lab_vmabi", &enabled, sizeof(enabled)) || enabled != 1) {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        if (kind != 1 || !i9100_xpc_boundary_enabled()) return 0;
+#else
         return 0;
+#endif
+    }
     proc_name(proc_selfpid(), name, sizeof(name));
     if (kind == 1) {
         if (strcmp(name, "lsd") && strcmp(name, "installd")) return 0;
@@ -153,6 +188,10 @@ static void ios7lab_boundary_log(int kind, const char *stage, int id,
 {
     volatile UInt32 *counter = kind == 1 ? &ios7lab_xpc_lines : &ios7lab_asl_lines;
     UInt32 limit = kind == 1 ? 32 : 16, used = *counter;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    if (kind == 1)
+        i9100_xpc_boundary_record(stage, id, internal_size, user_size, bits, option, result);
+#endif
     /* One CAS attempt: strict line cap, drop a contended diagnostic, never wait. */
     if (used >= limit || !OSCompareAndSwap(used, used + 1, counter)) return;
     printf("IOS7LAB %s %s seq=%u pid=%d tid=%llu id=%d internal-size=%u converted-user-size=%u bits=%x option=%x result=%x\n",
