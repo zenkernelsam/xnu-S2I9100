@@ -131,10 +131,31 @@ static volatile UInt32 ios7lab_xpc_lines, ios7lab_asl_lines;
  * count, then512 records {pid,stage,id,size,user-size,bits,options,result}.
  * stage is published last:0 means an incomplete reservation. No payloads. */
 volatile uint32_t i9100_xpc_boundary_diag[1 + 512 * 8];
+/* Failure-only metadata, independent of the normal trace's capacity.
+ * count +64 rows {pid,stage(1 get/2 receive),addr-low,size,options,result}. */
+volatile uint32_t i9100_mach_failure_diag[1 + 64 * 6];
 static int i9100_xpc_boundary_enabled(void)
 {
     int enabled = 0;
     return PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) && enabled == 1;
+}
+static void
+i9100_mach_failure_record(unsigned int stage, mach_vm_address_t address,
+    mach_msg_size_t size, mach_msg_option_t option, mach_msg_return_t result)
+{
+    UInt32 slot;
+    char name[32] = {0};
+    volatile uint32_t *row;
+    if (result == MACH_MSG_SUCCESS || result == MACH_RCV_TIMED_OUT ||
+        !i9100_xpc_boundary_enabled()) return;
+    proc_name(proc_selfpid(), name, sizeof(name));
+    if (strcmp(name, "lsd") && strcmp(name, "installd")) return;
+    slot = i9100_mach_failure_diag[0];
+    if (slot >= 64 || !OSCompareAndSwap(slot, slot + 1, &i9100_mach_failure_diag[0])) return;
+    row = &i9100_mach_failure_diag[1 + slot * 6];
+    row[0] = proc_selfpid(); row[2] = (uint32_t)address; row[3] = size;
+    row[4] = option; row[5] = result;
+    OSMemoryBarrier(); row[1] = stage;
 }
 static void i9100_xpc_boundary_record(const char *stage, int id,
     mach_msg_size_t size, mach_msg_size_t user_size, mach_msg_bits_t bits,
@@ -702,6 +723,7 @@ mach_msg_receive_results(void)
 			  trailer_size);
  out:
 #if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_mach_failure_record(2, msg_addr, self->ith_msize, option, mr);
     i9100_ls_bootstrap_receive_done(self, mr, i9100_store_reply);
 #endif
 #if BOARD_CONFIG_QSD8250_LEO
@@ -808,6 +830,9 @@ mach_msg_overwrite_trap(
 #endif
 
 		mr = ipc_kmsg_get(msg_addr, send_size, &kmsg);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        i9100_mach_failure_record(1, msg_addr, send_size, option, mr);
+#endif
 #if BOARD_CONFIG_QSD8250_LEO
         leo_rpc060_note(leo_rpc060_seq,mr==MACH_MSG_SUCCESS?LEO_RPC060_HEADER:LEO_RPC060_DONE,(uint32_t)mr,mr==MACH_MSG_SUCCESS?kmsg->ikm_header:0);
 #endif
