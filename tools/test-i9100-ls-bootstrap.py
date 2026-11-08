@@ -27,7 +27,8 @@ def main():
     out=repo/'out'/('ls-bootstrap-'+datetime.now().strftime('%Y%m%d-%H%M%S'))
     out.mkdir(parents=True)
     source=(repo/'osfmk/ipc/mach_msg.c').read_text()
-    function=extract(source,'i9100_ls_bootstrap_budget')
+    function='\n'.join(extract(source,name) for name in
+        ('i9100_ls_bootstrap_budget','i9100_ls_bootstrap_store_reply'))
     harness=r'''
 #include <stdint.h>
 #include <stdio.h>
@@ -39,6 +40,17 @@ typedef struct {uint32_t msgh_bits,msgh_size,remote,local,reserved;int32_t msgh_
 #define MACH_MSG_TYPE_COPY_SEND 19
 #define MACH_MSG_TYPE_MAKE_SEND_ONCE 21
 #define MACH_MSGH_BITS(r,l) ((r)|((l)<<8))
+#define MACH_MSGH_BITS_COMPLEX 0x80000000U
+#define MACH_MSG_SUCCESS 0
+#define MACH_MSG_PORT_DESCRIPTOR 0
+#define MACH_MSG_OOL_DESCRIPTOR 1
+typedef uint32_t mach_msg_return_t;
+typedef struct {uint32_t msgh_descriptor_count;} mach_msg_body_t;
+typedef union {
+ struct {uint32_t address,size;uint8_t deallocate,copy,pad,type;} out_of_line;
+ struct {uint32_t a,b;uint8_t c,d,e,type;} type;
+} mach_msg_descriptor_t;
+typedef struct ipc_kmsg {mach_msg_header_t *ikm_header;} *ipc_kmsg_t;
 static unsigned checks;
 #define CHECK(c) do {checks++;if(!(c)){printf("FAIL %u %s\n",__LINE__,#c);return 1;}}while(0)
 '''+function+r'''
@@ -75,6 +87,39 @@ int main(void){
  for(unsigned i=0;i<sizeof(bits)/sizeof(*bits);i++){
   h.msgh_bits=bits[i];CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,24,0x540,0));
  }
+ /* Captured fallback:14008, OOL complex, send0x538/receive0x30. */
+ h.msgh_id=14008;h.msgh_bits=0x80001513;
+ CHECK(i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x538,0x30,0)==250);
+ for(unsigned options=0;options<1024;options++)
+  CHECK((i9100_ls_bootstrap_budget(&h,1,0,"installd",options,0x538,0x30,0)!=0)==(options==3));
+ CHECK(!i9100_ls_bootstrap_budget(&h,1,1,"installd",3,0x538,0x30,0));
+ CHECK(!i9100_ls_bootstrap_budget(&h,0,0,"installd",3,0x538,0x30,0));
+ CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"SpringBoard",3,0x538,0x30,0));
+ CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x538,0x30,1));
+ CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x538,0x540,0));
+ CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,24,0x30,0));
+ h.msgh_bits=0x1513;CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x538,0x30,0));
+ h.msgh_bits=0x80001513;h.msgh_id=14009;
+ CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x538,0x30,0));
+ /* Static MIG checks TYPE1 (OOL) in the descriptor control word. A port
+  * descriptor is TYPE0 and must never be taken for a usable store reply. */
+ struct {mach_msg_header_t header;mach_msg_body_t body;mach_msg_descriptor_t d;} reply={0};
+ struct ipc_kmsg message={&reply.header};
+ reply.header.msgh_id=14107;reply.header.msgh_bits=0x80000000;reply.header.msgh_size=0x538;
+ reply.body.msgh_descriptor_count=1;reply.d.out_of_line.type=1;
+ reply.d.out_of_line.address=0x257000;reply.d.out_of_line.size=0x10000;
+ CHECK(i9100_ls_bootstrap_store_reply(&message,0));
+ CHECK(!i9100_ls_bootstrap_store_reply(&message,0x10004003));
+ CHECK(!i9100_ls_bootstrap_store_reply(0,0));
+ message.ikm_header=0;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));message.ikm_header=&reply.header;
+ reply.d.out_of_line.type=0;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
+ reply.d.out_of_line.type=1;reply.d.out_of_line.address=0;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
+ reply.d.out_of_line.address=0x257000;reply.d.out_of_line.size=0;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
+ reply.d.out_of_line.size=0x10000;reply.body.msgh_descriptor_count=0;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
+ reply.body.msgh_descriptor_count=2;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
+ reply.body.msgh_descriptor_count=1;reply.header.msgh_size=36;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
+ reply.header.msgh_size=0x538;reply.header.msgh_id=14108;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
+ reply.header.msgh_id=14107;reply.header.msgh_bits=0;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
  printf("LS bootstrap budget: %u checks; original MIG handles timeout errors\n",checks);
  return 0;
 }
