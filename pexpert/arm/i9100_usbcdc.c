@@ -533,10 +533,29 @@ static void i9100_usb_e0arm(void)
 
 static void i9100_usb_e1outarm(void)
 {
+	unsigned int ctl;
 	if (!uctl_started || !i9100_usb_configured) return;
+	ctl = UDOEPCTL(1);
+	if (ctl & UEPCTL_EPENA) {
+		/* An enabled endpoint ignores TSIZ writes - a loader arm (or a
+		 * transfer whose complete-status never surfaced) leaves EPENA
+		 * set with PKTCNT spent, and re-programming silently drops.
+		 * EPDIS first and wait for EPDISd (bit 1 of UDOEPINT); the bit
+		 * latches even with IRQs masked. If it never lands, bail and
+		 * let the next caller retry - never write EPENA while EPDIS
+		 * is still set (illegal combination on dwc2). */
+		UDOEPCTL(1) = ctl | UEPCTL_EPDIS | UEPCTL_SNAK;
+		(void)i9100_usb_wait(&UDOEPINT(1), 1u << 1, 1u << 1);
+		UDOEPINT(1) = 0x3ff;
+		ctl = UDOEPCTL(1);
+		if (ctl & UEPCTL_EPDIS) return;
+	}
 	UDOEPTSIZ(1) = (1u << 19) | i9100_usb_bulk_mps;
-	UDOEPCTL(1) = (UDOEPCTL(1) & ~(UEPCTL_EPDIS | UEPCTL_SNAK |
-		UEPCTL_STALL)) | UEPCTL_EPENA | UEPCTL_CNAK;
+	UDOEPCTL(1) = (ctl & ~(UEPCTL_SNAK | UEPCTL_STALL)) |
+		UEPCTL_EPENA | UEPCTL_CNAK;
+	/* Every (re-)arm starts a fresh RX-silence window; without this the
+	 * keepalive can never fire for a link that never saw one byte. */
+	i9100_usb_last_rxb_at = UCTL_NOW();
 }
 
 static void i9100_usb_devinit(void)
