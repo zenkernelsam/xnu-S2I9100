@@ -1462,7 +1462,7 @@ bad:
 
 bad_notrans:
 #if BOARD_CONFIG_EXYNOS4210_I9100
-    if (imgp->ip_strings && strstr(imgp->ip_strings, "distnoted")) {
+    if (imgp->ip_strings && !strcmp(imgp->ip_strings, "/usr/sbin/distnoted")) {
         static unsigned i9100_dist_exec_lines;
         if (i9100_dist_exec_lines++ < 8)
             printf("I9100 DISTEXEC path=%s error=%d\n", imgp->ip_strings, error);

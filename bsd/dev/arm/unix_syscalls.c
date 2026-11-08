@@ -428,7 +428,7 @@ void unix_syscall(arm_saved_state_t * state)
         const struct posix_spawn_args *spawn_args = (const void *)uthread->uu_arg;
         char path[128]; size_t copied = 0;
         if (!copyinstr(spawn_args->path, path, sizeof(path), &copied) &&
-            strstr(path, "distnoted")) {
+            !strcmp(path, "/usr/sbin/distnoted")) {
             i9100_dist_spawn_trace = TRUE;
             ++i9100_dist_spawn_attempts;
             printf("I9100 DISTSPAWN enter attempt=%u caller=%d path=%s\n",
