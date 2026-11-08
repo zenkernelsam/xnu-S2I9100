@@ -260,7 +260,8 @@ extern void proc_name(int pid, char *buffer, int size);
 
 /* During iOS6 LS store reconstruction, installd's application
  * registration requests/publishes a store while lsd builds it with an MI Lookup
- * back to installd's occupied request queue. Bound only the observed RPC,
+ * back to installd's occupied request queue. Bound synchronous calls within
+ * the verified LS MIG subsystem, rather than one step of its fallback chain,
  * until any client actually receives a usable store reply. A timeout takes
  * the original MIG error/deallocate path; no reply or store is invented.
  * Explicit experiment opt-in: i9100lsbootstrap=1. */
@@ -275,23 +276,28 @@ i9100_ls_bootstrap_budget(const mach_msg_header_t *header, int enabled,
     mach_msg_timeout_t timeout)
 {
     if (!header || !caller || enabled != 1 || ready ||
-        strcmp(caller, "installd") ||
+        strcmp(caller, "installd") || header->msgh_id < 14000 ||
+        header->msgh_id >= 14024 ||
         option != (MACH_SEND_MSG | MACH_RCV_MSG) || timeout != 0)
         return 0;
-    if (header->msgh_id == 14007 &&
-        header->msgh_bits == MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND,
-                                           MACH_MSG_TYPE_MAKE_SEND_ONCE) &&
-        send_size == sizeof(mach_msg_header_t) && rcv_size == 0x540)
-        return 250;
-    /* _LSInit's verified fallback sends the actual local store as one OOL
-     * descriptor (not a port descriptor); its publish reply is also awaited.
-     * ipc_kmsg_copyin still performs all original complex-body validation. */
-    if (header->msgh_id == 14008 &&
-        header->msgh_bits == (MACH_MSGH_BITS_COMPLEX |
-            MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND_ONCE)) &&
-        send_size == 0x538 && rcv_size == 0x30)
-        return 250;
-    return 0;
+    /* Real iOS6 MIG table at39644980: start14000/end14024. Demux32466b78
+     * rejects (id-14000)>23. Registration14002, get14007, publish14008 all
+     * belong to this same initialization dependency, with different bodies.
+     * Original copyin and the real service keep validating those bodies. */
+    if ((header->msgh_bits & ~MACH_MSGH_BITS_COMPLEX) !=
+        MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND_ONCE) ||
+        send_size < sizeof(mach_msg_header_t) || send_size > 32768 ||
+        rcv_size < sizeof(mach_msg_header_t) || rcv_size > 32768 ||
+        (send_size & 3) || (rcv_size & 3))
+        return 0;
+    return 250;
+}
+
+static int
+i9100_ls_bootstrap_peer(unsigned int active, uint64_t context,
+    unsigned int receiver_name)
+{
+    return active && context == 0x6c736400 && receiver_name != 0;
 }
 
 static unsigned int
@@ -301,7 +307,7 @@ i9100_ls_bootstrap_send_budget(const mach_msg_header_t *header,
 {
     int enabled = 0;
     char caller[32] = {0};
-    if (!header || (header->msgh_id != 14007 && header->msgh_id != 14008) ||
+    if (!header || header->msgh_id < 14000 || header->msgh_id >= 14024 ||
         i9100_ls_bootstrap_diag[3] ||
         !PE_parse_boot_argn("i9100lsbootstrap", &enabled, sizeof(enabled)))
         return 0;
@@ -346,7 +352,7 @@ i9100_ls_bootstrap_receive_done(thread_t self, mach_msg_return_t result,
         proc_name(proc_selfpid(), caller, sizeof(caller));
         if (!strcmp(caller, "installd") &&
             copyin(self->ith_msg_addr, &header, sizeof(header)) == 0 &&
-            (header.msgh_id == 14007 || header.msgh_id == 14008))
+            header.msgh_id >= 14000 && header.msgh_id < 14024)
             OSIncrementAtomic((volatile SInt32 *)&i9100_ls_bootstrap_diag[1]);
     }
 }
@@ -831,9 +837,8 @@ mach_msg_overwrite_trap(
                 ip_lock(destination);
                 /* launchd's real program-name context on the LS service.
                  * Read it only while the port is locked and still active. */
-                is_lsd = ip_active(destination) &&
-                    destination->ip_context == 0x6c736400 &&
-                    destination->ip_receiver_name != MACH_PORT_NULL;
+                is_lsd = i9100_ls_bootstrap_peer(ip_active(destination),
+                    destination->ip_context, destination->ip_receiver_name);
                 ip_unlock(destination);
             }
             if (is_lsd && !i9100_ls_bootstrap_diag[3]) {

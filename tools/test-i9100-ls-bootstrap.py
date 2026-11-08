@@ -28,7 +28,7 @@ def main():
     out.mkdir(parents=True)
     source=(repo/'osfmk/ipc/mach_msg.c').read_text()
     function='\n'.join(extract(source,name) for name in
-        ('i9100_ls_bootstrap_budget','i9100_ls_bootstrap_store_reply'))
+        ('i9100_ls_bootstrap_budget','i9100_ls_bootstrap_peer','i9100_ls_bootstrap_store_reply'))
     harness=r'''
 #include <stdint.h>
 #include <stdio.h>
@@ -73,17 +73,17 @@ int main(void){
  for(unsigned options=0;options<1024;options++)
   CHECK((i9100_ls_bootstrap_budget(&h,1,0,"installd",options,24,0x540,0)!=0)==(options==3));
  for(unsigned n=0;n<64;n++)
-  CHECK((i9100_ls_bootstrap_budget(&h,1,0,"installd",3,n,0x540,0)!=0)==(n==24));
+  CHECK((i9100_ls_bootstrap_budget(&h,1,0,"installd",3,n,0x540,0)!=0)==(n>=24 && !(n&3)));
  for(unsigned n=0x500;n<=0x580;n++)
-  CHECK((i9100_ls_bootstrap_budget(&h,1,0,"installd",3,24,n,0)!=0)==(n==0x540));
+  CHECK((i9100_ls_bootstrap_budget(&h,1,0,"installd",3,24,n,0)!=0)==(!(n&3)));
  for(unsigned timeout=1;timeout<256;timeout++)
   CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,24,0x540,timeout));
  for(unsigned id=13900;id<14200;id++){
   h.msgh_id=id;
-  CHECK((i9100_ls_bootstrap_budget(&h,1,0,"installd",3,24,0x540,0)!=0)==(id==14007));
+  CHECK((i9100_ls_bootstrap_budget(&h,1,0,"installd",3,24,0x540,0)!=0)==(id>=14000&&id<14024));
  }
  h.msgh_id=14007;
- const unsigned bits[]={0,0x13,0x1113,0x1512,0x1514,0x80001513,0x10001513};
+ const unsigned bits[]={0,0x13,0x1113,0x1512,0x1514,0x10001513};
  for(unsigned i=0;i<sizeof(bits)/sizeof(*bits);i++){
   h.msgh_bits=bits[i];CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,24,0x540,0));
  }
@@ -96,11 +96,18 @@ int main(void){
  CHECK(!i9100_ls_bootstrap_budget(&h,0,0,"installd",3,0x538,0x30,0));
  CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"SpringBoard",3,0x538,0x30,0));
  CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x538,0x30,1));
- CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x538,0x540,0));
- CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,24,0x30,0));
- h.msgh_bits=0x1513;CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x538,0x30,0));
- h.msgh_bits=0x80001513;h.msgh_id=14009;
- CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x538,0x30,0));
+ CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x538,0x31,0));
+ CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,24,0,0));
+ h.msgh_id=14002;CHECK(i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x338,0x34,0)==250);
+ CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,32772,0x34,0));
+ CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x338,32772,0));
+ CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x339,0x34,0));
+ h.msgh_id=14024;CHECK(!i9100_ls_bootstrap_budget(&h,1,0,"installd",3,0x338,0x34,0));
+ CHECK(i9100_ls_bootstrap_peer(1,0x6c736400,0x1203));
+ CHECK(!i9100_ls_bootstrap_peer(0,0x6c736400,0x1203));
+ CHECK(!i9100_ls_bootstrap_peer(1,0x6c736400,0));
+ CHECK(!i9100_ls_bootstrap_peer(1,0x6d656469,0x1203));
+ CHECK(!i9100_ls_bootstrap_peer(1,0x100000000ULL|0x6c736400,0x1203));
  /* Static MIG checks TYPE1 (OOL) in the descriptor control word. A port
   * descriptor is TYPE0 and must never be taken for a usable store reply. */
  struct {mach_msg_header_t header;mach_msg_body_t body;mach_msg_descriptor_t d;} reply={0};
