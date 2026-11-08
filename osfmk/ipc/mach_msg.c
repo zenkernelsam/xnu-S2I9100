@@ -251,6 +251,94 @@ static int ios7lab_checkin_trace(mach_msg_header_t *header)
 }
 #endif
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+#include <pexpert/pexpert.h>
+#include <libsa/string.h>
+#include <libkern/OSAtomic.h>
+extern int proc_selfpid(void);
+extern void proc_name(int pid, char *buffer, int size);
+
+/* During iOS6 LS store reconstruction, installd's application
+ * registration requests the store while lsd builds it with an MI Lookup
+ * back to installd's occupied request queue. Bound only the observed RPC,
+ * until any client actually receives a usable store reply. A timeout takes
+ * the original MIG error/deallocate path; no reply or store is invented.
+ * Explicit experiment opt-in: i9100lsbootstrap=1. */
+volatile uint32_t i9100_ls_bootstrap_diag[4]; /* budgets, timeouts, replies, ready */
+
+static unsigned int
+i9100_ls_bootstrap_budget(const mach_msg_header_t *header, int enabled,
+    unsigned int ready, const char *caller, mach_msg_option_t option,
+    mach_msg_size_t send_size, mach_msg_size_t rcv_size,
+    mach_msg_timeout_t timeout)
+{
+    if (!header || !caller || enabled != 1 || ready ||
+        strcmp(caller, "installd") || header->msgh_id != 14007 ||
+        header->msgh_bits != MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND,
+                                           MACH_MSG_TYPE_MAKE_SEND_ONCE) ||
+        send_size != sizeof(mach_msg_header_t) || rcv_size != 0x540 ||
+        option != (MACH_SEND_MSG | MACH_RCV_MSG) || timeout != 0)
+        return 0;
+    return 250;
+}
+
+static unsigned int
+i9100_ls_bootstrap_send_budget(const mach_msg_header_t *header,
+    mach_msg_option_t option, mach_msg_size_t send_size,
+    mach_msg_size_t rcv_size, mach_msg_timeout_t timeout)
+{
+    int enabled = 0;
+    char caller[32] = {0};
+    if (!header || header->msgh_id != 14007 || i9100_ls_bootstrap_diag[3] ||
+        !PE_parse_boot_argn("i9100lsbootstrap", &enabled, sizeof(enabled)))
+        return 0;
+    proc_name(proc_selfpid(), caller, sizeof(caller));
+    return i9100_ls_bootstrap_budget(header, enabled,
+        i9100_ls_bootstrap_diag[3], caller, option, send_size, rcv_size, timeout);
+}
+
+static int
+i9100_ls_bootstrap_store_reply(ipc_kmsg_t kmsg, mach_msg_return_t result)
+{
+    mach_msg_header_t *header;
+    mach_msg_body_t *body;
+    mach_msg_descriptor_t *descriptor;
+    if (result != MACH_MSG_SUCCESS || !kmsg || !(header = kmsg->ikm_header) ||
+        header->msgh_id != 14107 || header->msgh_size != 0x538 ||
+        !(header->msgh_bits & MACH_MSGH_BITS_COMPLEX))
+        return 0;
+    body = (mach_msg_body_t *)(header + 1);
+    if (body->msgh_descriptor_count != 1)
+        return 0;
+    descriptor = (mach_msg_descriptor_t *)(body + 1);
+    return descriptor->type.type == MACH_MSG_PORT_DESCRIPTOR &&
+        IP_VALID((ipc_port_t)descriptor->port.name);
+}
+
+static void
+i9100_ls_bootstrap_receive_done(thread_t self, mach_msg_return_t result,
+    int store_reply)
+{
+    if (store_reply && result == MACH_MSG_SUCCESS) {
+        OSIncrementAtomic((volatile SInt32 *)&i9100_ls_bootstrap_diag[2]);
+        if (OSCompareAndSwap(0, 1, &i9100_ls_bootstrap_diag[3]))
+            printf("I9100 LSBOOT store-ready pid=%d bounded=%u timeouts=%u\n",
+                proc_selfpid(), i9100_ls_bootstrap_diag[0],
+                i9100_ls_bootstrap_diag[1]);
+    } else if (result == MACH_RCV_TIMED_OUT &&
+        self->ith_option == (MACH_SEND_MSG | MACH_RCV_MSG |
+                            MACH_SEND_TIMEOUT | MACH_RCV_TIMEOUT)) {
+        mach_msg_header_t header;
+        char caller[32] = {0};
+        proc_name(proc_selfpid(), caller, sizeof(caller));
+        if (!strcmp(caller, "installd") &&
+            copyin(self->ith_msg_addr, &header, sizeof(header)) == 0 &&
+            header.msgh_id == 14007)
+            OSIncrementAtomic((volatile SInt32 *)&i9100_ls_bootstrap_diag[1]);
+    }
+}
+#endif
+
 
 #ifndef offsetof
 #define offsetof(type, member)  ((size_t)(&((type *)0)->member))
@@ -437,6 +525,9 @@ mach_msg_receive_results(void)
 	ipc_kmsg_t        kmsg = self->ith_kmsg;
 	mach_port_seqno_t seqno = self->ith_seqno;
 	mach_msg_trailer_size_t trailer_size;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    int i9100_store_reply = i9100_ls_bootstrap_store_reply(kmsg, mr);
+#endif
 #if BOARD_CONFIG_QSD8250_LEO
     uint32_t leo_rpc060_receive_seq=leo_rpc060_receive_begin(self,mr,mr==MACH_MSG_SUCCESS?kmsg->ikm_header:0);
 #endif
@@ -544,6 +635,9 @@ mach_msg_receive_results(void)
 			  kmsg->ikm_header->msgh_size + 
 			  trailer_size);
  out:
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_ls_bootstrap_receive_done(self, mr, i9100_store_reply);
+#endif
 #if BOARD_CONFIG_QSD8250_LEO
     leo_rpc060_note(leo_rpc060_receive_seq,LEO_RPC060_DONE,(uint32_t)mr,0);
 #endif
@@ -643,6 +737,9 @@ mach_msg_overwrite_trap(
 	if (option & MACH_SEND_MSG) {
 		ipc_space_t space = current_space();
 		ipc_kmsg_t kmsg;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        unsigned int i9100_ls_budget = 0;
+#endif
 
 		mr = ipc_kmsg_get(msg_addr, send_size, &kmsg);
 #if BOARD_CONFIG_QSD8250_LEO
@@ -650,6 +747,11 @@ mach_msg_overwrite_trap(
 #endif
 		if (mr != MACH_MSG_SUCCESS)
 			return mr;
+
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        i9100_ls_budget = i9100_ls_bootstrap_send_budget(kmsg->ikm_header,
+            option, send_size, rcv_size, msg_timeout);
+#endif
 
 #if BOARD_CONFIG_ARMPBA8
         int lab_send = ios7lab_checkin_trace(kmsg->ikm_header);
@@ -708,7 +810,38 @@ mach_msg_overwrite_trap(
                    lab_send_id, receiver_task, receiver_name);
         }
 #endif
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        if (i9100_ls_budget) {
+            ipc_port_t destination = (ipc_port_t)kmsg->ikm_header->msgh_remote_port;
+            int is_lsd = 0;
+            if (IP_VALID(destination)) {
+                ip_lock(destination);
+                /* launchd's real program-name context on the LS service.
+                 * Read it only while the port is locked and still active. */
+                is_lsd = ip_active(destination) &&
+                    destination->ip_context == 0x6c736400 &&
+                    destination->ip_receiver_name != MACH_PORT_NULL;
+                ip_unlock(destination);
+            }
+            if (is_lsd && !i9100_ls_bootstrap_diag[3]) {
+                unsigned int count = OSIncrementAtomic(
+                    (volatile SInt32 *)&i9100_ls_bootstrap_diag[0]);
+                /* Also bound send: repeated expired store requests can fill
+                 * lsd's queue while its initialization is waiting on MI. */
+                option |= MACH_SEND_TIMEOUT | MACH_RCV_TIMEOUT;
+                msg_timeout = i9100_ls_budget;
+                if (count <= 16)
+                    printf("I9100 LSBOOT bound pid=%d request=14007 receive-ms=%u count=%u\n",
+                        proc_selfpid(), msg_timeout, count);
+            }
+        }
+#endif
 		mr = ipc_kmsg_send(kmsg, option & MACH_SEND_TIMEOUT, msg_timeout);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        if (i9100_ls_budget && (option & MACH_SEND_TIMEOUT) &&
+            mr == MACH_SEND_TIMED_OUT)
+            OSIncrementAtomic((volatile SInt32 *)&i9100_ls_bootstrap_diag[1]);
+#endif
 #if BOARD_CONFIG_QSD8250_LEO
         leo_rpc060_note(leo_rpc060_seq,mr==MACH_MSG_SUCCESS?LEO_RPC060_SEND:LEO_RPC060_DONE,(uint32_t)mr,0);
 #endif
