@@ -103,6 +103,9 @@
 #include "i9100_tcc_development.h"
 /* count +16 {pid,operation,original,result,providers,unconfined,stage}. */
 volatile uint32_t i9100_tcc_development_diag[1 + 16 * 7];
+/* Missing Sandbox evidence only: count +8 {pid,operation,error,providers,stage}.
+ * Observing mDNSResponder never changes its initialization result. */
+volatile uint32_t i9100_mdns_sandbox_diag[1 + 8 * 5];
 #endif
 
 #if CONFIG_MACF
@@ -2166,6 +2169,19 @@ done:
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
     if (error == ENOPOLICY) {
+        int diagnostic = 0;
+        if (!strcmp(p->p_comm, "mDNSResponder") && !strcmp(target, "Sandbox") &&
+            PE_parse_boot_argn("i9100xpcdiag", &diagnostic, sizeof(diagnostic)) &&
+            diagnostic == 1) {
+            UInt32 slot = i9100_mdns_sandbox_diag[0];
+            if (slot < 8 && OSCompareAndSwap(slot, slot + 1,
+                &i9100_mdns_sandbox_diag[0])) {
+                volatile uint32_t *row = &i9100_mdns_sandbox_diag[1 + slot * 5];
+                row[0] = p->p_pid; row[1] = uap->call; row[2] = error;
+                row[3] = mac_policy_list.numloaded;
+                OSMemoryBarrier(); row[4] = 1;
+            }
+        }
         int enabled = 0;
         PE_parse_boot_argn("i9100tccdev", &enabled, sizeof(enabled));
         if (i9100_tcc_development_allowed(p->p_comm, target, uap->call,
