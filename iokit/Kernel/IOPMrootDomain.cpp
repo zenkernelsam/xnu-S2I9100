@@ -691,12 +691,12 @@ static void disk_sync_callout( thread_call_param_t p0, thread_call_param_t p1 )
 
     if (ON_STATE == powerState)
     {
-#if	HIBERNATION
+#if	HIBERNATION && !BOARD_CONFIG_EXYNOS4210_I9100
         IOHibernateSystemSleep();
 #endif
         sync_internal();
     }
-#if	HIBERNATION
+#if	HIBERNATION && !BOARD_CONFIG_EXYNOS4210_I9100
     else
     {
         IOHibernateSystemPostWake();
@@ -896,7 +896,14 @@ bool IOPMrootDomain::start( IOService * nub )
                         &disk_sync_callout,
                         (thread_call_param_t) this);
     
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    /* Exynos CPU suspend/resume and the hibernate restore path are absent.
+     * ARM stubs.s even exposes gIOHibernateState as an RX function stub.
+     * Publish the real capability and keep USB/charging alive at full wake. */
+    setProperty(kIOSleepSupportedKey, false);
+#else
     setProperty(kIOSleepSupportedKey, true);
+#endif
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
     /*
@@ -1063,7 +1070,7 @@ bool IOPMrootDomain::start( IOService * nub )
     sysctl_register_oid(&sysctl__kern_progressmeter);
 #endif /* !CONFIG_EMBEDDED */
 
-#if	HIBERNATION
+#if	HIBERNATION && !BOARD_CONFIG_EXYNOS4210_I9100
     IOHibernateSystemInit(this);
 #endif
 
@@ -2222,7 +2229,7 @@ void IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
             gIOLastWakeTime.tv_sec = 0;
             gIOLastWakeTime.tv_usec = 0;
 
-#if	HIBERNATION
+#if	HIBERNATION && !BOARD_CONFIG_EXYNOS4210_I9100
             LOG("System %sSleep\n", gIOHibernateState ? "Safe" : "");
 
             IOHibernateSystemHasSlept();
@@ -2240,7 +2247,7 @@ void IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
             clock_get_uptime(&systemWakeTime);
             _highestCapability = 0;
 
-#if	HIBERNATION
+#if	HIBERNATION && !BOARD_CONFIG_EXYNOS4210_I9100
             IOHibernateSystemWake();
 #endif
 
@@ -2250,7 +2257,7 @@ void IOPMrootDomain::powerChangeDone( unsigned long previousPowerState )
             // trip the reset of the calendar clock
             clock_wakeup_calendar();
 
-#if	HIBERNATION
+#if	HIBERNATION && !BOARD_CONFIG_EXYNOS4210_I9100
             LOG("System %sWake\n", gIOHibernateState ? "SafeSleep " : "");
 #endif
 
@@ -2761,7 +2768,7 @@ IOReturn IOPMrootDomain::sysPowerDownHandler(
         {
             // We will ack within 20 seconds
             params->maxWaitForReply = 20 * 1000 * 1000;
-#if	HIBERNATION
+#if	HIBERNATION && !BOARD_CONFIG_EXYNOS4210_I9100
             gRootDomain->evaluateSystemSleepPolicyEarly();
 
             // add in time we could spend freeing pages
@@ -2789,7 +2796,7 @@ IOReturn IOPMrootDomain::sysPowerDownHandler(
                     gRootDomain->diskSyncCalloutEntry,
                     (thread_call_param_t) params->notifyRef);
         }
-#if	HIBERNATION
+#if	HIBERNATION && !BOARD_CONFIG_EXYNOS4210_I9100
         else
         if ((params->changeFlags & kIOPMSystemCapabilityDidChange) &&
             (params->toCapabilities & kIOPMSystemCapabilityCPU) &&
@@ -5437,6 +5444,12 @@ bool IOPMrootDomain::batteryPublished(
 
 bool IOPMrootDomain::checkSystemCanSleep( IOOptionBits options )
 {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    /* Reject idle, demand and dark-wake transitions before the CPU-loss
+     * notification schedules disk_sync_callout. Filesystem sync, shutdown,
+     * ordinary reboot and per-device power control retain their own paths. */
+    return false;
+#endif
     int err = 0;
 
     // Conditions that prevent idle and demand system sleep.
@@ -6683,7 +6696,7 @@ void IOPMrootDomain::tracePoint( uint8_t point )
     PMDebug(kPMLogSleepWakeTracePoint, point, 0);
     pmTracer->tracePoint(point);
 
-#if	HIBERNATION
+#if	HIBERNATION && !BOARD_CONFIG_EXYNOS4210_I9100
     if (kIOPMTracePointSleepPowerPlaneDrivers == point) IOHibernateIOKitSleep();
 #endif
 }
