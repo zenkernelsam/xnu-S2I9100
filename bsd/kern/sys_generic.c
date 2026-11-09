@@ -138,16 +138,46 @@
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
 #include <pexpert/pexpert.h>
+#include <libkern/OSAtomic.h>
 #include "../../pexpert/arm/i9100_abort_observation.h"
+#include "../../pexpert/arm/i9100_mdns_observation.h"
+/* Latest daemon/helper stderr: sequence,pid,task,role,used,copy-error,text[512]. */
+volatile uint32_t i9100_mdns_stderr_diag[6 + 128];
+static volatile UInt32 i9100_mdns_stderr_writer;
+static void i9100_mdns_stderr_store(proc_t p, unsigned role,
+    const char *bytes, unsigned count, unsigned copy_error)
+{
+    if (!OSCompareAndSwap(0, 1, &i9100_mdns_stderr_writer)) return;
+    unsigned sequence = i9100_mdns_stderr_diag[0] + 1U;
+    unsigned used = i9100_mdns_stderr_diag[4];
+    char *text = (char *)&i9100_mdns_stderr_diag[6];
+    i9100_mdns_stderr_diag[0] = 0;
+    if (i9100_mdns_stderr_diag[1] != (unsigned)p->p_pid ||
+        i9100_mdns_stderr_diag[2] != (unsigned)(uintptr_t)p->task) {
+        used = 0; memset(text, 0, 512);
+    }
+    if (used > 511) used = 511;
+    if (count > 511 - used) count = 511 - used;
+    if (count) memcpy(text + used, bytes, count);
+    used += count; text[used] = 0;
+    i9100_mdns_stderr_diag[1] = p->p_pid;
+    i9100_mdns_stderr_diag[2] = (unsigned)(uintptr_t)p->task;
+    i9100_mdns_stderr_diag[3] = role;
+    i9100_mdns_stderr_diag[4] = used;
+    i9100_mdns_stderr_diag[5] = copy_error;
+    OSMemoryBarrier(); i9100_mdns_stderr_diag[0] = sequence ? sequence : 1;
+    OSMemoryBarrier(); i9100_mdns_stderr_writer = 0;
+}
 /* Copy bounded stderr intent in ordinary write syscall context, after the fd's
  * write permission check. Never change its UIO, return status or actual I/O. */
 static unsigned i9100_ui_stderr_note(proc_t p, int fd, user_addr_t base,
                                      user_size_t size, unsigned budget)
 {
     if (fd != 2 || !size || !budget) return 0;
+    unsigned mdns_role = i9100_mdns_observation_role(p->p_comm);
     if (strcmp(p->p_comm, "SpringBoard")) {
         int enabled = 0;
-        if (strcmp(p->p_comm, "tccd") ||
+        if ((!mdns_role && strcmp(p->p_comm, "tccd")) ||
             !PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) || enabled != 1)
             return 0;
     }
@@ -158,8 +188,13 @@ static unsigned i9100_ui_stderr_note(proc_t p, int fd, user_addr_t base,
     while (used < take) {
         char bytes[128];
         unsigned count = take-used < sizeof(bytes) ? take-used : sizeof(bytes);
-        if (copyin(base+used, bytes, count)) break;
-        ios7i9100_stderr_bytes((unsigned)p->p_pid, (unsigned)(uintptr_t)p->task, bytes, count);
+        int error = copyin(base+used, bytes, count);
+        if (error) {
+            if (mdns_role) i9100_mdns_stderr_store(p, mdns_role, NULL, 0, error);
+            break;
+        }
+        if (mdns_role) i9100_mdns_stderr_store(p, mdns_role, bytes, count, 0);
+        else ios7i9100_stderr_bytes((unsigned)p->p_pid, (unsigned)(uintptr_t)p->task, bytes, count);
         used += count;
     }
     return used;

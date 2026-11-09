@@ -109,6 +109,79 @@ extern const char *syscallnames[];
 #if BOARD_CONFIG_EXYNOS4210_I9100
 #include <pexpert/pexpert.h>
 #include <libkern/OSAtomic.h>
+#include "../../../pexpert/arm/i9100_mdns_observation.h"
+
+/* count +64 {pid,role,code,nargs,args[7],error,result,pc,lr,stage}. */
+volatile uint32_t i9100_mdns_syscall_diag[1 + 64 * 16];
+/* count +8 {caller,stage,errno,result}; frozen launchd spawn observations. */
+volatile uint32_t i9100_mdns_spawn_diag[1 + 8 * 4];
+/* count +8 rows: pid,status,pc,lr,sp,fp,nframes,walk-error,frames[8],
+ * error-pointer,copy-error,role,stage,text[128]. Read before exit takes locks. */
+volatile uint32_t i9100_mdns_exit_user_diag[1 + 8 * 52];
+
+static unsigned i9100_mdns_trace_role(struct proc *p)
+{
+    int enabled = 0;
+    unsigned role = i9100_mdns_observation_role(p->p_comm);
+    return role && PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) &&
+        enabled == 1 ? role : 0;
+}
+
+static void i9100_mdns_syscall_note(struct proc *p, unsigned role, unsigned code,
+    const uint32_t *args, unsigned count, int error, uint32_t result,
+    uint32_t pc, uint32_t lr, unsigned stage)
+{
+    if (!role || (!error && code != 1 && code != 97 && code != 104 &&
+        code != 105 && code != 106 && code != 135 && code != 362 &&
+        code != 363 && code != 369 && code != 443)) return;
+    UInt32 slot = i9100_mdns_syscall_diag[0];
+    if (slot >= 64 || !OSCompareAndSwap(slot, slot + 1,
+        &i9100_mdns_syscall_diag[0])) return;
+    volatile uint32_t *row = &i9100_mdns_syscall_diag[1 + slot * 16];
+    row[0] = p->p_pid; row[1] = role; row[2] = code; row[3] = count;
+    for (unsigned n = 0; n < 7; n++) row[4+n] = n < count ? args[n] : 0;
+    row[11] = error; row[12] = result; row[13] = pc; row[14] = lr;
+    OSMemoryBarrier(); row[15] = stage;
+}
+
+static void i9100_mdns_exit_user_note(struct proc *p, unsigned role,
+    const arm_saved_state_t *state, unsigned status)
+{
+    if (!role || ml_at_interrupt_context() || !ml_get_interrupts_enabled() ||
+        (state->cpsr & 0x1fU) != 0x10U) return;
+    UInt32 slot = i9100_mdns_exit_user_diag[0];
+    if (slot >= 8 || !OSCompareAndSwap(slot, slot + 1,
+        &i9100_mdns_exit_user_diag[0])) return;
+    volatile uint32_t *row = &i9100_mdns_exit_user_diag[1 + slot * 52];
+    row[0] = p->p_pid; row[1] = status; row[2] = state->pc; row[3] = state->lr;
+    row[4] = state->sp; row[5] = state->r[7]; row[18] = role;
+    unsigned fp = state->r[7];
+    for (unsigned n = 0; n < 8; n++) {
+        unsigned frame[2];
+        if ((fp & 3U) || fp < state->sp || fp > 0x3ffffff8U ||
+            fp - state->sp > 65536U) { row[7] = 1; break; }
+        if (copyin((user_addr_t)fp, frame, sizeof(frame))) { row[7] = 2; break; }
+        row[8+n] = frame[1]; row[6] = n+1;
+        /* Exact 397.36 main errx return site and its verified local layout.
+         * An unrelated exit never interprets its frame as an error pointer. */
+        if (role == 1 && status == 71 && frame[1] >= 0x2f77U &&
+            !((frame[1]-0x2f77U) & 4095U) && frame[0] >= state->sp+44U &&
+            frame[0] > fp && frame[0]-state->sp <= 65536U && frame[0] < 0x40000000U) {
+            unsigned pointer = 0; char text[128] = {0}; size_t copied = 0;
+            int error = copyin((user_addr_t)frame[0]-44U, &pointer, sizeof(pointer));
+            if (!error && pointer && pointer < 0x40000000U) {
+                unsigned bound = 0x40000000U-pointer;
+                if (bound > sizeof(text)-1U) bound = sizeof(text)-1U;
+                error = copyinstr((user_addr_t)pointer, text, bound, &copied);
+            } else if (!error) error = EFAULT;
+            row[16] = pointer; row[17] = error;
+            memcpy((void *)&row[20], text, sizeof(text));
+        }
+        if (frame[0] <= fp) break;
+        fp = frame[0];
+    }
+    OSMemoryBarrier(); row[19] = 1;
+}
 
 /* Explicit i9100xpcdiag=1 only. No user buffers or queue state are read.
  * count, then256 records of13 uint32: pid,syscall,stage,nargs,args[7],
@@ -471,6 +544,34 @@ void unix_syscall(arm_saved_state_t * state)
     unsigned int i9100_workq_trace = arm_argument_error ? 0 :
         i9100_workq_boundary_enter(p, code, (const uint32_t *)uthread->uu_arg,
                                   (unsigned)callp->sy_narg);
+    unsigned mdns_role = i9100_mdns_trace_role(p);
+    uint32_t mdns_args[7] = {0}, mdns_pc = state->pc, mdns_lr = state->lr;
+    if (mdns_role && !arm_argument_error) {
+        unsigned count = (unsigned)callp->sy_narg;
+        for (unsigned n = 0; n < 7 && n < count; n++) mdns_args[n] = uthread->uu_arg[n];
+        if (code == 1) {
+            i9100_mdns_syscall_note(p, mdns_role, code, mdns_args, count,
+                0, 0, mdns_pc, mdns_lr, 1);
+            i9100_mdns_exit_user_note(p, mdns_role, state, mdns_args[0]);
+        }
+    }
+    unsigned mdns_spawn_slot = 0;
+    if (!arm_argument_error && code == 244 && i9100_mdns_spawn_diag[0] < 8) {
+        int enabled = 0;
+        if (PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) && enabled == 1) {
+            const struct posix_spawn_args *a = (const void *)uthread->uu_arg;
+            char path[128]; size_t copied = 0;
+            if (!copyinstr(a->path, path, sizeof(path), &copied) &&
+                !strcmp(path, "/usr/sbin/mDNSResponder")) {
+                UInt32 slot = i9100_mdns_spawn_diag[0];
+                if (slot < 8 && OSCompareAndSwap(slot, slot+1, &i9100_mdns_spawn_diag[0])) {
+                    mdns_spawn_slot = slot+1;
+                    i9100_mdns_spawn_diag[1+slot*4] = p->p_pid;
+                    OSMemoryBarrier(); i9100_mdns_spawn_diag[2+slot*4] = 1;
+                }
+            }
+        }
+    }
     /* The distributed-notification service is demanded while SpringBoard
      * waits on LaunchServices. Observe its actual spawn result instead of
      * inferring absence from a missing process. At most eight attempts. */
@@ -561,6 +662,13 @@ void unix_syscall(arm_saved_state_t * state)
     error = (*(callp->sy_call)) (p, (void *) uthread->uu_arg, &(uthread->uu_rval[0]));
 #if BOARD_CONFIG_EXYNOS4210_I9100
     i9100_workq_boundary_exit(i9100_workq_trace, error, (uint32_t)uthread->uu_rval[0]);
+    if (mdns_role) i9100_mdns_syscall_note(p, mdns_role, code, mdns_args,
+        (unsigned)callp->sy_narg, error, (uint32_t)uthread->uu_rval[0], mdns_pc, mdns_lr, 2);
+    if (mdns_spawn_slot) {
+        volatile uint32_t *row = &i9100_mdns_spawn_diag[1+(mdns_spawn_slot-1)*4];
+        row[2] = error; row[3] = (uint32_t)uthread->uu_rval[0];
+        OSMemoryBarrier(); row[1] = 2;
+    }
     if (i9100_dist_spawn_trace) {
         i9100_dist_spawn_diag[3 + 4*i9100_dist_spawn_slot] = (unsigned)error;
         i9100_dist_spawn_diag[4 + 4*i9100_dist_spawn_slot] = (unsigned)uthread->uu_rval[0];
