@@ -1359,20 +1359,6 @@ again:
 	if (error)
 		goto bad;
 
-	/* mDNSResponder exits with code=71 every ~1s on i9100 (no real DNS path
-	 * yet) and launchd respawns it forever; the exec/exit probes plus the
-	 * fork churn flood the console and starve the CDC channel. Refuse its
-	 * exec so launchd's own spawn-failure handling takes over quietly. */
-	if (nd.ni_cnd.cn_nameptr &&
-	    !strcmp(nd.ni_cnd.cn_nameptr, "mDNSResponder")) {
-		static unsigned i9_mdns_blocked;
-		if (!(i9_mdns_blocked++ & 0x3f))
-			printf("i9100exec: mDNSResponder spawn blocked (%u)\n",
-			       i9_mdns_blocked);
-		error = EPERM;
-		goto bad;
-	}
-
 	/* Copy; avoid invocation of an interpreter overwriting the original */
 	if (once) {
 		once = 0;
