@@ -335,6 +335,9 @@ typedef int	mach_port_flavor_t;
 #define MACH_PORT_LIMITS_INFO		1	/* uses mach_port_status_t */
 #define MACH_PORT_RECEIVE_STATUS	2	/* uses mach_port_limits_t */
 #define MACH_PORT_DNREQUESTS_SIZE	3	/* info is int */
+#define MACH_PORT_TEMPOWNER		4	/* receive right will be reassigned */
+
+#define MACH_PORT_STATUS_FLAG_TEMPOWNER	0x01
 
 #define MACH_PORT_LIMITS_INFO_COUNT	((natural_t) \
 	(sizeof(mach_port_limits_t)/sizeof(natural_t)))

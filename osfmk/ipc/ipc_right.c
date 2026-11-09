@@ -1718,6 +1718,7 @@ ipc_right_copyin(
 		ipc_port_clear_receiver(port, links);
 		port->ip_receiver_name = MACH_PORT_NULL;
 		port->ip_destination = IP_NULL;
+		IP_MARK_TEMPOWNER(port);
 		ip_unlock(port);
 
 		*objectp = (ipc_object_t) port;
@@ -2301,6 +2302,7 @@ ipc_right_copyout(
 
 		port->ip_receiver_name = name;
 		port->ip_receiver = space;
+		IP_CLEAR_TEMPOWNER(port);
 
 		assert((bits & MACH_PORT_TYPE_RECEIVE) == 0);
 

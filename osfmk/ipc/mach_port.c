@@ -1667,7 +1667,8 @@ mach_port_get_attributes(
                 statusp->mps_srights = port->ip_srights > 0;
                 statusp->mps_pdrequest = port->ip_pdrequest != IP_NULL;
                 statusp->mps_nsrequest = port->ip_nsrequest != IP_NULL;
-		statusp->mps_flags = 0;
+		statusp->mps_flags = IP_TEMPOWNER(port) ?
+		    MACH_PORT_STATUS_FLAG_TEMPOWNER : 0;
 
                 *count = MACH_PORT_RECEIVE_STATUS_COUNT;
                 ip_unlock(port);
@@ -1708,8 +1709,8 @@ mach_port_get_attributes(
 	return KERN_SUCCESS;
 }
 
-kern_return_t
-mach_port_set_attributes(
+static kern_return_t
+mach_port_set_attributes_impl(
 	ipc_space_t		space,
 	mach_port_name_t	name,
 	int			flavor,
@@ -1762,11 +1763,71 @@ mach_port_set_attributes(
 			return kr;
 		break;
 	}
+        case MACH_PORT_TEMPOWNER:
+                /* iOS6 XPC marks its new reply receive right before sending
+                 * it to the peer. Validate the actual receive capability;
+                 * unknown flavors still fail. This legacy IPC core has no
+                 * importance inheritance, so retain the receiver hint as
+                 * observable port metadata without changing its layout. */
+                if (!MACH_PORT_VALID(name))
+                        return KERN_INVALID_RIGHT;
+                kr = ipc_port_translate_receive(space, name, &port);
+                if (kr != KERN_SUCCESS)
+                        return kr;
+                IP_MARK_TEMPOWNER(port);
+                ip_unlock(port);
+                break;
         default:
 		return KERN_INVALID_ARGUMENT;
                 /*NOTREACHED*/
         }
 	return KERN_SUCCESS;
+}
+
+#if BOARD_CONFIG_EXYNOS4210_I9100
+#include <pexpert/pexpert.h>
+#include <libsa/string.h>
+#include <libkern/OSAtomic.h>
+extern int proc_selfpid(void);
+extern void proc_name(int pid, char *buffer, int size);
+/* Opt-in API results: count +64 {pid,name,flavor,count,info0,result,stage}.
+ * stage=1 is published last. No pointer or reply is rewritten. */
+volatile uint32_t i9100_mach_port_attr_diag[1 + 64 * 7];
+static void
+i9100_mach_port_attr_record(mach_port_name_t name, int flavor,
+    mach_port_info_t info, mach_msg_type_number_t count, kern_return_t result)
+{
+    int enabled = 0, pid;
+    char comm[32] = {0};
+    UInt32 slot;
+    volatile uint32_t *row;
+    if (!PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) ||
+        enabled != 1) return;
+    pid = proc_selfpid();
+    proc_name(pid, comm, sizeof(comm));
+    if (strcmp(comm, "lsd") && strcmp(comm, "installd")) return;
+    slot = i9100_mach_port_attr_diag[0];
+    if (slot >= 64 || !OSCompareAndSwap(slot, slot + 1,
+        &i9100_mach_port_attr_diag[0])) return;
+    row = &i9100_mach_port_attr_diag[1 + slot * 7];
+    row[0] = pid; row[1] = name; row[2] = flavor; row[3] = count;
+    row[4] = (result == KERN_SUCCESS && info && count &&
+        (flavor == MACH_PORT_LIMITS_INFO || flavor == MACH_PORT_DNREQUESTS_SIZE)) ?
+        (uint32_t)info[0] : 0;
+    row[5] = result;
+    OSMemoryBarrier(); row[6] = 1;
+}
+#endif
+
+kern_return_t
+mach_port_set_attributes(ipc_space_t space, mach_port_name_t name, int flavor,
+    mach_port_info_t info, mach_msg_type_number_t count)
+{
+    kern_return_t result = mach_port_set_attributes_impl(space, name, flavor, info, count);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_mach_port_attr_record(name, flavor, info, count, result);
+#endif
+    return result;
 }
 
 /*

@@ -204,6 +204,14 @@ struct ipc_port {
  * sends by critical system threads (which may be needed to free memory and
  * therefore cannot be blocked waiting for memory themselves).
  */
+/* The legacy IPC layout has no importance-inheritance fields. Keep the
+ * temporary-receiver hint in an unused IO_BITS_PORT_INFO bit; object
+ * allocation clears it and receive-right copyout consumes it. */
+#define IP_BIT_TEMPOWNER         0x00001000
+#define IP_TEMPOWNER(port)       (((port)->ip_bits & IP_BIT_TEMPOWNER) != 0)
+#define IP_MARK_TEMPOWNER(port)  ((port)->ip_bits |= IP_BIT_TEMPOWNER)
+#define IP_CLEAR_TEMPOWNER(port) ((port)->ip_bits &= ~IP_BIT_TEMPOWNER)
+
 #define	IP_BIT_PREALLOC		0x00008000	/* preallocated mesg */
 #define IP_PREALLOC(port)	((port)->ip_bits & IP_BIT_PREALLOC)
 
