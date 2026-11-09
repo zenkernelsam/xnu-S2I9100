@@ -101,11 +101,14 @@
 #include <pexpert/pexpert.h>
 #include <libkern/OSAtomic.h>
 #include "i9100_tcc_development.h"
+#include "i9100_mdns_development.h"
 /* count +16 {pid,operation,original,result,providers,unconfined,stage}. */
 volatile uint32_t i9100_tcc_development_diag[1 + 16 * 7];
 /* Missing Sandbox evidence only: count +8 {pid,operation,error,providers,stage}.
  * Observing mDNSResponder never changes its initialization result. */
 volatile uint32_t i9100_mdns_sandbox_diag[1 + 8 * 5];
+/* count +8 {pid,operation,original,result,providers,unconfined,stage}. */
+volatile uint32_t i9100_mdns_development_diag[1 + 8 * 7];
 #endif
 
 #if CONFIG_MACF
@@ -2196,6 +2199,20 @@ done:
             }
             /* User explicitly chose an unconfined tccd development build.
              * TCC still owns all permission decisions and database access. */
+            error = 0;
+        }
+        int mdns_enabled = 0;
+        PE_parse_boot_argn("i9100mdnsdev", &mdns_enabled, sizeof(mdns_enabled));
+        if (i9100_mdns_development_allowed(p->p_comm, target, uap->call,
+            mac_policy_list.numloaded, mdns_enabled, error)) {
+            UInt32 slot = i9100_mdns_development_diag[0];
+            if (slot < 8 && OSCompareAndSwap(slot, slot+1,
+                &i9100_mdns_development_diag[0])) {
+                volatile uint32_t *row = &i9100_mdns_development_diag[1+slot*7];
+                row[0] = p->p_pid; row[1] = uap->call; row[2] = error;
+                row[3] = 0; row[4] = mac_policy_list.numloaded; row[5] = 1;
+                OSMemoryBarrier(); row[6] = 1;
+            }
             error = 0;
         }
     }
