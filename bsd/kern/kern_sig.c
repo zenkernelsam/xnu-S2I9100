@@ -117,19 +117,31 @@
 #include <sys/sdt.h>
 #if BOARD_CONFIG_EXYNOS4210_I9100
 #include <arm/machine_routines.h>
+#include <pexpert/pexpert.h>
 extern void *find_user_regs(thread_t);
 extern void ios7i9100_signal_request(unsigned, unsigned, unsigned, unsigned,
     const char *, unsigned, unsigned, unsigned, unsigned, unsigned);
 /* A request, not proof of delivery or its eventual effect. The kernel caller
  * identifies kill/proc_terminate/other routes. A thread interrupted by an IRQ
  * is never described as a userspace sender. No stack walk or user copyin. */
+/* Actual iOS6 launchd signal callback13222 handles SIGTERM15 by calling
+ * shutdown at13242. This route never reaches the reboot2/401 observer.
+ * Opt-in count +16 {target,signal,source,pc,lr,caller,irq,flavor,name[4],stage}. */
+volatile uint32_t i9100_init_term_diag[1 + 16 * 13];
 static void i9100_springboard_signal_note(proc_t p, int signum,
     unsigned caller_pc, unsigned flavor)
 {
+    int init_term = p != PROC_NULL && p->p_pid == 1 &&
+        signum == SIGTERM && !strcmp(p->p_comm, "launchd");
     if ((signum != SIGTERM && signum != SIGKILL && signum != SIGABRT) || p == PROC_NULL ||
-        strcmp(p->p_comm, "SpringBoard") || p->task == TASK_NULL ||
+        (strcmp(p->p_comm, "SpringBoard") && !init_term) || p->task == TASK_NULL ||
         is_kerneltask(p->task) || (p->p_lflag & P_LEXIT) ||
         (p->p_flag & P_REBOOT)) return;
+    if (init_term) {
+        int enabled = 0;
+        if (!PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) ||
+            enabled != 1) return;
+    }
     unsigned irq = ml_at_interrupt_context() != 0;
     proc_t context = PROC_NULL;
     unsigned pc = 0, lr = 0;
@@ -144,9 +156,26 @@ static void i9100_springboard_signal_note(proc_t p, int signum,
             }
         }
     }
-    ios7i9100_signal_request((unsigned)p->p_pid, (unsigned)(uintptr_t)p->task,
-        (unsigned)signum, context ? (unsigned)context->p_pid : 0,
-        context ? context->p_comm : "kernel", pc, lr, caller_pc, irq, flavor);
+    if (init_term) {
+        UInt32 slot = i9100_init_term_diag[0];
+        if (slot >= 16 || !OSCompareAndSwap(slot, slot + 1, &i9100_init_term_diag[0])) return;
+        volatile uint32_t *row = &i9100_init_term_diag[1 + slot * 13];
+        char name[16] = {0};
+        const char *source = context ? context->p_comm : "kernel";
+        unsigned n;
+        for (n = 0; n < sizeof(name)-1 && source[n]; n++) name[n] = source[n];
+        row[0] = p->p_pid; row[1] = signum; row[2] = context ? context->p_pid : 0;
+        row[3] = pc; row[4] = lr; row[5] = caller_pc; row[6] = irq; row[7] = flavor;
+        memcpy((void *)&row[8], name, sizeof(name));
+        OSMemoryBarrier(); row[12] = 1;
+        if (!irq)
+            printf("I9100 init-term source=%u name=%s pc=%x lr=%x caller=%x flavor=%u\n",
+                row[2], name, pc, lr, caller_pc, flavor);
+    } else {
+        ios7i9100_signal_request((unsigned)p->p_pid, (unsigned)(uintptr_t)p->task,
+            (unsigned)signum, context ? (unsigned)context->p_pid : 0,
+            context ? context->p_comm : "kernel", pc, lr, caller_pc, irq, flavor);
+    }
 }
 #endif
 #if BOARD_CONFIG_EXYNOS4210_I9100
