@@ -11,7 +11,9 @@
 #include <pexpert/arm/protos.h>
 #include <pexpert/arm/i9100_handoff.h>
 #include <pexpert/arm/i9100_entry.h>
+#include <IOKit/IOPlatformExpert.h>
 #include "i9100_timer.h"
+#include "i9100_pmu_reset.h"
 #include "i9100_framebuffer_copy.h"
 #include "../../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_home_observation.h"
 #include "../../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_touch_observation.h"
@@ -69,6 +71,16 @@ static void i9100_puthex(unsigned int v);
  * record survive a warm reset. Map once while VM services are usable;
  * fatal paths only write existing mappings and never allocate. */
 static vm_offset_t i9100_trace_pmu, i9100_trace_cell;
+static int i9100_os_reboot_download;
+static int i9100_halt_restart(unsigned int action)
+{
+    /* Called by halt_all_cpus after the ordinary BSD shutdown/sync path.
+     * The old unregistered PE callback left reboot(0) spinning forever. */
+    if (action != kPERestartCPU || !i9100_trace_pmu) return -1;
+    (void)ml_set_interrupts_enabled(FALSE);
+    i9100_pmu_reset_registers(i9100_trace_pmu, i9100_os_reboot_download);
+    for (;;) __asm__ volatile("wfi");
+}
 static void i9100_trace(unsigned int stage, unsigned int reason,
     unsigned int pc, unsigned int lr, unsigned int far, unsigned int fsr)
 {
@@ -545,6 +557,11 @@ void PE_init_SocSupport_stub(void)
     static ios7lab_i9100_handoff i9100_default_handoff;
     i9100_trace_pmu=ml_io_map(0x10020000, 0x4000);
     i9100_trace_cell=ml_io_map(0x7ffe0000, 0x1000);
+    int reboot_download = 0;
+    i9100_os_reboot_download =
+        PE_parse_boot_argn("i9100rebootdownload", &reboot_download,
+            sizeof(reboot_download)) && reboot_download == 1;
+    PE_halt_restart = i9100_halt_restart;
     i9100_trace(0x108, 0, 0, 0, 0, 0);
     if(!i9100_video_ok(args)) ios7i9100_final_boundary(4);
 

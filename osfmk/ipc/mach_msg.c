@@ -183,6 +183,10 @@ ios7i9100_reboot_rpc_note(ipc_kmsg_t kmsg)
     row[4] = header->msgh_id; row[5] = header->msgh_size; row[6] = header->msgh_bits;
     memcpy((void *)&row[7], name, sizeof(name));
     OSMemoryBarrier(); row[11] = 1;
+    /* A single rare line also survives in an already-open host capture if
+     * the OS immediately tears down USB and performs the real reboot. */
+    printf("I9100 reboot2 sender=%u name=%s flags=%08x:%08x\n",
+        sender, name, flags[1], flags[0]);
 }
 static void
 i9100_mig_error_record(ipc_kmsg_t kmsg, mach_msg_option_t option,

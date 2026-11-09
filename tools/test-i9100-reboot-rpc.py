@@ -96,7 +96,7 @@ int main(void) {
         (out / (name + '.log')).write_text(result.stdout + result.stderr)
         if result.returncode:
             raise RuntimeError(result.stdout + result.stderr)
-        if result.stdout:print(result.stdout, end='', flush=True)
+        if result.stdout:print(result.stdout.splitlines()[-1], flush=True)
     print('Artifacts:', out, flush=True)
 
 
