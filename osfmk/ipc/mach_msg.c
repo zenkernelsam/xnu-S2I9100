@@ -134,6 +134,27 @@ volatile uint32_t i9100_xpc_boundary_diag[1 + 512 * 8];
 /* Dedicated QuartzCore render request/reply metadata; normal XPC traffic
  * cannot exhaust this table before the first compositor transaction. */
 volatile uint32_t i9100_render_boundary_diag[1 + 64 * 8];
+/* Latest converted receive payload for the selected compositor request.
+ * Keep actual wire bytes, including the embedded reply-port descriptor. */
+volatile uint32_t i9100_render_receive_payload[6+32];
+static int i9100_xpc_boundary_enabled(void);
+static void i9100_render_payload_record(ipc_kmsg_t kmsg)
+{
+    if (!kmsg || !kmsg->ikm_header || kmsg->ikm_header->msgh_id!=40201 ||
+        !i9100_xpc_boundary_enabled()) return;
+    char name[16]={0};proc_name(proc_selfpid(),name,sizeof(name));
+    if (strcmp(name,"backboardd")) return;
+    unsigned length=kmsg->ikm_header->msgh_size;
+    if (length<24 || length>128)return;
+    unsigned sequence=i9100_render_receive_payload[0]+1U;
+    i9100_render_receive_payload[0]=0;
+    i9100_render_receive_payload[1]=proc_selfpid();i9100_render_receive_payload[2]=length;
+    i9100_render_receive_payload[3]=kmsg->ikm_header->msgh_id;
+    i9100_render_receive_payload[4]=kmsg->ikm_header->msgh_bits;
+    i9100_render_receive_payload[5]=0;
+    memcpy((void *)&i9100_render_receive_payload[6],kmsg->ikm_header,length);
+    OSMemoryBarrier();i9100_render_receive_payload[0]=sequence ? sequence : 1;
+}
 /* Failure-only metadata, independent of the normal trace's capacity.
  * count +64 rows {pid,stage(1 get/2 receive),addr-low,size,options,result}. */
 volatile uint32_t i9100_mach_failure_diag[1 + 64 * 6];
@@ -801,6 +822,9 @@ mach_msg_receive_results(void)
 
 #if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
     /* Copyout may contract internal OOL descriptors. kmsg is still live here. */
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    if (mr==MACH_MSG_SUCCESS && lab_boundary_receive==3)i9100_render_payload_record(kmsg);
+#endif
     if (lab_ls_receive)
         printf("IOS7LAB LSIPC COPYOUT pid=%d tid=%llu id=%d internal-size=%u converted-user-size=%u result=%x\n",
             proc_selfpid(), (unsigned long long)thread_tid(self), lab_ls_receive_id,
