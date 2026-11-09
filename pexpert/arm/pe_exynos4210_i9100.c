@@ -19,6 +19,7 @@
 #include "../../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_touch_observation.h"
 #include <machine/machine_routines.h>
 #include "i9100_panic_context.h"
+#include "i9100_previous_boot.h"
 #include <kern/debug.h>
 #include <kern/clock.h>
 #include <mach/vm_param.h>
@@ -74,6 +75,7 @@ static void i9100_puthex(unsigned int v);
  * record survive a warm reset. Map once while VM services are usable;
  * fatal paths only write existing mappings and never allocate. */
 static vm_offset_t i9100_trace_pmu, i9100_trace_cell;
+struct I9100PreviousBoot i9100_previous_boot;
 static unsigned i9100_panic_recovery_enabled, i9100_recovery_started;
 static unsigned i9100_recovery_inside, i9100_recovery_reset;
 static uint64_t i9100_recovery_begin_ticks;
@@ -688,6 +690,16 @@ void PE_init_SocSupport_stub(void)
         PE_parse_boot_argn("i9100rebootdownload", &reboot_download,
             sizeof(reboot_download)) && reboot_download == 1;
     PE_halt_restart = i9100_halt_restart;
+    if (DTLookupEntry(0,"/chosen",&chosen)==kSuccess) {
+        struct I9100PreviousBoot *previous=0;
+        unsigned previous_bytes=0;
+        if (DTGetProperty(chosen,I9100_PREVIOUS_BOOT_PROPERTY,
+                          (void **)&previous,&previous_bytes)==kSuccess &&
+            previous && previous_bytes==sizeof(*previous) &&
+            previous->magic==I9100_PREVIOUS_BOOT_MAGIC && previous->version==1 &&
+            previous->bytes==sizeof(*previous) && !(previous->valid&~3U))
+            memcpy(&i9100_previous_boot,previous,sizeof(*previous));
+    }
     i9100_trace(0x108, 0, 0, 0, 0, 0);
     if(!i9100_video_ok(args)) ios7i9100_final_boundary(4);
 
