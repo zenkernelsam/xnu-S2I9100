@@ -1,4 +1,6 @@
-/* Bounded SpringBoard stderr and SIGABRT snapshots. No termination policy. */
+/* Bounded UI-startup stderr and SIGABRT snapshots. Optional tccd observation
+ * shares the latest-record slot; PID/task checks prevent attribution to an
+ * unrelated SpringBoard exit. No termination or permission policy. */
 #ifndef I9100_ABORT_OBSERVATION_H
 #define I9100_ABORT_OBSERVATION_H
 #define I9100_ABORT_TEXT 240U

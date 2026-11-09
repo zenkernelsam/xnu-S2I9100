@@ -97,6 +97,13 @@
 #include <kern/sched_prim.h>
 #include <osfmk/kern/task.h>
 #include <osfmk/kern/kalloc.h>
+#if BOARD_CONFIG_EXYNOS4210_I9100
+#include <pexpert/pexpert.h>
+#include <libkern/OSAtomic.h>
+#include "i9100_tcc_development.h"
+/* count +16 {pid,operation,original,result,providers,unconfined,stage}. */
+volatile uint32_t i9100_tcc_development_diag[1 + 16 * 7];
+#endif
 
 #if CONFIG_MACF
 #include <security/mac.h>
@@ -2156,6 +2163,27 @@ __mac_syscall(proc_t p, struct __mac_syscall_args *uap, int *retv __unused)
 	}
 
 done:
+
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    if (error == ENOPOLICY) {
+        int enabled = 0;
+        PE_parse_boot_argn("i9100tccdev", &enabled, sizeof(enabled));
+        if (i9100_tcc_development_allowed(p->p_comm, target, uap->call,
+            mac_policy_list.numloaded, enabled, error)) {
+            UInt32 slot = i9100_tcc_development_diag[0];
+            if (slot < 16 && OSCompareAndSwap(slot, slot + 1,
+                &i9100_tcc_development_diag[0])) {
+                volatile uint32_t *row = &i9100_tcc_development_diag[1 + slot * 7];
+                row[0] = p->p_pid; row[1] = uap->call; row[2] = error;
+                row[3] = 0; row[4] = mac_policy_list.numloaded; row[5] = 1;
+                OSMemoryBarrier(); row[6] = 1;
+            }
+            /* User explicitly chose an unconfined tccd development build.
+             * TCC still owns all permission decisions and database access. */
+            error = 0;
+        }
+    }
+#endif
 	return (error);
 }
 

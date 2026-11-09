@@ -137,13 +137,20 @@
 #include <sys/vnode_internal.h>
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
+#include <pexpert/pexpert.h>
 #include "../../pexpert/arm/i9100_abort_observation.h"
 /* Copy bounded stderr intent in ordinary write syscall context, after the fd's
  * write permission check. Never change its UIO, return status or actual I/O. */
 static unsigned i9100_ui_stderr_note(proc_t p, int fd, user_addr_t base,
                                      user_size_t size, unsigned budget)
 {
-    if (fd != 2 || !size || !budget || strcmp(p->p_comm, "SpringBoard")) return 0;
+    if (fd != 2 || !size || !budget) return 0;
+    if (strcmp(p->p_comm, "SpringBoard")) {
+        int enabled = 0;
+        if (strcmp(p->p_comm, "tccd") ||
+            !PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) || enabled != 1)
+            return 0;
+    }
     unsigned take = size < budget ? (unsigned)size : budget;
     if (take > 512) take = 512;
     if (!base || base >= 0x40000000ULL || take > 0x40000000ULL-base) return 0;

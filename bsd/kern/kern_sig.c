@@ -180,14 +180,23 @@ static void i9100_springboard_signal_note(proc_t p, int signum,
 #endif
 #if BOARD_CONFIG_EXYNOS4210_I9100
 #include "../../pexpert/arm/i9100_abort_observation.h"
+/* Latest candidate sandbox error buffer from the real tccd main abort site.
+ * {sequence,pid,user-pointer,copy-status,text[128]}; never treated as stderr. */
+volatile uint32_t i9100_tccd_error_diag[4 + 32];
 /* Called only after postsig releases signal/proc locks and before its original
  * coredump, while this task's other threads are already held. Never copyin from
  * proc_prepareexit: that later lifecycle point must not acquire new VM faults. */
 static void i9100_springboard_abort_note(proc_t p, int signum)
 {
-    if (signum != SIGABRT || strcmp(p->p_comm, "SpringBoard") ||
+    int tccd = !strcmp(p->p_comm, "tccd");
+    if (signum != SIGABRT || (strcmp(p->p_comm, "SpringBoard") && !tccd) ||
         current_proc() != p || get_threadtask(current_thread()) != p->task ||
         ml_at_interrupt_context() || !ml_get_interrupts_enabled()) return;
+    if (tccd) {
+        int enabled = 0;
+        if (!PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) ||
+            enabled != 1) return;
+    }
     arm_saved_state_t *state = find_user_regs(current_thread());
     if (state == NULL || (state->cpsr & 0x1fU) != 0x10U) return;
     struct I9100AbortTrace record;
@@ -201,6 +210,27 @@ static void i9100_springboard_abort_note(proc_t p, int signum)
         if ((fp & 3U) || fp < record.sp || fp > 0x3ffffff8U ||
             fp-record.sp > 65536U) { record.error = 1; break; }
         if (copyin((user_addr_t)fp, frame, sizeof(frame))) { record.error = 2; break; }
+        if (tccd && n == 0 && frame[1] >= 0x24cfU &&
+            !((frame[1] - 0x24cfU) & 4095U) && frame[0] >= record.sp + 12U &&
+            frame[0] - record.sp <= 65536U && frame[0] < 0x40000000U) {
+            unsigned pointer = 0, status = 0;
+            char text[128] = {0};
+            size_t copied = 0;
+            if (copyin((user_addr_t)frame[0] - 12U, &pointer, sizeof(pointer))) status = 1;
+            else if (!pointer || pointer >= 0x40000000U) status = 2;
+            else {
+                unsigned bound = 0x40000000U - pointer;
+                if (bound > sizeof(text)-1U) bound = sizeof(text)-1U;
+                status = copyinstr((user_addr_t)pointer, text, bound, &copied);
+            }
+            unsigned sequence = i9100_tccd_error_diag[0] + 1U;
+            i9100_tccd_error_diag[0] = 0;
+            i9100_tccd_error_diag[1] = p->p_pid;
+            i9100_tccd_error_diag[2] = pointer;
+            i9100_tccd_error_diag[3] = status;
+            memcpy((void *)&i9100_tccd_error_diag[4], text, sizeof(text));
+            OSMemoryBarrier(); i9100_tccd_error_diag[0] = sequence ? sequence : 1;
+        }
         if (n == 2) assert_fp = fp;
         if (n == 3) allocator_fp = fp;
         if (!frame[1] || (frame[1] & ~1U) >= 0x40000000U) { record.error = 3; break; }
@@ -213,7 +243,7 @@ static void i9100_springboard_abort_note(proc_t p, int signum)
      * __assert_rtn saved r8 at FP-16 (descriptor) and r5 at FP-4 (magic).
      * Read only through copyin; unrelated assertions never enter this path. */
     unsigned slide = record.frames[0] - 0x38188fddU;
-    if (record.count >= 4 && !(slide & 4095U) && slide < 0x40000000U-0x38188fddU &&
+    if (!tccd && record.count >= 4 && !(slide & 4095U) && slide < 0x40000000U-0x38188fddU &&
         record.frames[1] == 0x38168cafU + slide &&
         record.frames[2] == 0x2f918b0bU + slide &&
         record.frames[3] == 0x2f909d4fU + slide && assert_fp >= 16) {
@@ -236,7 +266,7 @@ static void i9100_springboard_abort_note(proc_t p, int signum)
      *   localSP+36 = bucket list-link address, +40 = expected magic.
      * Capture the list's candidate pointer, including bad alignment, rather
      * than rounding it to a different page. No allocator repair or signal change. */
-    if (record.count >= 4 && !(slide & 4095U) && slide < 0x40000000U-0x38188fddU &&
+    if (!tccd && record.count >= 4 && !(slide & 4095U) && slide < 0x40000000U-0x38188fddU &&
         record.frames[1] == 0x38168cafU + slide &&
         record.frames[2] == 0x2f8f84cdU + slide &&
         record.frames[3] == 0x2f8f8313U + slide &&

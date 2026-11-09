@@ -75,6 +75,10 @@ def main():
         # The inherited osfmk template concatenates SOURCE and libsa;
         # standalone invocation has no trailing slash in SOURCE.
         command += ['-I' + str(repo / 'osfmk/libsa')]
+        # Security sources include <bsd/bsm/...> from the XNU source root;
+        # standalone component invocations do not inherit that search path.
+        if rel.parts[0] == 'security':
+            command += ['-I' + str(repo)]
         result = subprocess.run(command, cwd=cwd, env=env,
             text=True, capture_output=True)
         (output / (rel.name + '.log')).write_text(result.stdout + result.stderr)
