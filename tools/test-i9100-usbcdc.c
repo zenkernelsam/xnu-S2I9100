@@ -23,6 +23,9 @@ static uint64_t fake_ticks;
 #define UCTL_ACK_TICKS 12000000U
 #define I9100_MCT_HZ 24000000U
 static int fake_timebase_ready;
+static unsigned fake_panic_seconds = 180, fake_panic_calls;
+#define I9100_SIM_PANIC_SECONDS fake_panic_seconds
+#define I9100_SIM_PANIC_TRIGGER() (++fake_panic_calls)
 #define UCTL_TIMEBASE_READY() fake_timebase_ready
 static unsigned wait_calls, reset_calls, fail_wait;
 static int fake_wait(volatile unsigned int *, unsigned int, unsigned int);
@@ -252,6 +255,10 @@ static void readmem_tests(void)
 
 static void usb_fixture(int ready)
 {
+    i9100_usb_panic_mode=i9100_usb_panic_test_enabled=0;
+    i9100_usb_history_head=i9100_usb_history_used=0;
+    memset(&i9100_panic_log,0,sizeof(i9100_panic_log));
+    fake_panic_seconds=180;fake_panic_calls=0;
     memset(regs,0,sizeof(regs));
     memset(rx,0,sizeof(rx));rx_pos=0;
     interrupts=1;fake_timebase_ready=ready;fake_ticks=I9100_MCT_HZ;
@@ -396,6 +403,74 @@ static void init_recovery_tests(void)
     CHECK(uctl_dlen==13 && strstr(uctl_reply,"OK DATA 00000000 0000000d"));
 }
 
+static void panic_tests(void)
+{
+    usb_fixture(1);uctl_enabled=uctl_started=1;
+    UDTXFSTS(1)=384;
+    command("I9CTL1 00000001 panic-test\n");
+    CHECK(strstr(uctl_reply,"ERR disabled") && !uctl_action);
+    uctl_cancel();i9100_usb_panic_test_enabled=1;
+    command("I9CTL1 00000002 panic-test\n");
+    CHECK(strstr(uctl_reply,"OK panic-test") && uctl_action==3 && !fake_panic_calls);
+    i9100_usb_drain();
+    CHECK(uctl_flight && !fake_panic_calls);
+    uctl_complete(UEPINT_XFC);
+    CHECK(uctl_reset_action==3 && !fake_panic_calls);
+    uctl_cancel();fake_ticks+=UCTL_ACK_TICKS-1;uctl_reset_poll();
+    CHECK(!fake_panic_calls && !pmu_count);
+    fake_ticks++;uctl_reset_poll();
+    CHECK(fake_panic_calls==1 && !uctl_reset_action && !pmu_count);
+
+    usb_fixture(1);uctl_enabled=uctl_started=1;
+    i9100_usb_mode=USB_DEAD;
+    for(unsigned n=0;n<I9100_PANIC_HISTORY_BYTES+17;n++)
+        i9100_usbcdc_putc('a'+n%26);
+    i9100_usb_mode=USB_OURS;
+    i9100_usb_reconn=1;i9100_usb_last_reconn=fake_ticks;
+    uctl_doff=1;uctl_dlen=128;uctl_used=12;i9100_usb_in=1;
+    i9100_usbcdc_panic_begin(0xf103,0x80350100,0x80320000,0x80310001,
+        0x80097000,0x80,0x13,180,0x1122334455667788ULL);
+    CHECK(i9100_usb_panic_mode && !i9100_usb_in && !uctl_dlen && !uctl_used);
+    CHECK(i9100_usb_disconnect_at && i9100_usb_reconn==2 && (UDCTL&UDCTL_SFTDIS));
+    CHECK(sizeof(i9100_panic_log)-I9100_PANIC_TEXT_BYTES==64);
+    CHECK(i9100_panic_log.magic==I9100_PANIC_MAGIC && i9100_panic_log.version==1);
+    CHECK(i9100_panic_log.category==0xf103 && i9100_panic_log.pc==0x80320000);
+    CHECK(i9100_panic_log.history_bytes==8192 && i9100_panic_log.used==8192);
+    CHECK(i9100_panic_log.ticks_low==0x55667788 && i9100_panic_log.ticks_high==0x11223344);
+    for(unsigned n=0;n<8192;n++) CHECK(i9100_panic_log.text[n]=='a'+(n+17)%26);
+    i9100_usbcdc_putc('!');CHECK(i9100_panic_log.used==8193 && i9100_panic_log.text[8192]=='!');
+    i9100_usbcdc_panic_begin(1,2,3,4,5,6,7,8,9);
+    CHECK(i9100_panic_log.category==0xf103 && i9100_panic_log.used==8193);
+    fake_ticks+=I9100_MCT_HZ/8;UGINTSTS=0;i9100_usbcdc_panic_poll();
+    CHECK(!i9100_usb_disconnect_at && !(UDCTL&UDCTL_SFTDIS) && reset_calls==1);
+    setup(0,9,1,0);uctl_cancel();
+    command("I9CTL1 00000001 panic-status\n");
+    CHECK(strstr(uctl_reply,"OK panic=1 seconds=000000b4"));
+    uctl_cancel();fake_panic_seconds=168;
+    command("I9CTL1 00000002 panic-log\n");
+    CHECK(uctl_dlen==64+8193 && !uctl_doff);
+    CHECK(!memcmp(uctl_data,&i9100_panic_log,uctl_dlen));
+    CHECK(i9100_panic_log.elapsed_seconds==12);
+    uctl_len=uctl_flight=0;command("I9CTL1 00000003 panic-log\n");
+    CHECK(strstr(uctl_reply,"ERR busy") && uctl_dlen==64+8193);
+    uctl_cancel();command("I9CTL1 00000004 threads SpringBoard\n");
+    CHECK(strstr(uctl_reply,"ERR panic-readonly") && !uctl_dlen);
+    uctl_cancel();command("I9CTL1 00000005 reboot\n");
+    CHECK(strstr(uctl_reply,"ERR panic-readonly") && !uctl_action);
+    uctl_cancel();command("I9CTL1 00000006 panic-test\n");
+    CHECK(strstr(uctl_reply,"ERR disabled") && !uctl_action);
+    uctl_cancel();uctl_enabled=0;command("I9CTL1 00000007 panic-log\n");
+    CHECK(strstr(uctl_reply,"ERR disabled") && !uctl_dlen);
+    uctl_cancel();uctl_enabled=1;i9100_panic_log.reset_seconds=0;fake_panic_seconds=0;
+    command("I9CTL1 00000008 panic-log\n");
+    CHECK(i9100_panic_log.elapsed_seconds==0);
+    i9100_usbcdc_panic_disable();i9100_panic_log.used=I9100_PANIC_TEXT_BYTES-1;
+    unsigned ring=i9100_usb_h;
+    i9100_usbcdc_putc('X');i9100_usbcdc_putc('Y');
+    CHECK(i9100_panic_log.used==I9100_PANIC_TEXT_BYTES && i9100_panic_log.dropped==1);
+    CHECK(i9100_usb_h==ring && i9100_usb_mode==USB_DEAD);
+}
+
 int main(void)
 {
     i9100_usb_map = 1;
@@ -484,6 +559,7 @@ int main(void)
     root_tests();
     readmem_tests();
     init_recovery_tests();
+    panic_tests();
     printf("kernel CDC: %u checks, %u failures (no hardware emulation)\n", checks, fails);
     return fails ? 1 : 0;
 }

@@ -340,6 +340,25 @@ static void leo_panic_forward_putc(char c)
 void
 panic(const char *str, ...)
 {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    extern int ios7i9100_fatal_report(unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,const char *);
+    extern void ios7i9100_panic_safe_putc(char);
+    extern void ios7i9100_panic_finish(void *) __attribute__((noreturn));
+    extern void ios7i9100_nested_panic_stop(void) __attribute__((noreturn));
+    __asm__ volatile("cpsid if" ::: "memory");
+    unsigned callsite=((unsigned)__builtin_return_address(0)) & ~1U;
+    if (!ios7i9100_fatal_report(0xf101U,callsite,0,0,0,0,0,str))
+        ios7i9100_nested_panic_stop();
+    if (str) {
+        va_list safe_arguments;
+        va_start(safe_arguments,str);
+        int capture=ios7i9100_panic_text_begin(0,0,1);
+        _doprnt(str,&safe_arguments,ios7i9100_panic_safe_putc,0);
+        if(capture)ios7i9100_panic_text_end();
+        va_end(safe_arguments);
+    }
+    ios7i9100_panic_finish(__builtin_frame_address(0));
+#endif
 #if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     extern int ios7leo_fatal_report(unsigned int,unsigned int,unsigned int,
         unsigned int,unsigned int,unsigned int,unsigned int,const char *);
@@ -385,6 +404,25 @@ panic(const char *str, ...)
 void
 panic_context(unsigned int reason, void *ctx, const char *str, ...)
 {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    extern int ios7i9100_fatal_context(unsigned,const void *,const char *);
+    extern void ios7i9100_panic_safe_putc(char);
+    extern void ios7i9100_panic_finish(void *) __attribute__((noreturn));
+    extern void ios7i9100_nested_panic_stop(void) __attribute__((noreturn));
+    __asm__ volatile("cpsid if" ::: "memory");
+    unsigned callsite=((unsigned)__builtin_return_address(0)) & ~1U;
+    if (!ios7i9100_fatal_context(callsite,ctx,str))
+        ios7i9100_nested_panic_stop();
+    if (str) {
+        va_list safe_arguments;
+        va_start(safe_arguments,str);
+        int capture=ios7i9100_panic_text_begin(reason,1,1);
+        _doprnt(str,&safe_arguments,ios7i9100_panic_safe_putc,0);
+        if(capture)ios7i9100_panic_text_end();
+        va_end(safe_arguments);
+    }
+    ios7i9100_panic_finish(__builtin_frame_address(0));
+#endif
 #if defined(BOARD_CONFIG_QSD8250_LEO) || defined(BOARD_CONFIG_EXYNOS4210_I9100)
     extern int ios7leo_fatal_report(unsigned int,unsigned int,unsigned int,
         unsigned int,unsigned int,unsigned int,unsigned int,const char *);

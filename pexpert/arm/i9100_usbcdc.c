@@ -13,6 +13,7 @@
 #include <string.h>
 #include "i9100_root_wait.h"
 #include "i9100_usb_stats.h"
+#include "i9100_panic_log.h"
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100) && !defined(I9100_USB_SIM)
 /* Thread/proc walk lives in kern_exit.c where MACH_KERNEL_PRIVATE struct
@@ -133,6 +134,30 @@ static int i9100_usb_e0st;
 #define UTXRING 4096
 static char i9100_usb_ring[UTXRING];
 static volatile unsigned int i9100_usb_h, i9100_usb_t;
+static char i9100_usb_history[I9100_PANIC_HISTORY_BYTES];
+static unsigned i9100_usb_history_head, i9100_usb_history_used;
+static struct I9100PanicLog i9100_panic_log;
+static int i9100_usb_panic_mode, i9100_usb_panic_test_enabled;
+#ifdef I9100_USB_SIM
+#define UCTL_RAW_MASK_GET(mask) do { (mask) = ml_set_interrupts_enabled(FALSE); } while (0)
+#define UCTL_RAW_MASK_SET(mask) (void)ml_set_interrupts_enabled(mask)
+#else
+#define UCTL_RAW_MASK_GET(mask) \
+    __asm__ volatile("mrs %0,cpsr\n\tcpsid if" : "=r"(mask) :: "memory")
+#define UCTL_RAW_MASK_SET(mask) \
+    __asm__ volatile("msr cpsr_c,%0" :: "r"(mask) : "memory")
+#endif
+#ifndef I9100_USB_SIM
+extern unsigned ios7i9100_panic_seconds_remaining(void);
+extern void ios7i9100_recovery_test_panic(void) __attribute__((noreturn));
+#else
+#ifndef I9100_SIM_PANIC_SECONDS
+#define I9100_SIM_PANIC_SECONDS 180U
+#define I9100_SIM_PANIC_TRIGGER() ((void)0)
+#endif
+static unsigned ios7i9100_panic_seconds_remaining(void) { return I9100_SIM_PANIC_SECONDS; }
+static void ios7i9100_recovery_test_panic(void) { I9100_SIM_PANIC_TRIGGER(); }
+#endif
 
 /* One request at a time. Separate response storage cannot be starved by logs.
  * Sequence numbers increase within a USB session; this is a local maintenance
@@ -178,7 +203,7 @@ static const char *uctl_root_status(void)
 	}
 }
 #ifndef UCTL_NOW
-#define UCTL_NOW() I9100_get_timebase()
+#define UCTL_NOW() (i9100_usb_panic_mode ? I9100_panic_ticks() : I9100_get_timebase())
 #define UCTL_ACK_TICKS (I9100_MCT_HZ / 2U)
 #endif
 
@@ -267,8 +292,41 @@ static void uctl_command(void)
 	if (!seq || seq <= uctl_last) answer = "ERR sequence";
 	else {
 		uctl_last = seq;
-		if (!strcmp(verb, "ping") || !strcmp(verb, "status"))
+        if (!strcmp(verb, "ping") || !strcmp(verb, "status"))
 			answer = uctl_enabled ? "OK control=1" : "OK control=0";
+        else if (!strcmp(verb, "panic-status")) {
+            static char status[40];
+            memcpy(status, "OK panic=", 9); status[9] = i9100_usb_panic_mode ? '1' : '0';
+            memcpy(status+10, " seconds=", 9);
+            unsigned seconds = i9100_usb_panic_mode ? ios7i9100_panic_seconds_remaining() : 0;
+            uctl_hex8(status+19, seconds); status[27] = 0;
+            answer = status;
+        } else if (!strcmp(verb, "panic-log")) {
+            if (!i9100_usb_panic_mode) answer = "ERR no-panic";
+            else if (!uctl_enabled) answer = "ERR disabled";
+            else if (uctl_doff < uctl_dlen) answer = "ERR busy";
+            else {
+                static char hdr[26];
+                unsigned used = i9100_panic_log.used;
+                if (used > I9100_PANIC_TEXT_BYTES) used = I9100_PANIC_TEXT_BYTES;
+                unsigned remaining = ios7i9100_panic_seconds_remaining();
+                i9100_panic_log.elapsed_seconds =
+                    remaining <= i9100_panic_log.reset_seconds ?
+                    i9100_panic_log.reset_seconds - remaining : 0;
+                unsigned size = 64U+used;
+                memcpy(uctl_data, &i9100_panic_log, size);
+                uctl_doff = 0; uctl_dlen = size;
+                memcpy(hdr, "OK DATA ", 8); uctl_hex8(hdr+8, 0);
+                hdr[16] = ' '; uctl_hex8(hdr+17, size); hdr[25] = 0;
+                answer = hdr;
+            }
+        } else if (!strcmp(verb, "panic-test")) {
+            if (!uctl_enabled || !i9100_usb_panic_test_enabled || i9100_usb_panic_mode)
+                answer = "ERR disabled";
+            else { uctl_action = 3; answer = "OK panic-test"; }
+        } else if (i9100_usb_panic_mode && strcmp(verb, "reboot-download") &&
+            strcmp(verb, "root-status"))
+            answer = "ERR panic-readonly";
 		else if (!strcmp(verb, "root-status"))
 			answer = uctl_root_status();
 		else if (!strcmp(verb, "reboot") || !strcmp(verb, "reboot-download")) {
@@ -391,7 +449,7 @@ static void i9100_usb_begin_reconnect(void)
 	if (i9100_usb_disconnect_at || uctl_reset_action || i9100_usb_reset_errors ||
 	    !UCTL_TIMEBASE_READY()) return;
 	/* One immediate boot recovery, then at most one detach per minute. */
-	if (i9100_usb_reconn && UCTL_NOW() - i9100_usb_last_reconn <
+    if (!i9100_usb_panic_mode && i9100_usb_reconn && UCTL_NOW() - i9100_usb_last_reconn <
 	    (uint64_t)I9100_MCT_HZ * 60U) return;
 	i9100_usb_configured = i9100_usb_hostopen = 0;
 	uctl_cancel();
@@ -478,8 +536,12 @@ static void uctl_reset_poll(void)
 			i9100_usb_begin_reconnect();
 		}
 	}
-	if (!action || UCTL_NOW() < uctl_reset_at) return;
+    if (!action || UCTL_NOW() < uctl_reset_at) return;
 	uctl_reset_action = 0;
+    if (action == 3) {
+        ios7i9100_recovery_test_panic();
+        return;
+    }
 	/* S-Boot check_reboot reads INFORM3, verifies 0x12345670 in its high
 	 * bits and consumes the low nibble: 1 requests download, 0 normal.
 	 * INFORM2 alone only supplied the reboot marker. Never clear kernel RAM. */
@@ -532,7 +594,7 @@ static void i9100_usb_spin(unsigned int n)
 static int i9100_usb_wait(volatile unsigned int *r, unsigned int m,
 			  unsigned int v)
 {
-	unsigned int t = 100000;
+    unsigned int t = i9100_usb_panic_mode ? 1000U : 100000U;
 	while (t--) {
 		if ((*r & m) == v)
 			return 0;
@@ -994,8 +1056,60 @@ static void i9100_usb_poll(void)
 	i9100_usb_drain();
 }
 
+/* Called exactly once before any fatal formatter. Preserve the recent normal
+ * log first; discard any half-sent control envelope so a host can reconnect to
+ * the same CDC identity and fetch a self-contained panic-log snapshot. */
+void i9100_usbcdc_panic_begin(unsigned category, unsigned callsite,
+    unsigned pc, unsigned lr, unsigned far, unsigned fsr, unsigned cpsr,
+    unsigned seconds, uint64_t ticks)
+{
+    unsigned mask;
+    UCTL_RAW_MASK_GET(mask);
+    if (!i9100_usb_panic_mode) {
+        memset(&i9100_panic_log, 0, sizeof(i9100_panic_log));
+        i9100_panic_log.magic = I9100_PANIC_MAGIC;
+        i9100_panic_log.version = 1;
+        i9100_panic_log.category = category; i9100_panic_log.callsite = callsite;
+        i9100_panic_log.pc = pc; i9100_panic_log.lr = lr;
+        i9100_panic_log.far = far; i9100_panic_log.fsr = fsr;
+        i9100_panic_log.cpsr = cpsr; i9100_panic_log.reset_seconds = seconds;
+        i9100_panic_log.ticks_low = (unsigned)ticks;
+        i9100_panic_log.ticks_high = (unsigned)(ticks >> 32);
+        for (unsigned n = 0; n < i9100_usb_history_used; n++)
+            i9100_panic_log.text[n] = i9100_usb_history[
+                (i9100_usb_history_head+I9100_PANIC_HISTORY_BYTES-
+                    i9100_usb_history_used+n) & (I9100_PANIC_HISTORY_BYTES-1U)];
+        i9100_panic_log.history_bytes = i9100_usb_history_used;
+        i9100_panic_log.used = i9100_usb_history_used;
+        i9100_usb_panic_mode = 1;
+        uctl_cancel();
+        i9100_usb_in = 0;
+        if (i9100_usb_map && i9100_usb_probed && i9100_usb_mode != USB_DEAD)
+            i9100_usb_begin_reconnect();
+    }
+    UCTL_RAW_MASK_SET(mask);
+}
+
+/* CPU-local panic loop: raw mask only, no scheduler/preemption API. */
+void i9100_usbcdc_panic_disable(void)
+{
+    i9100_usb_mode = USB_DEAD;
+    i9100_usb_in = 0;
+}
+void i9100_usbcdc_panic_poll(void)
+{
+    if (!i9100_usb_panic_mode || !i9100_usb_map || !i9100_usb_probed ||
+        i9100_usb_mode == USB_DEAD) return;
+    if (!i9100_usb_in) {
+        i9100_usb_in = 1;
+        i9100_usb_poll();
+        i9100_usb_in = 0;
+    }
+}
+
 void i9100_usbcdc_poll(void)
 {
+    if (i9100_usb_panic_mode) { i9100_usbcdc_panic_poll(); return; }
 	boolean_t enabled;
 	enabled = ml_set_interrupts_enabled(FALSE);
 	if (!i9100_usb_in) {
@@ -1016,7 +1130,30 @@ void i9100_usbcdc_putc(char c)
 	unsigned int nx;
 	boolean_t enabled;
 
-	/* No MMIO until i9100_usbcdc_setmap() gave us a real kernel VA:
+    unsigned history_mask;
+    UCTL_RAW_MASK_GET(history_mask);
+    if (i9100_usb_panic_mode) {
+        if (i9100_panic_log.used < I9100_PANIC_TEXT_BYTES)
+            i9100_panic_log.text[i9100_panic_log.used++] = c;
+        else i9100_panic_log.dropped++;
+    } else {
+        i9100_usb_history[i9100_usb_history_head] = c;
+        i9100_usb_history_head = (i9100_usb_history_head+1U) & (I9100_PANIC_HISTORY_BYTES-1U);
+        if (i9100_usb_history_used < I9100_PANIC_HISTORY_BYTES) i9100_usb_history_used++;
+    }
+    UCTL_RAW_MASK_SET(history_mask);
+    /* Fatal paths never lazily probe/map registers. */
+    if (i9100_usb_panic_mode) {
+        if (i9100_usb_mode != USB_DEAD) {
+            nx = (i9100_usb_h+1U) & (UTXRING-1U);
+            if (nx != i9100_usb_t) {
+                i9100_usb_ring[i9100_usb_h] = c; i9100_usb_h = nx;
+            }
+            i9100_usbcdc_panic_poll();
+        }
+        return;
+    }
+    /* No MMIO until i9100_usbcdc_setmap() gave us a real kernel VA:
 	 * the early identity map does not cover 0x12480000.  Chars still
 	 * land in the ring and flush out once USB init runs. */
 	if (!i9100_usb_map)
@@ -1076,6 +1213,9 @@ static void i9100_usb_control_start(void)
 	if (gate) return;
 	(void)PE_parse_boot_argn("i9100control", &uctl_enabled, sizeof(uctl_enabled));
 	uctl_enabled = uctl_enabled == 1;
+    (void)PE_parse_boot_argn("i9100panictest", &i9100_usb_panic_test_enabled,
+        sizeof(i9100_usb_panic_test_enabled));
+    i9100_usb_panic_test_enabled = i9100_usb_panic_test_enabled == 1;
 	/* An underscore forces a string even when all 16 hash digits are numeric. */
 	(void)PE_parse_boot_argn("_i9100build", uctl_build, sizeof(uctl_build));
 	uctl_started = 1;

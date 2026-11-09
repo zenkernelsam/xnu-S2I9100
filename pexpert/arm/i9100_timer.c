@@ -249,6 +249,20 @@ int I9100_timebase_initialized(void)
 {
     return timebase_ready != 0;
 }
+/* Fatal context must not call clock/VM/scheduler routines. These are existing
+ * MMIO mappings and the free-running counter keeps ticking with IRQs masked. */
+uint64_t I9100_panic_ticks(void)
+{
+    if (!timebase_ready || !i9100_mct) return 0;
+    uint32_t hi = 0, lo = 0, after = 0;
+    for (unsigned n = 0; n < 4; n++) {
+        hi = read_reg(i9100_mct, I9100_MCT_G_CNT_U);
+        lo = read_reg(i9100_mct, I9100_MCT_G_CNT_L);
+        after = read_reg(i9100_mct, I9100_MCT_G_CNT_U);
+        if (hi == after) return ((uint64_t)hi << 32) | lo;
+    }
+    return ((uint64_t)after << 32) | read_reg(i9100_mct, I9100_MCT_G_CNT_L);
+}
 
 uint64_t I9100_timer_value(void)
 {

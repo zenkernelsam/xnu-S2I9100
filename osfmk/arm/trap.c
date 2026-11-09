@@ -197,6 +197,18 @@ static char *ifsr_to_human(uint32_t ifsr)
  */
 void sleh_fatal_exception(abort_information_context_t * arm_ctx, char *message)
 {
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    extern int ios7i9100_fatal_context(unsigned,const void *,const char *);
+    extern void ios7i9100_panic_fault_registers(const void *);
+    extern void ios7i9100_panic_finish(void *) __attribute__((noreturn));
+    extern void ios7i9100_nested_panic_stop(void) __attribute__((noreturn));
+    __asm__ volatile("cpsid if" ::: "memory");
+    if (!ios7i9100_fatal_context(((unsigned)__builtin_return_address(0)) & ~1U,
+                               arm_ctx,message))
+        ios7i9100_nested_panic_stop();
+    ios7i9100_panic_fault_registers(arm_ctx);
+    ios7i9100_panic_finish(__builtin_frame_address(0));
+#endif
 #if defined(BOARD_CONFIG_QSD8250_LEO)
     extern int ios7leo_fatal_report(unsigned int,unsigned int,unsigned int,
         unsigned int,unsigned int,unsigned int,unsigned int,const char *);
@@ -1104,103 +1116,79 @@ void sleh_undef(arm_saved_state_t * state)
 #include <ipc/ipc_entry.h>
 #include <ipc/ipc_port.h>
 #include <mach/port.h>
-/* i9ctl "threads" verb backend (osfmk side): pull the Mach-level wait
- * identity that BSD's uu_wchan cannot see. Called from polled CDC context
- * with no thread lock; torn reads acceptable.
- * out[0]=state out[1]=wait_queue out[2]=wait_event(lo)
- * out[3]=ith_state out[4]=ith_object out[5]=ith_receiver_name
- * out[6]=continuation out[7]=user pc out[8]=user r12 out[9]=user lr */
-unsigned
-i9ctl_thread_winfo(thread_t th, uint32_t *out, unsigned n)
+#include "../../pexpert/arm/i9100_irq_snapshot.h"
+#include "../../pexpert/arm/i9100_panic_context.h"
+typedef char i9100_panic_context_layout_verified[
+    sizeof(struct I9100PanicContext) == sizeof(abort_information_context_t) &&
+    __builtin_offsetof(struct I9100PanicContext,sp) == __builtin_offsetof(abort_information_context_t,sp) &&
+    __builtin_offsetof(struct I9100PanicContext,pc) == __builtin_offsetof(abort_information_context_t,pc) &&
+    __builtin_offsetof(struct I9100PanicContext,cpsr) == __builtin_offsetof(abort_information_context_t,cpsr) &&
+    __builtin_offsetof(struct I9100PanicContext,fsr) == __builtin_offsetof(abort_information_context_t,fsr) &&
+    __builtin_offsetof(struct I9100PanicContext,far) == __builtin_offsetof(abort_information_context_t,far) ? 1 : -1];
+/* Lock-free raw wait/register snapshot. Unmapped fields mean unavailable. */
+unsigned i9ctl_thread_winfo(thread_t th, uint32_t *out, unsigned n)
 {
-	const arm_saved_state_t *u;
-	if (!th || !out || n < 10)
-		return 0;
-	out[0] = (uint32_t)th->state;
-	out[1] = (uint32_t)(uintptr_t)th->wait_queue;
-	out[2] = (uint32_t)(uint64_t)th->wait_event;
-	out[3] = (uint32_t)th->ith_state;
-	out[4] = (uint32_t)(uintptr_t)th->ith_object;
-	out[5] = (uint32_t)th->ith_receiver_name;
-	out[6] = (uint32_t)(uintptr_t)th->continuation;
-	u = th->machine.uss;
-	out[7] = u ? u->pc : 0;
-	out[8] = u ? u->r[12] : 0;
-	out[9] = u ? u->lr : 0;
-	return 10;
+    const arm_saved_state_t *u;
+    uint32_t words[10] = {0};
+    void *pointer;
+    uint64_t event;
+    if (!th || !out || n < 10) return 0;
+#define I9READ(field, dst) i9100_irq_snapshot_read(&(field), &(dst), sizeof(dst))
+    if (!I9READ(th->state, words[0]) || !I9READ(th->wait_queue, pointer)) return 0;
+    words[1] = (uint32_t)(uintptr_t)pointer;
+    if (!I9READ(th->wait_event, event)) return 0;
+    words[2] = (uint32_t)event;
+    if (!I9READ(th->ith_state, words[3]) || !I9READ(th->ith_object, pointer)) return 0;
+    words[4] = (uint32_t)(uintptr_t)pointer;
+    if (!I9READ(th->ith_receiver_name, words[5]) || !I9READ(th->continuation, pointer)) return 0;
+    words[6] = (uint32_t)(uintptr_t)pointer;
+    if (!I9READ(th->machine.uss, u)) return 0;
+    if (u) {
+        arm_saved_state_t registers;
+        if (!i9100_irq_snapshot_read(u, &registers, sizeof(registers))) return 0;
+        words[7] = registers.pc; words[8] = registers.r[12]; words[9] = registers.lr;
+    }
+    memcpy(out, words, sizeof(words));
+    return 10;
 }
-
-/* i9ctl "ports" verb backend: walk a task's IPC space table and report each
- * entry's name -> object -> rights, plus the port's receiver space/task.
- * Answers "which port name is this thread waiting on" from threads' rnam.
- * Polled context, no locks; torn reads acceptable.
- * Line: pn=<name> obj=<ptr> rt=<right-bits> rsp=<recv-space> rtsk=<recv-task>
- * rt: 1=recv 2=send(+sorights urefs) 4=send-once 8=port-set 16=dead-name */
-unsigned
-i9ctl_task_ports(task_t task, char *buf, unsigned cap)
+unsigned i9ctl_task_ports(task_t task, char *buf, unsigned cap)
 {
-	ipc_space_t space;
-	ipc_entry_t table;
-	ipc_entry_num_t size, i;
-	unsigned used = 0;
-	if (!buf || !cap)
-		return 0;
-	buf[0] = 0;
-	space = (ipc_space_t)(uintptr_t)task->itk_space;
-	if (!space ||
-	    (uintptr_t)space < 0x80000000U || (uintptr_t)space >= 0xf0000000U)
-		return snprintf(buf, cap, "no-space\n");
-	table = space->is_table;
-	size = space->is_table_size;
-	if (!table || size > 8192)
-		return snprintf(buf, cap, "bad-table %p %u\n", table, size);
-	used += snprintf(buf + used, cap - used,
-	    "space=%p tsize=%u\n", space, size);
-	for (i = 0; i < size && used + 128 < cap; i++) {
-		ipc_entry_t e = table + i;
-		ipc_object_t o;
-		ipc_port_t port;
-		const char *rt;
-		ipc_entry_bits_t b;
-		mach_port_name_t name;
-		if (!e)
-			break;
-		o = e->ie_object;
-		if (!o)
-			continue;
-		b = e->ie_bits;
-		name = MACH_PORT_MAKE(i, IE_BITS_GEN(b));
-		if (b & MACH_PORT_TYPE_PORT_SET)
-			rt = "pset";
-		else if (b & MACH_PORT_TYPE_DEAD_NAME)
-			rt = "dead";
-		else if (b & MACH_PORT_TYPE_RECEIVE)
-			rt = "recv";
-		else if (b & MACH_PORT_TYPE_SEND_ONCE)
-			rt = "sonce";
-		else if (b & MACH_PORT_TYPE_SEND)
-			rt = "send";
-		else
-			rt = "?";
-		used += snprintf(buf + used, cap - used,
-		    "pn=%x rt=%s obj=%p", name, rt, o);
-		if ((uintptr_t)o >= 0x80000000U && (uintptr_t)o < 0xf0000000U &&
-		    (b & (MACH_PORT_TYPE_SEND|MACH_PORT_TYPE_SEND_ONCE|
-		    MACH_PORT_TYPE_RECEIVE)) &&
-		    io_otype((ipc_object_t)o) == IOT_PORT) {
-			ipc_space_t rsp;
-			port = (ipc_port_t)o;
-			rsp = port->ip_receiver;
-			if ((uintptr_t)rsp >= 0x80000000U &&
-			    (uintptr_t)rsp < 0xf0000000U)
-				used += snprintf(buf + used, cap - used,
-				    " rsp=%p rtsk=%p", rsp, rsp->is_task);
-			else
-				used += snprintf(buf + used, cap - used,
-				    " rsp=%p rtsk=?", rsp);
-		}
-		used += snprintf(buf + used, cap - used, "\n");
-	}
-	return used;
+    ipc_space_t space;
+    ipc_entry_t table;
+    ipc_entry_num_t size;
+    unsigned used = 0;
+    if (!task || !buf || !cap) return 0;
+    buf[0] = 0;
+    if (!I9READ(task->itk_space, space) || !space ||
+        !I9READ(space->is_table, table) || !I9READ(space->is_table_size, size) ||
+        !table || size > 8192) return snprintf(buf, cap, "unavailable-space\n");
+    used += snprintf(buf+used, cap-used, "space=%p tsize=%u snapshot=raw-irq\n", space, size);
+    for (unsigned i = 0; i < size && used+160 < cap; i++) {
+        struct ipc_entry entry;
+        if (!i9100_irq_snapshot_read(table+i, &entry, sizeof(entry))) break;
+        ipc_object_t object = entry.ie_object;
+        ipc_entry_bits_t bits = entry.ie_bits;
+        if (!object) continue;
+        const char *right = bits & MACH_PORT_TYPE_PORT_SET ? "pset" :
+            bits & MACH_PORT_TYPE_DEAD_NAME ? "dead" : bits & MACH_PORT_TYPE_RECEIVE ? "recv" :
+            bits & MACH_PORT_TYPE_SEND_ONCE ? "sonce" : bits & MACH_PORT_TYPE_SEND ? "send" : "?";
+        used += snprintf(buf+used, cap-used, "pn=%x rt=%s obj=%p",
+            MACH_PORT_MAKE(i, IE_BITS_GEN(bits)), right, object);
+        if (bits & (MACH_PORT_TYPE_SEND|MACH_PORT_TYPE_SEND_ONCE|MACH_PORT_TYPE_RECEIVE)) {
+            ipc_object_bits_t object_bits;
+            ipc_space_t receiver;
+            task_t receiver_task;
+            if (I9READ(object->io_bits, object_bits) &&
+                ((object_bits & IO_BITS_OTYPE) >> 16) == IOT_PORT &&
+                I9READ(((ipc_port_t)object)->ip_receiver, receiver)) {
+                if (receiver && I9READ(receiver->is_task, receiver_task))
+                    used += snprintf(buf+used, cap-used, " rsp=%p rtsk=%p", receiver, receiver_task);
+                else used += snprintf(buf+used, cap-used, " rsp=%p rtsk=?", receiver);
+            }
+        }
+        used += snprintf(buf+used, cap-used, "\n");
+    }
+    return used;
 }
+#undef I9READ
 #endif

@@ -2190,113 +2190,100 @@ munge_user32_rusage(struct rusage *a_rusage_p, struct user32_rusage *a_user_rusa
 	a_user_rusage_p->ru_nivcsw = a_rusage_p->ru_nivcsw;
 }
 
-/* i9ctl "threads" verb backend: polled-context forensic walk of allproc's
- * uthread lists. No proc lock (torn snapshots acceptable); want filters
- * p_comm by substring; empty matches all. Returns bytes written. */
-static int
-i9ctl_contains(const char *hay, const char *needle)
+/* Interrupt-side raw snapshots: never thread_info(), VM lookup, object retain,
+ * scheduler update, or a lock. The kernel serves only already mapped RAM. */
+#include "../../pexpert/arm/i9100_irq_snapshot.h"
+static int i9ctl_contains(const char *hay, const char *needle)
 {
-	const char *h;
-	for (h = hay; *h; h++) {
-		const char *a = h, *b = needle;
-		while (*b && *a == *b) { a++; b++; }
-		if (!*b) return 1;
-	}
-	return 0;
+    for (const char *h = hay; *h; h++) {
+        const char *a = h, *b = needle;
+        while (*b && *a == *b) { a++; b++; }
+        if (!*b) return 1;
+    }
+    return 0;
 }
-
-#define I9CTL_KVA_OK(v) \
-	((v) >= (void *)0x80000000 && (v) < (void *)0xf0000000)
-#define I9CTL_KSTR_OK(v) \
-	((v) >= (const char *)0x80000000 && (v) < (const char *)0x80800000)
-
-unsigned
-i9ctl_thread_dump(char *buf, unsigned cap, const char *want)
+struct i9ctl_proc_snapshot {
+    struct proc *next;
+    struct uthread *first;
+    task_t task;
+    int pid;
+    char comm[MAXCOMLEN+1];
+};
+static int i9ctl_proc_read(struct proc *p, struct i9ctl_proc_snapshot *out)
 {
-	struct proc *p;
-	struct uthread *uth;
-	unsigned used = 0, np = 0;
-	if (!buf || !cap)
-		return 0;
-	buf[0] = 0;
-	for (p = allproc.lh_first; p && used + 256 < cap;
-	    p = p->p_list.le_next) {
-		if (!I9CTL_KVA_OK(p))
-			break;
-		if (p->p_pid <= 0 || p->p_pid > 100000)
-			break;
-		np++;
-		if (np > 96)
-			break;
-		if (want && *want && !i9ctl_contains(p->p_comm, want))
-			continue;
-		used += snprintf(buf + used, cap - used,
-		    "proc %3d %-16s p=%p\n", p->p_pid, p->p_comm, p);
-		unsigned nt = 0;
-		TAILQ_FOREACH(uth, &p->p_uthlist, uu_list) {
-			if (!I9CTL_KVA_OK(uth))
-				break;
-			const char *wm = uth->uu_wmesg;
-			thread_info_data_t tinfo;
-			mach_msg_type_number_t tic = THREAD_INFO_MAX;
-			uint32_t wi[10];
-			unsigned nwi = 0;
-			int rs = -1, slp = -1;
-			if (I9CTL_KVA_OK(uth->uu_thread)) {
-				if (thread_info(uth->uu_thread, THREAD_BASIC_INFO,
-				    (thread_info_t)&tinfo, &tic) == KERN_SUCCESS) {
-					thread_basic_info_t tbi =
-					    (thread_basic_info_t)&tinfo;
-					rs = tbi->run_state;
-					slp = tbi->sleep_time;
-				}
-				nwi = i9ctl_thread_winfo(
-				    (thread_t)uth->uu_thread, wi, 10);
-			}
-			used += snprintf(buf + used, cap - used,
-			    "  uth=%p thr=%p wchan=%p wmesg=%s rs=%d slp=%d\n",
-			    uth, uth->uu_thread, uth->uu_wchan,
-			    I9CTL_KSTR_OK(wm) ? wm : "-", rs, slp);
-			if (nwi == 10)
-				used += snprintf(buf + used, cap - used,
-				    "    st=%x wq=%p wev=%x ist=%x iobj=%p rnam=%x cont=%p pc=%x r12=%x lr=%x\n",
-				    wi[0], (void *)(uintptr_t)wi[1], wi[2], wi[3],
-				    (void *)(uintptr_t)wi[4], wi[5],
-				    (void *)(uintptr_t)wi[6], wi[7], wi[8], wi[9]);
-			if (used + 128 >= cap || ++nt > 32)
-				goto out;
-		}
-	}
-out:
-	return used;
+    if (!i9100_irq_snapshot_read(&p->p_list.le_next, &out->next, sizeof(out->next)) ||
+        !i9100_irq_snapshot_read(&p->p_pid, &out->pid, sizeof(out->pid)) ||
+        !i9100_irq_snapshot_read(&p->p_comm, out->comm, sizeof(out->comm)) ||
+        !i9100_irq_snapshot_read(&p->p_uthlist.tqh_first, &out->first, sizeof(out->first)) ||
+        !i9100_irq_snapshot_read(&p->task, &out->task, sizeof(out->task))) return 0;
+    out->comm[MAXCOMLEN] = 0;
+    return out->pid > 0 && out->pid <= 100000;
 }
-
-/* i9ctl "ports" verb backend: for each proc matching want, dump the task's
- * IPC space via the osfmk-side walker. Same polled-context caveats. */
-unsigned
-i9ctl_ports_dump(char *buf, unsigned cap, const char *want)
+/* Private TH_* masks from osfmk/kern/thread.h; no scheduler API is called. */
+static int i9ctl_raw_run_state(unsigned state)
 {
-	struct proc *p;
-	unsigned used = 0, np = 0;
-	if (!buf || !cap)
-		return 0;
-	buf[0] = 0;
-	for (p = allproc.lh_first; p && used + 256 < cap;
-	    p = p->p_list.le_next) {
-		if (!I9CTL_KVA_OK(p))
-			break;
-		if (p->p_pid <= 0 || p->p_pid > 100000)
-			break;
-		if (++np > 96)
-			break;
-		if (want && *want && !i9ctl_contains(p->p_comm, want))
-			continue;
-		used += snprintf(buf + used, cap - used,
-		    "proc %3d %-16s p=%p task=%p\n",
-		    p->p_pid, p->p_comm, p, p->task);
-		if (!I9CTL_KVA_OK(p->task))
-			continue;
-		used += i9ctl_task_ports(p->task, buf + used, cap - used);
-	}
-	return used;
+    if (state & 0x10U) return TH_STATE_HALTED;
+    if (state & 0x04U) return TH_STATE_RUNNING;
+    if (state & 0x08U) return TH_STATE_UNINTERRUPTIBLE;
+    if (state & 0x02U) return TH_STATE_STOPPED;
+    if (state & 0x01U) return TH_STATE_WAITING;
+    return -1;
+}
+unsigned i9ctl_thread_dump(char *buf, unsigned cap, const char *want)
+{
+    unsigned used = 0;
+    struct proc *p = allproc.lh_first;
+    if (!buf || !cap) return 0;
+    buf[0] = 0;
+    for (unsigned np = 0; p && np < 256 && used+256 < cap; np++) {
+        struct i9ctl_proc_snapshot proc;
+        if (!i9ctl_proc_read(p, &proc)) break;
+        struct proc *current = p; p = proc.next;
+        if (want && *want && !i9ctl_contains(proc.comm, want)) continue;
+        used += snprintf(buf+used, cap-used, "proc %3d %-16s p=%p snapshot=raw-irq\n",
+            proc.pid, proc.comm, current);
+        struct uthread *uth = proc.first;
+        for (unsigned nt = 0; uth && nt < 64 && used+384 < cap; nt++) {
+            struct uthread *next;
+            thread_t thread;
+            void *channel;
+            const char *message;
+            char text[64] = "-";
+            uint32_t wi[10];
+            if (!i9100_irq_snapshot_read(&uth->uu_list.tqe_next, &next, sizeof(next)) ||
+                !i9100_irq_snapshot_read(&uth->uu_thread, &thread, sizeof(thread)) ||
+                !i9100_irq_snapshot_read(&uth->uu_wchan, &channel, sizeof(channel)) ||
+                !i9100_irq_snapshot_read(&uth->uu_wmesg, &message, sizeof(message))) break;
+            if (message && i9100_irq_snapshot_read(message, text, sizeof(text))) text[63] = 0;
+            unsigned known = i9ctl_thread_winfo(thread, wi, 10);
+            used += snprintf(buf+used, cap-used,
+                "  uth=%p thr=%p wchan=%p wmesg=%.63s rs=%d slp=-1 snapshot=%s\n",
+                uth, thread, channel, text, known == 10 ? i9ctl_raw_run_state(wi[0]) : -1,
+                known == 10 ? "raw" : "unavailable");
+            if (known == 10) used += snprintf(buf+used, cap-used,
+                "    st=%x wq=%p wev=%x ist=%x iobj=%p rnam=%x cont=%p pc=%x r12=%x lr=%x\n",
+                wi[0], (void *)(uintptr_t)wi[1], wi[2], wi[3],
+                (void *)(uintptr_t)wi[4], wi[5], (void *)(uintptr_t)wi[6], wi[7], wi[8], wi[9]);
+            if (next == uth) break;
+            uth = next;
+        }
+    }
+    return used;
+}
+unsigned i9ctl_ports_dump(char *buf, unsigned cap, const char *want)
+{
+    unsigned used = 0;
+    struct proc *p = allproc.lh_first;
+    if (!buf || !cap) return 0;
+    buf[0] = 0;
+    for (unsigned np = 0; p && np < 256 && used+256 < cap; np++) {
+        struct i9ctl_proc_snapshot proc;
+        if (!i9ctl_proc_read(p, &proc)) break;
+        struct proc *current = p; p = proc.next;
+        if (want && *want && !i9ctl_contains(proc.comm, want)) continue;
+        used += snprintf(buf+used, cap-used, "proc %3d %-16s p=%p task=%p snapshot=raw-irq\n",
+            proc.pid, proc.comm, current, proc.task);
+        used += i9ctl_task_ports(proc.task, buf+used, cap-used);
+    }
+    return used;
 }

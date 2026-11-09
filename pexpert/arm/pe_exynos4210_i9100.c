@@ -18,6 +18,7 @@
 #include "../../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_home_observation.h"
 #include "../../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_touch_observation.h"
 #include <machine/machine_routines.h>
+#include "i9100_panic_context.h"
 #include <kern/debug.h>
 #include <kern/clock.h>
 #include <mach/vm_param.h>
@@ -37,6 +38,7 @@ extern int snprintf(char *buffer, size_t size, const char *format, ...);
 #include "../../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_mali.h"
 #define I9100_ABORT_IMPLEMENTATION 1
 #include "i9100_abort_observation.h"
+#include "i9100_irq_snapshot.h"
 extern vm_offset_t pmap_pte(pmap_t map, vm_offset_t address);
 
 #ifndef VM_WIMG_WTHRU
@@ -62,6 +64,7 @@ static unsigned int i9100_panic_reason, i9100_panic_reason_known;
 static char i9100_panic_text[768];
 
 void ios7i9100_fast_putc(char c);
+void ios7i9100_panic_text_putc(char c);
 void i9100_usbcdc_putc(char c);
 void i9100_usbcdc_setmap(void);
 static void i9100_puts(const char *s);
@@ -71,6 +74,83 @@ static void i9100_puthex(unsigned int v);
  * record survive a warm reset. Map once while VM services are usable;
  * fatal paths only write existing mappings and never allocate. */
 static vm_offset_t i9100_trace_pmu, i9100_trace_cell;
+static unsigned i9100_panic_recovery_enabled, i9100_recovery_started;
+static unsigned i9100_recovery_inside, i9100_recovery_reset;
+static uint64_t i9100_recovery_begin_ticks;
+void i9100_usbcdc_panic_begin(unsigned,unsigned,unsigned,unsigned,unsigned,
+    unsigned,unsigned,unsigned,uint64_t);
+void i9100_usbcdc_panic_poll(void);
+void i9100_usbcdc_panic_disable(void);
+static void i9100_panic_prepare(unsigned category,unsigned callsite,
+    unsigned pc,unsigned lr,unsigned far,unsigned fsr,unsigned cpsr)
+{
+    if (i9100_recovery_started) return;
+    i9100_recovery_started = 1;
+    i9100_recovery_begin_ticks = I9100_panic_ticks();
+    /* Route before formatting, so a later fault/reset cannot warm-boot back
+     * into the failed kernel. These are the already validated S-Boot words. */
+    if (i9100_panic_recovery_enabled && i9100_trace_pmu) {
+        *(volatile unsigned *)(i9100_trace_pmu+0x808) = 0x12345678U;
+        *(volatile unsigned *)(i9100_trace_pmu+0x80c) = 0x12345671U;
+        __asm__ volatile("dsb sy" ::: "memory");
+    }
+    i9100_usbcdc_panic_begin(category,callsite,pc,lr,far,fsr,cpsr,
+        i9100_panic_recovery_enabled ? 180U : 0U,i9100_recovery_begin_ticks);
+}
+unsigned ios7i9100_panic_seconds_remaining(void)
+{
+    if (!i9100_panic_recovery_enabled || !i9100_recovery_begin_ticks) return 0;
+    uint64_t now = I9100_panic_ticks();
+    uint64_t elapsed = now-i9100_recovery_begin_ticks;
+    uint64_t limit = (uint64_t)I9100_MCT_HZ*180U;
+    return elapsed >= limit ? 0U : 180U-(unsigned)(elapsed/I9100_MCT_HZ);
+}
+void __attribute__((noreturn)) ios7i9100_panic_recovery_wait(void)
+{
+    __asm__ volatile("cpsid if" ::: "memory");
+    i9100_recovery_inside = 1;
+    for (;;) {
+        if (i9100_panic_recovery_enabled && i9100_trace_pmu &&
+            (!i9100_recovery_begin_ticks || !ios7i9100_panic_seconds_remaining())) {
+            if (!i9100_recovery_reset) {
+                i9100_recovery_reset = 1;
+                i9100_pmu_reset_registers(i9100_trace_pmu,1);
+            }
+            for (;;) __asm__ volatile("nop");
+        }
+        i9100_usbcdc_panic_poll();
+        for (unsigned n=0;n<128;n++) __asm__ volatile("nop");
+    }
+}
+void ios7i9100_panic_safe_putc(char c)
+{
+    ios7i9100_panic_text_putc(c);
+    i9100_usbcdc_putc(c);
+    ios7i9100_fast_putc(c);
+}
+/* Raw frames only. Never symbolic pmap lookup, process locks or Debugger. */
+void __attribute__((noreturn)) ios7i9100_panic_finish(void *frame)
+{
+    unsigned fp = (unsigned)(uintptr_t)frame;
+    i9100_puts("\nI9100 PANIC BACKTRACE (raw, no locks)\n");
+    for (unsigned n=0;fp && n<24;n++) {
+        unsigned words[2];
+        if ((fp&3U) || !i9100_irq_snapshot_read((const void *)(uintptr_t)fp,
+            words,sizeof(words))) break;
+        i9100_puthex(fp); i9100_puts(" : "); i9100_puthex(words[1]); i9100_puts("\n");
+        if (words[0]<=fp || words[0]-fp>65536U) break;
+        fp=words[0];
+    }
+    i9100_puts(i9100_panic_recovery_enabled ?
+        "I9100 PANIC_WAIT seconds=180 route=DOWNLOAD\n" :
+        "I9100 PANIC_WAIT reset=disabled\n");
+    ios7i9100_panic_recovery_wait();
+}
+void __attribute__((noreturn)) ios7i9100_recovery_test_panic(void)
+{
+    panic("I9100 controlled panic: verify retained log and 180-second Download route");
+    ios7i9100_panic_recovery_wait();
+}
 static int i9100_os_reboot_download;
 static int i9100_halt_restart(unsigned int action)
 {
@@ -110,12 +190,16 @@ void ios7i9100_abort_during_fatal(unsigned int pc,unsigned int lr,
     __asm__ volatile("cpsid if" ::: "memory");
     if(!entered){
         entered=1;
+        if(i9100_recovery_inside) {
+            i9100_usbcdc_panic_disable();
+            i9100_pixels=0;
+        }
         i9100_puts("\nSECONDARY ABORT; panic output stopped\nPC=");i9100_puthex(pc);
         i9100_puts(" LR=");i9100_puthex(lr);i9100_puts(" TYPE=");i9100_puthex(type);
         i9100_puts("\nFAR=");i9100_puthex(far);i9100_puts(" FSR=");i9100_puthex(fsr);
         i9100_puts(" PSR=");i9100_puthex(psr);i9100_puts("\n");
     }
-    for(;;)__asm__ volatile("dsb sy\n\twfi" ::: "memory");
+    ios7i9100_panic_recovery_wait();
 }
 
 void __attribute__((noreturn)) ios7i9100_nested_panic_stop(void)
@@ -126,7 +210,7 @@ void __attribute__((noreturn)) ios7i9100_nested_panic_stop(void)
         entered=1;
         i9100_puts("\nSECONDARY PANIC; panic output stopped\n");
     }
-    for(;;)__asm__ volatile("dsb sy\n\twfi" ::: "memory");
+    ios7i9100_panic_recovery_wait();
 }
 
 void ios7i9100_stage(unsigned int n)
@@ -142,6 +226,9 @@ int ios7i9100_fatal_report(unsigned int cat, unsigned int cs,
 {
     if(i9100_fatal_active) return 0;
     i9100_fatal_active=1;
+    unsigned fatal_mask;
+    __asm__ volatile("mrs %0,cpsr\n\tcpsid if" : "=r"(fatal_mask) :: "memory");
+    i9100_panic_prepare(cat,cs,pc,lr,far,fsr,pc ? mask : fatal_mask);
     i9100_trace(0x8000U | (i9100_stage & 0xffU), cat, pc ? pc : cs, lr, far, fsr);
     i9100_fatal_callsite=cs;
     /* Reclaim an existing framebuffer before panic_prologue can take locks.
@@ -150,7 +237,8 @@ int ios7i9100_fatal_report(unsigned int cat, unsigned int cs,
     i9100f_cx=i9100f_cy=0;i9100f_wiped=1;
     if(i9100_pixels)
         for(unsigned int n=0;n<480U*800U;n++)i9100_pixels[n]=0xff000000U;
-    if(gPESocDispatch.uart_putc==ios7i9100_debug_putc) (void)switch_to_serial_console();
+    /* Fatal formatting uses the direct panel/USB sinks below. The normal
+     * console switch can acquire a lock held by the interrupted context. */
     i9100_fatal_category=cat;
     i9100_fatal_state[0]=cat; i9100_fatal_state[1]=i9100_stage;
     i9100_fatal_state[2]=mask&15U; i9100_fatal_state[3]=pc;
@@ -171,6 +259,39 @@ int ios7i9100_fatal_report(unsigned int cat, unsigned int cs,
     return 1;
 }
 
+int ios7i9100_fatal_context(unsigned callsite, const void *context, const char *message)
+{
+    struct I9100PanicContext registers;
+    /* ARM trap.c supplies this exact layout. Test the current translation
+     * first; an invalid context still records the known callsite/message. */
+    if (context && i9100_irq_snapshot_read(context, &registers, sizeof(registers)))
+        return ios7i9100_fatal_report(0xf103U,callsite,registers.pc,registers.lr,
+            registers.far,registers.fsr,registers.cpsr,message);
+    return ios7i9100_fatal_report(0xf103U,callsite,0,0,0,0,0,message);
+}
+
+void ios7i9100_panic_fault_registers(const void *context)
+{
+    struct I9100PanicContext registers;
+    static const char *const names[13] = {"r0=","r1=","r2=","r3=","r4=","r5=",
+        "r6=","r7=","r8=","r9=","r10=","r11=","r12="};
+    if (!context || !i9100_irq_snapshot_read(context,&registers,sizeof(registers))) {
+        i9100_puts("\nFAULT REGISTERS unavailable\n");
+        return;
+    }
+    i9100_puts("\nFAULT REGISTERS\n");
+    for (unsigned n=0;n<13;n++) {
+        i9100_puts(names[n]);i9100_puthex(registers.r[n]);
+        i9100_puts((n&3U)==3U ? "\n" : " ");
+    }
+    i9100_puts("sp=");i9100_puthex(registers.sp);
+    i9100_puts(" lr=");i9100_puthex(registers.lr);
+    i9100_puts(" pc=");i9100_puthex(registers.pc);
+    i9100_puts("\ncpsr=");i9100_puthex(registers.cpsr);
+    i9100_puts(" fsr=");i9100_puthex(registers.fsr);
+    i9100_puts(" far=");i9100_puthex(registers.far);i9100_puts("\n");
+}
+
 void __attribute__((noreturn)) ios7i9100_final_boundary(unsigned int reason)
 {
     i9100_puts("\n*** FINAL BOUNDARY: reason=");
@@ -180,7 +301,7 @@ void __attribute__((noreturn)) ios7i9100_final_boundary(unsigned int reason)
     if(reason) ios7i9100_fatal_report(0xf000U|(reason&0xfffU),
         i9100_callsite(__builtin_return_address(0)),0,0,0,0,0,"ENTRY GUARD");
     __asm__ volatile("cpsid if" ::: "memory");
-    for(;;) __asm__ volatile("dsb sy\n\twfi" ::: "memory");
+    ios7i9100_panic_recovery_wait();
 }
 
 void ios7i9100_forget_early_maps(void){ i9100_pixels=0; i9100_fb_map=0; }
@@ -249,6 +370,7 @@ static void i9100_uart_putc_raw(char c)
 
 void ios7i9100_debug_putc(char c)
 {
+    if (i9100_fatal_active) { i9100_usbcdc_putc(c); return; }
     if(i9100_console_count < 1024) i9100_console_count++;
     if((i9100_uart2_map >= 0x80000000U) || (i9100_uart0_map >= 0x80000000U))
         i9100_uart_putc_raw(c);
@@ -557,6 +679,10 @@ void PE_init_SocSupport_stub(void)
     static ios7lab_i9100_handoff i9100_default_handoff;
     i9100_trace_pmu=ml_io_map(0x10020000, 0x4000);
     i9100_trace_cell=ml_io_map(0x7ffe0000, 0x1000);
+    int panic_recovery = 0;
+    i9100_panic_recovery_enabled =
+        PE_parse_boot_argn("i9100panicrecovery", &panic_recovery,
+            sizeof(panic_recovery)) && panic_recovery == 1;
     int reboot_download = 0;
     i9100_os_reboot_download =
         PE_parse_boot_argn("i9100rebootdownload", &reboot_download,
