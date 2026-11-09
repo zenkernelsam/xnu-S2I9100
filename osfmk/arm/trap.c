@@ -316,6 +316,27 @@ j1_uda_pg_once(unsigned int pg)
 #endif
 
 static int __abort_count = 0;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+/* Ring of failed user exceptions with a real process identity. The older
+ * thread-only witness cannot attribute a recycled thread to an exited PID. */
+volatile uint32_t i9100_user_fault_owner_diag[1+32*12];
+static void i9100_user_fault_owner_note(const struct i9100_fault_snapshot *state,unsigned result)
+{
+    thread_t thread=current_thread();
+    if (!thread || !thread->task || !thread->task->bsd_info ||
+        (state->psr&0x1fU)!=0x10U) return;
+    unsigned mask;
+    __asm__ volatile("mrs %0,cpsr\n\tcpsid if" : "=r"(mask) :: "memory");
+    unsigned sequence=i9100_user_fault_owner_diag[0]+1U;
+    volatile uint32_t *row=&i9100_user_fault_owner_diag[1+(sequence&31U)*12];
+    row[0]=0;row[1]=proc_pid(thread->task->bsd_info);row[2]=state->thread;
+    row[3]=(unsigned)(uintptr_t)thread->task;row[4]=state->type;
+    row[5]=state->pc;row[6]=state->lr;row[7]=state->sp;row[8]=state->far;
+    row[9]=state->fsr;row[10]=state->psr;row[11]=result;
+    row[0]=sequence;i9100_user_fault_owner_diag[0]=sequence;
+    __asm__ volatile("msr cpsr_c,%0" :: "r"(mask) : "memory");
+}
+#endif
 void sleh_abort(void *context, int reason)
 {
 #if BOARD_CONFIG_QSD8250_LEO
@@ -612,6 +633,7 @@ void sleh_abort(void *context, int reason)
                     exception_subcode = 0;
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
                     i9100_fault_failed(&i9100_entry,(uint32_t)code);
+                    i9100_user_fault_owner_note(&i9100_entry,(uint32_t)code);
 #endif
 #if defined(BOARD_CONFIG_QSD8250_LEO)
                     ios7lab_exception_code = code;
@@ -769,6 +791,7 @@ void sleh_abort(void *context, int reason)
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
                     i9100_fault_failed(&i9100_entry,(uint32_t)code);
+                    i9100_user_fault_owner_note(&i9100_entry,(uint32_t)code);
 #endif
                     /*
                      * Only for debug.

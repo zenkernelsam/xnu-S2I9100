@@ -131,6 +131,9 @@ static volatile UInt32 ios7lab_xpc_lines, ios7lab_asl_lines;
  * count, then512 records {pid,stage,id,size,user-size,bits,options,result}.
  * stage is published last:0 means an incomplete reservation. No payloads. */
 volatile uint32_t i9100_xpc_boundary_diag[1 + 512 * 8];
+/* Dedicated QuartzCore render request/reply metadata; normal XPC traffic
+ * cannot exhaust this table before the first compositor transaction. */
+volatile uint32_t i9100_render_boundary_diag[1 + 64 * 8];
 /* Failure-only metadata, independent of the normal trace's capacity.
  * count +64 rows {pid,stage(1 get/2 receive),addr-low,size,options,result}. */
 volatile uint32_t i9100_mach_failure_diag[1 + 64 * 6];
@@ -253,6 +256,24 @@ static void i9100_xpc_boundary_record(const char *stage, int id,
     row[5] = bits; row[6] = option; row[7] = result;
     OSMemoryBarrier(); row[1] = phase;
 }
+static void i9100_render_boundary_record(const char *stage,int id,
+    mach_msg_size_t size,mach_msg_size_t user_size,mach_msg_bits_t bits,
+    mach_msg_option_t option,mach_msg_return_t result)
+{
+    UInt32 phase=0,slot=i9100_render_boundary_diag[0];
+    if (slot>=64 || !i9100_xpc_boundary_enabled()) return;
+    if (!strcmp(stage,"SEND-PRE-COPYIN")) phase=1;
+    else if (!strcmp(stage,"COPYIN-ERROR")) phase=2;
+    else if (!strcmp(stage,"SEND-RESULT")) phase=3;
+    else if (!strcmp(stage,"RECEIVE-PRE-COPYOUT")) phase=4;
+    else if (!strcmp(stage,"COPYOUT")) phase=5;
+    else if (!strcmp(stage,"RECEIVE-RESULT")) phase=6;
+    if (!phase || !OSCompareAndSwap(slot,slot+1,&i9100_render_boundary_diag[0]))return;
+    volatile uint32_t *row=&i9100_render_boundary_diag[1+slot*8];
+    row[0]=proc_selfpid();row[2]=id;row[3]=size;row[4]=user_size;
+    row[5]=bits;row[6]=option;row[7]=result;
+    OSMemoryBarrier();row[1]=phase;
+}
 #endif
 static int ios7lab_boundary_trace(mach_msg_header_t *header)
 {
@@ -262,6 +283,8 @@ static int ios7lab_boundary_trace(mach_msg_header_t *header)
 #if BOARD_CONFIG_EXYNOS4210_I9100
     if (i9100_xpc_boundary_enabled()) {
         proc_name(proc_selfpid(), name, sizeof(name));
+        if ((header->msgh_id==40201 || header->msgh_id==40301) &&
+            (!strcmp(name,"SpringBoard") || !strcmp(name,"backboardd"))) return 3;
         /* Capture every LSD Mach boundary: a missing selected XPC ID does
          * not establish that no message was sent through another path. */
         if (!strcmp(name, "lsd")) return 1;
@@ -292,6 +315,12 @@ static void ios7lab_boundary_log(int kind, const char *stage, int id,
     mach_msg_size_t internal_size, mach_msg_size_t user_size,
     mach_msg_bits_t bits, mach_msg_option_t option, mach_msg_return_t result)
 {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    if (kind==3) {
+        i9100_render_boundary_record(stage,id,internal_size,user_size,bits,option,result);
+        return;
+    }
+#endif
     volatile UInt32 *counter = kind == 1 ? &ios7lab_xpc_lines : &ios7lab_asl_lines;
     UInt32 limit = kind == 1 ? 32 : 16, used = *counter;
 #if BOARD_CONFIG_EXYNOS4210_I9100
