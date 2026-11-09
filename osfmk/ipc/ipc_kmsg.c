@@ -3657,6 +3657,12 @@ ipc_kmsg_copyout(
 	if (mr != MACH_MSG_SUCCESS) {
 		return mr;
 	}
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        /* Covers mach_msg and kevent-Machport delivery without replacing
+         * either path. The observer filters the real launchd reboot RPC. */
+        extern void ios7i9100_reboot_rpc_note(ipc_kmsg_t);
+        ios7i9100_reboot_rpc_note(kmsg);
+#endif
 
 	if (kmsg->ikm_header->msgh_bits & MACH_MSGH_BITS_COMPLEX) {
 		mr = ipc_kmsg_copyout_body(kmsg, space, map, slist);

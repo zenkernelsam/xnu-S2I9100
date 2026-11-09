@@ -137,10 +137,52 @@ volatile uint32_t i9100_mach_failure_diag[1 + 64 * 6];
 /* Error MIG replies can have a successful transport result. count +128
  * rows {pid,id,retcode,size,bits,options}; original reply remains untouched. */
 volatile uint32_t i9100_mig_error_diag[1 + 128 * 6];
+/* The actual iOS6 launchd MIG table starts at400. Its second routine is
+ * _Xreboot2 (static21ac), ID401: simple40B request, NDR +64-bit flags.
+ * count +16 rows {receiver,sender,flags-lo,flags-hi,id,size,bits,name[4],stage}.
+ * Observes validated receive-header copyout; never changes the request. */
+volatile uint32_t i9100_reboot_rpc_diag[1 + 16 * 12];
 static int i9100_xpc_boundary_enabled(void)
 {
     int enabled = 0;
     return PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) && enabled == 1;
+}
+void
+ios7i9100_reboot_rpc_note(ipc_kmsg_t kmsg)
+{
+    vm_offset_t begin, address;
+    mach_msg_size_t available;
+    mach_msg_header_t *header;
+    mach_msg_audit_trailer_t *trailer;
+    const unsigned char *body;
+    UInt32 slot, flags[2], sender;
+    char name[16] = {0};
+    volatile uint32_t *row;
+    if (!kmsg || !kmsg->ikm_header || proc_selfpid() != 1 ||
+        !i9100_xpc_boundary_enabled()) return;
+    begin = (vm_offset_t)(kmsg + 1);
+    address = (vm_offset_t)kmsg->ikm_header;
+    if (address < begin || address - begin > kmsg->ikm_size) return;
+    available = kmsg->ikm_size - (mach_msg_size_t)(address - begin);
+    if (available < 40 + sizeof(*trailer)) return;
+    header = kmsg->ikm_header;
+    if (header->msgh_id != 401 || header->msgh_size != 40 ||
+        (header->msgh_bits & MACH_MSGH_BITS_COMPLEX)) return;
+    body = (const unsigned char *)(header + 1);
+    if (body[0] || body[1] || body[2] || body[3] || body[4] != 1 ||
+        body[5] || body[6] || body[7]) return;
+    trailer = (mach_msg_audit_trailer_t *)((unsigned char *)header + 40);
+    if (trailer->msgh_trailer_type != MACH_MSG_TRAILER_FORMAT_0) return;
+    sender = trailer->msgh_audit.val[5];
+    memcpy(flags, body + 8, sizeof(flags));
+    slot = i9100_reboot_rpc_diag[0];
+    if (slot >= 16 || !OSCompareAndSwap(slot, slot + 1, &i9100_reboot_rpc_diag[0])) return;
+    proc_name(sender, name, sizeof(name));
+    row = &i9100_reboot_rpc_diag[1 + slot * 12];
+    row[0] = 1; row[1] = sender; row[2] = flags[0]; row[3] = flags[1];
+    row[4] = header->msgh_id; row[5] = header->msgh_size; row[6] = header->msgh_bits;
+    memcpy((void *)&row[7], name, sizeof(name));
+    OSMemoryBarrier(); row[11] = 1;
 }
 static void
 i9100_mig_error_record(ipc_kmsg_t kmsg, mach_msg_option_t option,
