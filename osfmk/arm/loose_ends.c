@@ -415,14 +415,15 @@ void fillPage(ppnum_t pa, unsigned int fill)
  */
 kern_return_t copypv(addr64_t src64, addr64_t snk64, unsigned int size, int which)
 {
-    addr64_t src64_virt, snk64_virt;
-    int bothphys = 0;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    extern void ios7i9100_copypv_observe(unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,unsigned);
+    ios7i9100_copypv_observe((unsigned)src64,(unsigned)(src64>>32),
+        (unsigned)snk64,(unsigned)(snk64>>32),size,(unsigned)which,
+        (unsigned)__builtin_return_address(0));
+#endif
 
     if ((which & (cppvPsrc | cppvPsnk)) == 0)   /* Make sure that only one is virtual */
         panic("copypv: no more than 1 parameter may be virtual\n"); /* Not allowed */
-
-    if ((which & (cppvPsrc | cppvPsnk)) == (cppvPsrc | cppvPsnk))
-        bothphys = 1;           /* both are physical */
 
     /*
      * Do a physical copy in if requested, else, move data out. 
@@ -437,9 +438,9 @@ kern_return_t copypv(addr64_t src64, addr64_t snk64, unsigned int size, int whic
      * If it's a kernel copy, use ovbcopy. 
      */
     if (!(which & (cppvKmap | cppvPsrc)))
-        copyout(src64, snk64, size);
-    else if (!(which & (cppvKmap | cppvPsrc)))
-        copyin(src64, snk64, size);
+        return copyin((user_addr_t)src64,(void *)(uintptr_t)snk64,size) ? KERN_FAILURE : KERN_SUCCESS;
+    else if (!(which & (cppvKmap | cppvPsnk)))
+        return copyout((const void *)(uintptr_t)src64,(user_addr_t)snk64,size) ? KERN_FAILURE : KERN_SUCCESS;
     else
         bcopy(src64, snk64, size);
 

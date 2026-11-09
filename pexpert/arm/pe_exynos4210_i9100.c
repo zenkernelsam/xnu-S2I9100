@@ -76,6 +76,20 @@ static void i9100_puthex(unsigned int v);
  * fatal paths only write existing mappings and never allocate. */
 static vm_offset_t i9100_trace_pmu, i9100_trace_cell;
 struct I9100PreviousBoot i9100_previous_boot;
+volatile unsigned i9100_copypv_last[8];
+void ios7i9100_copypv_observe(unsigned source_low,unsigned source_high,
+    unsigned sink_low,unsigned sink_high,unsigned bytes,unsigned flags,unsigned caller)
+{
+    unsigned mask;
+    __asm__ volatile("mrs %0,cpsr\n\tcpsid if" : "=r"(mask) :: "memory");
+    unsigned next=i9100_copypv_last[0]+1U;
+    i9100_copypv_last[0]=0;
+    i9100_copypv_last[1]=source_low;i9100_copypv_last[2]=source_high;
+    i9100_copypv_last[3]=sink_low;i9100_copypv_last[4]=sink_high;
+    i9100_copypv_last[5]=bytes;i9100_copypv_last[6]=flags;i9100_copypv_last[7]=caller;
+    i9100_copypv_last[0]=next ? next : 1U;
+    __asm__ volatile("msr cpsr_c,%0" :: "r"(mask) : "memory");
+}
 static unsigned i9100_panic_recovery_enabled, i9100_recovery_started;
 static unsigned i9100_recovery_inside, i9100_recovery_reset;
 static uint64_t i9100_recovery_begin_ticks;
@@ -175,6 +189,14 @@ static void i9100_trace(unsigned int stage, unsigned int reason,
         cell[0] = 0;
         cell[1] = stage; cell[2] = reason; cell[3] = pc;
         cell[4] = lr; cell[5] = far; cell[6] = fsr;
+        cell[11]=0;
+        if (reason && i9100_copypv_last[0]) {
+            /* Last copy arguments, not an attribution unless PC/LR also
+             * identify copypv. Keep its flags/caller across Download. */
+            cell[7]=i9100_copypv_last[6];cell[8]=i9100_copypv_last[7];
+            cell[9]=i9100_copypv_last[1];cell[10]=i9100_copypv_last[3];
+            cell[11]=0x43505931U;
+        }
         __asm__ volatile("dsb sy" ::: "memory");
         cell[0] = 0xcafebabeU;
     }
@@ -697,7 +719,7 @@ void PE_init_SocSupport_stub(void)
                           (void **)&previous,&previous_bytes)==kSuccess &&
             previous && previous_bytes==sizeof(*previous) &&
             previous->magic==I9100_PREVIOUS_BOOT_MAGIC && previous->version==1 &&
-            previous->bytes==sizeof(*previous) && !(previous->valid&~3U))
+            previous->bytes==sizeof(*previous) && !(previous->valid&~7U))
             memcpy(&i9100_previous_boot,previous,sizeof(*previous));
     }
     i9100_trace(0x108, 0, 0, 0, 0, 0);
