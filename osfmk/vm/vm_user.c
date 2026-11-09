@@ -118,6 +118,35 @@
 
 vm_size_t        upl_offset_to_pagelist = 0;
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+#include <pexpert/pexpert.h>
+#include <libsa/string.h>
+#include <libkern/OSAtomic.h>
+extern int proc_selfpid(void);
+extern void proc_name(int pid, char *buffer, int size);
+/* Preserve the actual native remap result before CoreData discards its
+ * failed generated IMP. No flags, protections or allocation are changed. */
+volatile uint32_t i9100_vm_remap_diag[1+128*20];
+static void i9100_vm_remap_note(unsigned api, vm_map_t target, vm_map_t source,
+    unsigned long long before, unsigned long long after, unsigned long long size,
+    unsigned long long mask, unsigned flags, unsigned long long source_address,
+    int copy, int inheritance, kern_return_t result, unsigned cur, unsigned max)
+{
+    int enabled=0;char name[16]={0};UInt32 slot=i9100_vm_remap_diag[0];
+    if (slot>=128 || !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
+    proc_name(proc_selfpid(),name,sizeof(name));
+    if (strcmp(name,"SpringBoard") && strcmp(name,"accountsd") && strcmp(name,"backboardd"))return;
+    if (!OSCompareAndSwap(slot,slot+1,&i9100_vm_remap_diag[0]))return;
+    volatile uint32_t *row=&i9100_vm_remap_diag[1+slot*20];
+    row[0]=0;row[1]=proc_selfpid();row[2]=api;
+    row[3]=(uint32_t)(uintptr_t)target;row[4]=(uint32_t)(uintptr_t)source;
+    row[5]=(uint32_t)before;row[6]=(uint32_t)after;row[7]=(uint32_t)size;
+    row[8]=(uint32_t)mask;row[9]=flags;row[10]=(uint32_t)source_address;
+    row[11]=copy;row[12]=inheritance;row[13]=result;row[14]=cur;row[15]=max;
+    memcpy((void *)&row[16],name,sizeof(name));OSMemoryBarrier();row[0]=slot+1;
+}
+#endif
+
 #if	VM_CPM
 #include <vm/cpm.h>
 #endif	/* VM_CPM */
@@ -1100,6 +1129,11 @@ mach_vm_remap(
 			  max_protection,
 			  inheritance);
 	*address = map_addr;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_vm_remap_note(64,target_map,src_map,0,map_addr,size,mask,flags,
+        memory_address,copy,inheritance,kr,
+        kr==KERN_SUCCESS?*cur_protection:0,kr==KERN_SUCCESS?*max_protection:0);
+#endif
 #if BOARD_CONFIG_ARMPBA8
     ios7lab_remap_metadata_exit(lab_remap_sequence, "vm_map_remap", kr,
         (unsigned long long)map_addr,
@@ -1136,6 +1170,9 @@ vm_remap(
 {
 	vm_map_offset_t		map_addr;
 	kern_return_t		kr;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    vm_offset_t i9100_before=*address;
+#endif
 
 	if (VM_MAP_NULL == target_map || VM_MAP_NULL == src_map)
 		return KERN_INVALID_ARGUMENT;
@@ -1162,6 +1199,11 @@ vm_remap(
 			  max_protection,
 			  inheritance);
 	*address = CAST_DOWN(vm_offset_t, map_addr);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_vm_remap_note(32,target_map,src_map,i9100_before,map_addr,size,mask,flags,
+        memory_address,copy,inheritance,kr,
+        kr==KERN_SUCCESS?*cur_protection:0,kr==KERN_SUCCESS?*max_protection:0);
+#endif
 	return kr;
 }
 

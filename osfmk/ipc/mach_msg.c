@@ -242,7 +242,9 @@ i9100_mig_error_record(ipc_kmsg_t kmsg, mach_msg_option_t option,
     memcpy(&retcode, body + 8, sizeof(retcode));
     if (!retcode) return;
     proc_name(proc_selfpid(), name, sizeof(name));
-    if (strcmp(name, "lsd") && strcmp(name, "installd")) return;
+    if (strcmp(name, "lsd") && strcmp(name, "installd") &&
+        strcmp(name, "SpringBoard") && strcmp(name, "accountsd") &&
+        strcmp(name, "backboardd")) return;
     slot = i9100_mig_error_diag[0];
     if (slot >= 128 || !OSCompareAndSwap(slot, slot + 1, &i9100_mig_error_diag[0])) return;
     row = &i9100_mig_error_diag[1 + slot * 6];
