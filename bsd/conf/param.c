@@ -84,7 +84,15 @@
 
 struct	timezone tz = { TIMEZONE, PST };
 
+#if BOARD_CONFIG_EXYNOS4210_I9100 && MAXUSERS < 8
+/* The inherited ARM confdep.h has MAXUSERS=2 (52 processes). Unlike LP64,
+ * ARM never raises that ceiling in bsd_scale_setup. The full iOS6 daemon set
+ * exhausts it before SpringBoard startup; keep a bounded 148-slot board floor
+ * and the existing per-UID ratio/privileged reserve instead of dropping limits. */
+#define NPROC (20 + 16 * 8)
+#else
 #define	NPROC (20 + 16 * MAXUSERS)
+#endif
 #define HNPROC 2500	/* based on thread_max */
 int	maxproc = NPROC;
 int	maxprocperuid = NPROC/2;
