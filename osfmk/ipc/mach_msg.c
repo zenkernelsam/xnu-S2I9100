@@ -134,26 +134,36 @@ volatile uint32_t i9100_xpc_boundary_diag[1 + 512 * 8];
 /* Dedicated QuartzCore render request/reply metadata; normal XPC traffic
  * cannot exhaust this table before the first compositor transaction. */
 volatile uint32_t i9100_render_boundary_diag[1 + 64 * 8];
+/* iOS6 commit messages are40002/40003; compositor acknowledgements use ID0,
+ * not the MIG reply ID40301. Keep a rolling trace as early fence traffic
+ * must not exhaust the evidence before the first actual layer commit. */
+volatile uint32_t i9100_render_transport_diag[1 + 128 * 10];
+static volatile UInt32 i9100_render_transport_guard;
 /* Latest converted receive payload for the selected compositor request.
  * Keep actual wire bytes, including the embedded reply-port descriptor. */
 volatile uint32_t i9100_render_receive_payload[6+32];
+/* Latest BB commit header and descriptor prefix, after native copyout. */
+volatile uint32_t i9100_render_commit_payload[6+32];
 static int i9100_xpc_boundary_enabled(void);
 static void i9100_render_payload_record(ipc_kmsg_t kmsg)
 {
-    if (!kmsg || !kmsg->ikm_header || kmsg->ikm_header->msgh_id!=40201 ||
+    if (!kmsg || !kmsg->ikm_header ||
         !i9100_xpc_boundary_enabled()) return;
+    int id=kmsg->ikm_header->msgh_id;
+    if (id!=40201 && id!=40002 && id!=40003) return;
     char name[16]={0};proc_name(proc_selfpid(),name,sizeof(name));
     if (strcmp(name,"backboardd")) return;
     unsigned length=kmsg->ikm_header->msgh_size;
-    if (length<24 || length>128)return;
-    unsigned sequence=i9100_render_receive_payload[0]+1U;
-    i9100_render_receive_payload[0]=0;
-    i9100_render_receive_payload[1]=proc_selfpid();i9100_render_receive_payload[2]=length;
-    i9100_render_receive_payload[3]=kmsg->ikm_header->msgh_id;
-    i9100_render_receive_payload[4]=kmsg->ikm_header->msgh_bits;
-    i9100_render_receive_payload[5]=0;
-    memcpy((void *)&i9100_render_receive_payload[6],kmsg->ikm_header,length);
-    OSMemoryBarrier();i9100_render_receive_payload[0]=sequence ? sequence : 1;
+    if (length<24)return;
+    if (id==40201 && length>128)return;
+    volatile uint32_t *payload=id==40201?i9100_render_receive_payload:i9100_render_commit_payload;
+    unsigned sequence=payload[0]+1U, prefix=length>128?128:length;
+    payload[0]=0;
+    payload[1]=proc_selfpid();payload[2]=prefix;
+    payload[3]=id;payload[4]=kmsg->ikm_header->msgh_bits;
+    payload[5]=id==40201?0:length;
+    memcpy((void *)&payload[6],kmsg->ikm_header,prefix);
+    OSMemoryBarrier();payload[0]=sequence ? sequence : 1;
 }
 /* Failure-only metadata, independent of the normal trace's capacity.
  * count +64 rows {pid,stage(1 get/2 receive),addr-low,size,options,result}. */
@@ -282,14 +292,27 @@ static void i9100_render_boundary_record(const char *stage,int id,
     mach_msg_option_t option,mach_msg_return_t result)
 {
     UInt32 phase=0,slot=i9100_render_boundary_diag[0];
-    if (slot>=64 || !i9100_xpc_boundary_enabled()) return;
+    if (!i9100_xpc_boundary_enabled()) return;
     if (!strcmp(stage,"SEND-PRE-COPYIN")) phase=1;
     else if (!strcmp(stage,"COPYIN-ERROR")) phase=2;
     else if (!strcmp(stage,"SEND-RESULT")) phase=3;
     else if (!strcmp(stage,"RECEIVE-PRE-COPYOUT")) phase=4;
     else if (!strcmp(stage,"COPYOUT")) phase=5;
     else if (!strcmp(stage,"RECEIVE-RESULT")) phase=6;
-    if (!phase || !OSCompareAndSwap(slot,slot+1,&i9100_render_boundary_diag[0]))return;
+    if (!phase)return;
+    if (OSCompareAndSwap(0U,1U,&i9100_render_transport_guard)) {
+        UInt32 sequence=i9100_render_transport_diag[0]+1U;
+        if (!sequence)sequence=1;
+        volatile uint32_t *latest=&i9100_render_transport_diag[1+((sequence-1U)&127U)*10];
+        latest[0]=0;latest[1]=proc_selfpid();latest[2]=(uint32_t)(uintptr_t)current_thread();
+        latest[3]=phase;latest[4]=id;latest[5]=size;latest[6]=user_size;
+        latest[7]=bits;latest[8]=option;latest[9]=result;
+        OSMemoryBarrier();latest[0]=sequence;
+        OSMemoryBarrier();i9100_render_transport_diag[0]=sequence;
+        OSMemoryBarrier();i9100_render_transport_guard=0;
+    }
+    /* Preserve the old bounded table's ABI for existing evidence readers. */
+    if (slot>=64 || !OSCompareAndSwap(slot,slot+1,&i9100_render_boundary_diag[0]))return;
     volatile uint32_t *row=&i9100_render_boundary_diag[1+slot*8];
     row[0]=proc_selfpid();row[2]=id;row[3]=size;row[4]=user_size;
     row[5]=bits;row[6]=option;row[7]=result;
@@ -304,7 +327,7 @@ static int ios7lab_boundary_trace(mach_msg_header_t *header)
 #if BOARD_CONFIG_EXYNOS4210_I9100
     if (i9100_xpc_boundary_enabled()) {
         proc_name(proc_selfpid(), name, sizeof(name));
-        if ((header->msgh_id==40201 || header->msgh_id==40301) &&
+        if (((header->msgh_id>=40000 && header->msgh_id<40600) || header->msgh_id==0) &&
             (!strcmp(name,"SpringBoard") || !strcmp(name,"backboardd"))) return 3;
         /* Capture every LSD Mach boundary: a missing selected XPC ID does
          * not establish that no message was sent through another path. */

@@ -320,7 +320,11 @@ static int __abort_count = 0;
 /* Ring of failed user exceptions with a real process identity. The older
  * thread-only witness cannot attribute a recycled thread to an exited PID. */
 volatile uint32_t i9100_user_fault_owner_diag[1+32*12];
-static void i9100_user_fault_owner_note(const struct i9100_fault_snapshot *state,unsigned result)
+/* Original fault registers and p_comm distinguish SB from crashing helpers
+ * and identify a null Objective-C IMP without relying on a recycled thread. */
+volatile uint32_t i9100_user_fault_detail_diag[1+32*29];
+static void i9100_user_fault_owner_note(const struct i9100_fault_snapshot *state,
+    const uint32_t *registers,unsigned result)
 {
     thread_t thread=current_thread();
     if (!thread || !thread->task || !thread->task->bsd_info ||
@@ -333,6 +337,14 @@ static void i9100_user_fault_owner_note(const struct i9100_fault_snapshot *state
     row[3]=(unsigned)(uintptr_t)thread->task;row[4]=state->type;
     row[5]=state->pc;row[6]=state->lr;row[7]=state->sp;row[8]=state->far;
     row[9]=state->fsr;row[10]=state->psr;row[11]=result;
+    volatile uint32_t *detail=&i9100_user_fault_detail_diag[1+(sequence&31U)*29];
+    detail[0]=0;
+    for (unsigned i=1;i<12;i++)detail[i]=row[i];
+    for (unsigned i=0;i<13;i++)detail[12+i]=registers[i];
+    char name[16]={0};const char *comm=proc_name_address(thread->task->bsd_info);
+    for (unsigned i=0;i<15 && comm && comm[i];i++)name[i]=comm[i];
+    memcpy((void *)&detail[25],name,sizeof(name));
+    OSMemoryBarrier();detail[0]=sequence;i9100_user_fault_detail_diag[0]=sequence;
     row[0]=sequence;i9100_user_fault_owner_diag[0]=sequence;
     __asm__ volatile("msr cpsr_c,%0" :: "r"(mask) : "memory");
 }
@@ -372,6 +384,8 @@ void sleh_abort(void *context, int reason)
                                arm_ctx->fsr,arm_ctx->cpsr,(unsigned int)reason);
     /* Snapshot before vm_fault can block or reuse the saved register state. */
     struct i9100_fault_snapshot i9100_entry;
+    uint32_t i9100_entry_regs[13];
+    memcpy(i9100_entry_regs,arm_ctx->r,sizeof(i9100_entry_regs));
     i9100_entry.thread=(uint32_t)(uintptr_t)thread;i9100_entry.type=reason;
     i9100_entry.pc=arm_ctx->pc;i9100_entry.lr=arm_ctx->lr;
     i9100_entry.sp=arm_ctx->sp;i9100_entry.far=arm_ctx->far;
@@ -633,7 +647,7 @@ void sleh_abort(void *context, int reason)
                     exception_subcode = 0;
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
                     i9100_fault_failed(&i9100_entry,(uint32_t)code);
-                    i9100_user_fault_owner_note(&i9100_entry,(uint32_t)code);
+                    i9100_user_fault_owner_note(&i9100_entry,i9100_entry_regs,(uint32_t)code);
 #endif
 #if defined(BOARD_CONFIG_QSD8250_LEO)
                     ios7lab_exception_code = code;
@@ -791,7 +805,7 @@ void sleh_abort(void *context, int reason)
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
                     i9100_fault_failed(&i9100_entry,(uint32_t)code);
-                    i9100_user_fault_owner_note(&i9100_entry,(uint32_t)code);
+                    i9100_user_fault_owner_note(&i9100_entry,i9100_entry_regs,(uint32_t)code);
 #endif
                     /*
                      * Only for debug.
