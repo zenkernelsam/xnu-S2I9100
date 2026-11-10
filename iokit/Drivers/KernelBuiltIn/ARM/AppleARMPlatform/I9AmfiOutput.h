@@ -1,5 +1,14 @@
 #ifndef I9_AMFI_OUTPUT_H
 #define I9_AMFI_OUTPUT_H
+/* iOS6 SecTaskCreateFromSelf uses selector0 with its own PID. It can read
+ * the same existing entitlement data as selector1 for its own audit token;
+ * this route never accepts a query for another PID. */
+static bool i9_amfi_self_query(const IOExternalMethodArguments *args, uint32_t pid)
+{
+    return args && pid && args->scalarInput && args->scalarInputCount == 1 &&
+        args->scalarInput[0] == (uint64_t)pid && !args->structureInputSize &&
+        !args->structureInputDescriptor;
+}
 /* Deliver the existing entitlement bytes through the output form selected by
  * IOConnectCallMethod. This helper changes no entitlement keys or values. */
 static IOReturn i9_amfi_output(IOExternalMethodArguments *args,

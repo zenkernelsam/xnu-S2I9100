@@ -57,6 +57,8 @@ struct IOExternalMethodArguments {
  OSObject **structureVariableOutputData;
  unsigned scalarInputCount,scalarOutputCount,structureInputSize;
  const void *structureInput;
+ const uint64_t *scalarInput;
+ IOMemoryDescriptor *structureInputDescriptor;
 };
 #include "i9_ent_blob.h"
 #include "I9AmfiOutput.h"
@@ -67,6 +69,14 @@ int main(int argc,char **argv){
  const unsigned char *payload=i9_ent_blob+8;unsigned char token[32]={0};
  unsigned char buffer[4096+16];memset(buffer,0x5a,sizeof(buffer));
  IOExternalMethodArguments args={};args.structureInput=token;args.structureInputSize=32;
+ uint64_t ownpid=67,foreignpid=42,highpid=0x100000043ULL;
+ IOExternalMethodArguments self={};self.scalarInput=&ownpid;self.scalarInputCount=1;
+ CHECK(i9_amfi_self_query(&self,67));
+ self.scalarInput=&foreignpid;CHECK(!i9_amfi_self_query(&self,67));
+ self.scalarInput=&highpid;CHECK(!i9_amfi_self_query(&self,67));
+ self.scalarInput=&ownpid;self.scalarInputCount=2;CHECK(!i9_amfi_self_query(&self,67));
+ self.scalarInputCount=1;self.structureInputSize=32;CHECK(!i9_amfi_self_query(&self,67));
+ self.structureInputSize=0;CHECK(!i9_amfi_self_query(0,67));CHECK(!i9_amfi_self_query(&self,0));
  args.structureOutput=buffer;args.structureOutputSize=4096;
  CHECK(i9_amfi_output(&args,payload,length,&copied)==0);
  CHECK(copied==length+1 && args.structureOutputSize==length+1);

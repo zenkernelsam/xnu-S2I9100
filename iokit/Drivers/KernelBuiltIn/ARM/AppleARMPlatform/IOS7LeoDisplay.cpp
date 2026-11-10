@@ -1789,7 +1789,8 @@ static unsigned i9_amfi_begin(unsigned selector, const IOExternalMethodArguments
     if (!args || !PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) || enabled != 1) return 0;
     char name[16] = {0};
     proc_name(proc_selfpid(), name, sizeof(name));
-    if (strcmp(name, "tccd") && strcmp(name, "SpringBoard") && strcmp(name, "kbd")) return 0;
+    if (strcmp(name, "tccd") && strcmp(name, "SpringBoard") && strcmp(name, "kbd") &&
+        strcmp(name, "backboardd")) return 0;
     UInt32 slot = i9100_amfi_output_diag[0];
     if (slot >= 64 || !OSCompareAndSwap(slot, slot+1, &i9100_amfi_output_diag[0])) return 0;
     volatile uint32_t *row = &i9100_amfi_output_diag[1+slot*16];
@@ -1843,7 +1844,11 @@ public:
         /* selector 1: copy-entitlements-for-audit-token (sti=32 token, sto=dict buf).
          * Security.framework parses output with a property-list parser, so
          * feed the entitlement XML plist only (skip 8-byte CS superblob hdr). */
-        if (selector == 1 && args) {
+        bool selfQuery = false;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        selfQuery = selector == 0 && i9_amfi_self_query(args, (uint32_t)proc_selfpid());
+#endif
+        if ((selector == 1 && args) || selfQuery) {
             unsigned copied = 0;
             IOReturn result = i9_amfi_output(args, i9_ent_blob+8, sizeof(i9_ent_blob)-8, &copied);
             IOLog("I9AMFIC   fed %u-byte ent blob result=%x\n", copied, result);
