@@ -145,6 +145,60 @@ volatile uint32_t i9100_render_receive_payload[6+32];
 /* Latest BB commit header and descriptor prefix, after native copyout. */
 volatile uint32_t i9100_render_commit_payload[6+32];
 static int i9100_xpc_boundary_enabled(void);
+/* Retain the actual XPC handshake and LS store envelopes separately. A
+ * successful bootstrap lookup does not prove that libxpc accepted the
+ * following descriptor/trailer layout. Records never alter the message. */
+volatile uint32_t i9100_tcc_wire_diag[1+64*140];
+volatile uint32_t i9100_ls_wire_diag[1+64*48];
+static volatile UInt32 i9100_service_wire_guard[2];
+static void i9100_service_wire_record(unsigned stage, ipc_kmsg_t kmsg,
+    mach_msg_option_t option, mach_msg_return_t status)
+{
+    if (!kmsg || !kmsg->ikm_header || !i9100_xpc_boundary_enabled()) return;
+    const mach_msg_header_t *header = kmsg->ikm_header;
+    char name[16] = {0};
+    proc_name(proc_selfpid(), name, sizeof(name));
+    unsigned category, stride, cap;
+    if ((header->msgh_id == 0x10000000 || header->msgh_id == 0x77303074) &&
+        (!strcmp(name, "tccd") || !strcmp(name, "kbd") || !strcmp(name, "SpringBoard"))) {
+        category = 0; stride = 140; cap = 512;
+    } else if (header->msgh_id >= 14000 && header->msgh_id < 14200 &&
+        (!strcmp(name, "lsd") || !strcmp(name, "installd") || !strcmp(name, "SpringBoard"))) {
+        category = 1; stride = 48; cap = 144;
+    } else return;
+    uintptr_t begin = (uintptr_t)(kmsg + 1), address = (uintptr_t)header;
+    if (address < begin || address - begin > kmsg->ikm_size) return;
+    unsigned available = kmsg->ikm_size - (address - begin);
+    unsigned length = header->msgh_size, wire_size = length;
+    if (length < sizeof(*header) || length > available) return;
+    unsigned sender = 0xffffffffU, euid = 0xffffffffU;
+    unsigned offset = round_msg(length);
+    if ((stage == 3 || stage == 4) && offset <= available &&
+        available - offset >= sizeof(mach_msg_audit_trailer_t)) {
+        const mach_msg_audit_trailer_t *trailer = (const void *)(address + offset);
+        if (trailer->msgh_trailer_type == MACH_MSG_TRAILER_FORMAT_0 &&
+            trailer->msgh_trailer_size >= sizeof(*trailer) &&
+            trailer->msgh_trailer_size <= MAX_TRAILER_SIZE &&
+            trailer->msgh_trailer_size <= available - offset) {
+            sender = trailer->msgh_audit.val[5]; euid = trailer->msgh_audit.val[1];
+            if (offset + trailer->msgh_trailer_size <= cap)
+                length = offset + trailer->msgh_trailer_size;
+        }
+    }
+    if (length > cap) length = cap;
+    if (!OSCompareAndSwap(0U, 1U, &i9100_service_wire_guard[category])) return;
+    volatile uint32_t *table = category ? i9100_ls_wire_diag : i9100_tcc_wire_diag;
+    unsigned sequence = table[0] + 1U;
+    if (!sequence) sequence = 1;
+    volatile uint32_t *row = &table[1 + ((sequence - 1U) & 63U) * stride];
+    row[0] = 0; row[1] = proc_selfpid(); row[2] = (uint32_t)(uintptr_t)current_thread();
+    row[3] = stage; row[4] = header->msgh_id; row[5] = wire_size; row[6] = length;
+    row[7] = header->msgh_bits; row[8] = option; row[9] = status;
+    row[10] = sender; row[11] = euid;
+    memcpy((void *)&row[12], header, length);
+    OSMemoryBarrier(); row[0] = sequence; table[0] = sequence;
+    OSMemoryBarrier(); i9100_service_wire_guard[category] = 0;
+}
 /* Pair the real TCC bootstrap lookup with its reply on the same Mach thread.
  * No lookup redirection, reply fabrication or policy changes. */
 volatile uint32_t i9100_tcc_bootstrap_diag[1+32*72];
@@ -902,6 +956,9 @@ mach_msg_receive_results(void)
 
 	trailer_size = ipc_kmsg_add_trailer(kmsg, space, option, self, seqno, FALSE, 
 			kmsg->ikm_header->msgh_remote_port->ip_context);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_service_wire_record(3, kmsg, option, mr);
+#endif
 	/*
 	 * If MACH_RCV_OVERWRITE was specified, try to get the scatter
 	 * list and verify it against the contents of the message.  If
@@ -922,6 +979,7 @@ mach_msg_receive_results(void)
 #if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
     /* Copyout may contract internal OOL descriptors. kmsg is still live here. */
 #if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_service_wire_record(4, kmsg, option, mr);
     if (mr==MACH_MSG_SUCCESS && lab_boundary_receive==3)i9100_render_payload_record(kmsg);
     if(mr==MACH_MSG_SUCCESS)i9100_tcc_bootstrap_finish(kmsg,mr);
 #endif
@@ -1072,6 +1130,7 @@ mach_msg_overwrite_trap(
 			return mr;
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
+        i9100_service_wire_record(1, kmsg, option, mr);
         i9100_tcc_lookup=i9100_tcc_bootstrap_send(kmsg);
         i9100_ls_budget = i9100_ls_bootstrap_send_budget(kmsg->ikm_header,
             option, send_size, rcv_size, msg_timeout);
