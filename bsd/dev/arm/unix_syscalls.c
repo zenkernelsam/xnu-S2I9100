@@ -114,6 +114,28 @@ extern const char *syscallnames[];
 
 /* count +64 {pid,role,code,nargs,args[7],error,result,pc,lr,stage}. */
 volatile uint32_t i9100_mdns_syscall_diag[1 + 64 * 16];
+/* TCC's identity reads have independent capacity. Preserve original syscall
+ * results and entry/marshalled arguments; never grant or rewrite access. */
+volatile uint32_t i9100_tcc_identity_diag[1+64*20];
+static void i9100_tcc_identity_note(struct proc *p, unsigned code,
+    const uint32_t *args, unsigned count, int error, uint32_t result,
+    const arm_saved_state_t *state)
+{
+    int enabled = 0;
+    if (strcmp(p->p_comm, "tccd") ||
+        (code != SYS_csops && code != SYS_csops_audittoken &&
+         code != SYS_proc_info && code != SYS___mac_syscall) ||
+        !PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) || enabled != 1) return;
+    UInt32 slot = i9100_tcc_identity_diag[0];
+    if (slot >= 64 || !OSCompareAndSwap(slot, slot + 1, &i9100_tcc_identity_diag[0])) return;
+    volatile uint32_t *row = &i9100_tcc_identity_diag[1+slot*20];
+    row[0] = p->p_pid; row[1] = code; row[2] = count;
+    for (unsigned n = 0; n < 7; n++) row[3+n] = n < count ? args[n] : 0;
+    row[10] = error; row[11] = result; row[12] = state->pc; row[13] = state->lr;
+    row[14] = state->r[7];
+    for (unsigned n = 0; n < 4; n++) row[16+n] = state->r[n];
+    OSMemoryBarrier(); row[15] = 2;
+}
 /* count +8 {caller,stage,errno,result}; frozen launchd spawn observations. */
 volatile uint32_t i9100_mdns_spawn_diag[1 + 8 * 4];
 /* count +8 rows: pid,status,pc,lr,sp,fp,nframes,walk-error,frames[8],
@@ -145,7 +167,7 @@ static void i9100_addressbook_file_note(struct proc *p,unsigned code,void *args,
     if(!strncmp(text,"/System/",8))return; /* Shared-cache framework probes are unrelated to the data store. */
     unsigned matched=0;
     for(unsigned i=0;i+11U<=sizeof(text) && text[i];i++)
-        if(!strncmp(text+i,"AddressBook",11)){matched=1;break;}
+        if(!strncmp(text+i,"AddressBook",11) || !strncmp(text+i,"/Library/TCC/",13)){matched=1;break;}
     if(!matched)return;
     if(!OSCompareAndSwap(0U,1U,&i9100_addressbook_file_guard))return;
     uint32_t sequence=i9100_addressbook_file_diag[0]+1U;
@@ -699,6 +721,8 @@ void unix_syscall(arm_saved_state_t * state)
 #endif
     error = (*(callp->sy_call)) (p, (void *) uthread->uu_arg, &(uthread->uu_rval[0]));
 #if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_tcc_identity_note(p, code, (const uint32_t *)uthread->uu_arg,
+        (unsigned)callp->sy_narg, error, (uint32_t)uthread->uu_rval[0], state);
     i9100_workq_boundary_exit(i9100_workq_trace, error, (uint32_t)uthread->uu_rval[0]);
     i9100_addressbook_file_note(p,code,(void *)uthread->uu_arg,error,(uint32_t)uthread->uu_rval[0]);
     if (mdns_role) i9100_mdns_syscall_note(p, mdns_role, code, mdns_args,
