@@ -67,7 +67,8 @@ extern "C" {
  * traffic. The metadata never replaces a selector or its output. */
 volatile uint32_t i9100_framebuffer_io_diag[1+64*40];
 volatile uint32_t i9100_surface_io_diag[1+64*40];
-static volatile UInt32 i9100_display_io_guard[2];
+volatile uint32_t i9100_other_io_error_diag[1+64*40];
+static volatile UInt32 i9100_display_io_guard[3];
 static void i9100_display_io_note(IOUserClient *client, const IOExternalMethodArguments *args,
     IOReturn result, unsigned structureCapacity, unsigned scalarCapacity)
 {
@@ -77,11 +78,13 @@ static void i9100_display_io_note(IOUserClient *client, const IOExternalMethodAr
     unsigned category;
     if (!strcmp(klass, "IOS7LabFramebufferClient")) category = 0;
     else if (!strcmp(klass, "IOS7LabSurfaceClient")) category = 1;
+    else if (result != kIOReturnSuccess) category = 2;
     else return;
     char name[16] = {0}; proc_name(proc_selfpid(), name, sizeof(name));
     if (strcmp(name, "backboardd") && strcmp(name, "SpringBoard")) return;
     if (!OSCompareAndSwap(0U, 1U, &i9100_display_io_guard[category])) return;
-    volatile uint32_t *table = category ? i9100_surface_io_diag : i9100_framebuffer_io_diag;
+    volatile uint32_t *table = category == 2 ? i9100_other_io_error_diag :
+        category == 1 ? i9100_surface_io_diag : i9100_framebuffer_io_diag;
     unsigned sequence = table[0]+1U; if (!sequence) sequence = 1;
     volatile uint32_t *row = &table[1+((sequence-1U)&63U)*40];
     memset((void *)row, 0, 40*4);
