@@ -9,7 +9,8 @@ typedef struct LeoTouchQueueHooks {
  void (*copy)(void *cookie,void *destination,const void *source,uint32_t bytes);
 } LeoTouchQueueHooks;
 /* Original IODataQueue 4096-byte SPSC ring, 4-byte entry header + native
- * packet: 204-byte digitizer or 52-byte Consumer keyboard (I9100 Home).
+ * packet: iOS7 digitizer204/keyboard52, or verified iOS6
+ * digitizer224/keyboard56. The entry header and ring layout are shared.
  * Each service lock serializes its one producer.
  * 1: acquire the consumer head before reusing a slot.
  * 2: publish payload/entry size before tail (release).
@@ -29,7 +30,8 @@ static int leo_touch_queue_enqueue(volatile QueueWord *head,volatile QueueWord *
  typedef char LeoQueueWord32[(sizeof(QueueWord)==4)?1:-1];(void)sizeof(LeoQueueWord32);
  if(notificationFlags)*notificationFlags=0;
  if(!head || !tail || !queue || !data || !hooks || !hooks->barrier || !hooks->copy ||
-  !notificationFlags || capacity!=4096U || (bytes!=204U && bytes!=52U))return 0;
+  !notificationFlags || capacity!=4096U ||
+  (bytes!=204U && bytes!=52U && bytes!=224U && bytes!=56U))return 0;
  uint32_t h=*head,t=*tail,entry=bytes+4U;
  if(h>capacity || t>capacity || (h&3U) || (t&3U))return 0;
  hooks->barrier(hooks->cookie);
