@@ -68,6 +68,7 @@ extern "C" {
 volatile uint32_t i9100_framebuffer_io_diag[1+64*40];
 volatile uint32_t i9100_surface_io_diag[1+64*40];
 volatile uint32_t i9100_other_io_error_diag[1+64*40];
+volatile uint32_t i9100_hid_copy_diag[1+16*30];
 static volatile UInt32 i9100_display_io_guard[3];
 static void i9100_display_io_note(IOUserClient *client, const IOExternalMethodArguments *args,
     IOReturn result, unsigned structureCapacity, unsigned scalarCapacity)
@@ -75,13 +76,35 @@ static void i9100_display_io_note(IOUserClient *client, const IOExternalMethodAr
     int enabled = 0;
     if (!client || !args || !PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) || enabled != 1) return;
     const char *klass = client->getMetaClass()->getClassName();
+    char name[16] = {0}; proc_name(proc_selfpid(), name, sizeof(name));
+    if (strcmp(name, "backboardd") && strcmp(name, "SpringBoard")) return;
+    if (!strcmp(klass, "IOS7LeoHIDTouchClient") && args->selector == 2) {
+        UInt32 slot = i9100_hid_copy_diag[0];
+        if (slot < 16 && OSCompareAndSwap(slot, slot+1, &i9100_hid_copy_diag[0])) {
+            volatile uint32_t *h = &i9100_hid_copy_diag[1+slot*30];
+            memset((void *)h, 0, 30*4);
+            h[0]=proc_selfpid();h[1]=result;h[2]=args->scalarInputCount;h[3]=args->structureInputSize;
+            h[4]=args->scalarOutputCount;h[5]=args->structureOutputSize;
+            unsigned n=args->scalarInputCount;if(n>2)n=2;
+            if(args->scalarInput && n)memcpy((void *)&h[6],args->scalarInput,n*8);
+            h[10]=args->selector;
+            n=args->structureInputSize;if(n>56)n=56;
+            if(args->structureInput && n)memcpy((void *)&h[12],args->structureInput,n);
+            n=args->structureOutputSize;if(n>structureCapacity)n=structureCapacity;if(n>16)n=16;
+            if(args->structureOutput && n)memcpy((void *)&h[26],args->structureOutput,n);
+            OSMemoryBarrier();h[11]=1;
+        }
+    }
+    const char *label = klass;
+    if (!strcmp(klass, "I9StubClient")) {
+        OSString *provider = OSDynamicCast(OSString, client->getProperty("I9100StubProvider"));
+        if (provider) label = provider->getCStringNoCopy();
+    }
     unsigned category;
     if (!strcmp(klass, "IOS7LabFramebufferClient")) category = 0;
     else if (!strcmp(klass, "IOS7LabSurfaceClient")) category = 1;
     else if (result != kIOReturnSuccess) category = 2;
     else return;
-    char name[16] = {0}; proc_name(proc_selfpid(), name, sizeof(name));
-    if (strcmp(name, "backboardd") && strcmp(name, "SpringBoard")) return;
     if (!OSCompareAndSwap(0U, 1U, &i9100_display_io_guard[category])) return;
     volatile uint32_t *table = category == 2 ? i9100_other_io_error_diag :
         category == 1 ? i9100_surface_io_diag : i9100_framebuffer_io_diag;
@@ -98,7 +121,7 @@ static void i9100_display_io_note(IOUserClient *client, const IOExternalMethodAr
         (args->structureInputDescriptor ? 16U : 0U) | (args->structureOutputDescriptor ? 32U : 0U) |
         (args->structureVariableOutputData ? 64U : 0U);
     row[11] = structureCapacity;
-    strncpy((char *)&row[12], klass, 31);
+    strncpy((char *)&row[12], label, 31);
     unsigned count = args->scalarOutputCount;
     if (count > scalarCapacity) count = scalarCapacity;
     if (count > 3) count = 3;

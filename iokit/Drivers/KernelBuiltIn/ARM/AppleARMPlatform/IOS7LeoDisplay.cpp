@@ -1770,10 +1770,11 @@ public:
     }
 };
 OSDefineMetaClassAndStructors(I9StubClient, IOUserClient);
-static IOReturn i9stub_client(task_t t, IOUserClient **h) {
+static IOReturn i9stub_client(task_t t, IOUserClient **h, IOService *provider = 0) {
     I9StubClient *c = new I9StubClient;
     if (!c) return kIOReturnNoMemory;
     if (!c->initWithTask(t, 0, 0)) { c->release(); return kIOReturnError; }
+    if (provider) c->setProperty("I9100StubProvider", provider->getName());
     *h = c; return kIOReturnSuccess;
 }
 #include "i9_ent_blob.h"
@@ -2000,25 +2001,25 @@ IOReturn AppleDiagnosticDataAccessReadOnly::newUserClient(task_t t, void *s2, UI
 { IOLog("I9STUB AppleDiagnosticDataAccessReadOnly open\n"); return kIOReturnUnsupported; }
 IOReturn IOSurfaceAccelerator::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
-{ IOLog("I9STUB IOSurfaceAccelerator open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+{ IOLog("I9STUB IOSurfaceAccelerator open type=%u\n",(unsigned)ty); return i9stub_client(t, h, this); }
 IOReturn IOAVController::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
-{ IOLog("I9STUB IOAVController open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+{ IOLog("I9STUB IOAVController open type=%u\n",(unsigned)ty); return i9stub_client(t, h, this); }
 IOReturn AppleMobileFileIntegrity::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
 { IOLog("I9STUB AppleMobileFileIntegrity open type=%u\n",(unsigned)ty); return i9amfi_client(t, h); }
 IOReturn AppleM2ScalerCSCDriver::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
-{ IOLog("I9STUB AppleM2ScalerCSCDriver open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+{ IOLog("I9STUB AppleM2ScalerCSCDriver open type=%u\n",(unsigned)ty); return i9stub_client(t, h, this); }
 IOReturn AppleRGBOUT::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
-{ IOLog("I9STUB AppleRGBOUT open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+{ IOLog("I9STUB AppleRGBOUT open type=%u\n",(unsigned)ty); return i9stub_client(t, h, this); }
 IOReturn AppleM2TVOut::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
-{ IOLog("I9STUB AppleM2TVOut open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+{ IOLog("I9STUB AppleM2TVOut open type=%u\n",(unsigned)ty); return i9stub_client(t, h, this); }
 IOReturn AppleWirelessDisplay::newUserClient(task_t t, void *s2, UInt32 ty,
     OSDictionary *p, IOUserClient **h)
-{ IOLog("I9STUB AppleWirelessDisplay open type=%u\n",(unsigned)ty); return i9stub_client(t, h); }
+{ IOLog("I9STUB AppleWirelessDisplay open type=%u\n",(unsigned)ty); return i9stub_client(t, h, this); }
 class IOAcceleratorESClient : public IOUserClient {
     OSDeclareDefaultStructors(IOAcceleratorESClient);
 public:
