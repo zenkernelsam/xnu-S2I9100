@@ -108,6 +108,39 @@
 #include <vm/vm_map_store.h>
 
 extern u_int32_t random(void);	/* from <libkern/libkern.h> */
+#if BOARD_CONFIG_EXYNOS4210_I9100
+#include <pexpert/pexpert.h>
+#include <machine/machine_routines.h>
+extern int proc_selfpid(void);
+extern void proc_name(int, char *, int);
+/* The witnessed LS plist is543B. Retain both sides of its small-copy path,
+ * without changing the copy object, mapping, result or ownership. */
+volatile uint32_t i9100_small_ool_diag[1+32*80];
+static volatile UInt32 i9100_small_ool_guard;
+static void i9100_small_ool_note(unsigned stage, vm_map_t map, vm_map_address_t address,
+    vm_map_copy_t copy, const void *kernel_bytes, kern_return_t result)
+{
+    int enabled=0;char name[16]={0};thread_t thread=current_thread();
+    if(!copy || copy->size!=543 || !thread || get_preemption_level()!=0 ||
+       !ml_get_interrupts_enabled() || ml_at_interrupt_context() ||
+       !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
+    proc_name(proc_selfpid(),name,sizeof(name));
+    if(strcmp(name,"lsd") && strcmp(name,"installd") && strcmp(name,"SpringBoard"))return;
+    if(!OSCompareAndSwap(0U,1U,&i9100_small_ool_guard))return;
+    unsigned sequence=i9100_small_ool_diag[0]+1U;if(!sequence)sequence=1;
+    volatile uint32_t *r=&i9100_small_ool_diag[1+((sequence-1U)&31U)*80];
+    memset((void *)r,0,80*4);
+    r[1]=proc_selfpid();r[2]=stage;r[3]=(uint32_t)(uintptr_t)copy;r[4]=copy->type;r[5]=copy->size;
+    r[6]=address;r[7]=(uint32_t)(uintptr_t)map;r[8]=(uint32_t)(uintptr_t)current_map();
+    r[9]=(uint32_t)(uintptr_t)thread->map;r[10]=result;r[13]=map==current_map();
+    if(kernel_bytes){memcpy((void *)&r[16],kernel_bytes,256);r[11]=256;}
+    else if(map==current_map() && address>=4096 && address<=0x3fffff00U){
+        if(copyin(address,(void *)&r[16],256))r[12]=1;else r[11]=256;
+    }else r[12]=2;
+    OSMemoryBarrier();r[0]=sequence;i9100_small_ool_diag[0]=sequence;
+    OSMemoryBarrier();i9100_small_ool_guard=0;
+}
+#endif
 /* Internal prototypes
  */
 
@@ -7123,6 +7156,10 @@ vm_map_copyin_kernel_buffer(
 	copy->cpy_kalloc_size = kalloc_size;
 
 	kr = copyinmap(src_map, src_addr, copy->cpy_kdata, (vm_size_t) len);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_small_ool_note(0,src_map,src_addr,copy,NULL,kr);
+    if(kr==KERN_SUCCESS)i9100_small_ool_note(1,src_map,src_addr,copy,copy->cpy_kdata,kr);
+#endif
 	if (kr != KERN_SUCCESS) {
 		kfree(copy, kalloc_size);
 		return kr;
@@ -7185,6 +7222,9 @@ vm_map_copyout_kernel_buffer(
 	/*
 	 * Copyout the data from the kernel buffer to the target map.
 	 */	
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_small_ool_note(2,map,*addr,copy,copy->cpy_kdata,kr);
+#endif
 	if (thread->map == map) {
 	
 		/*
@@ -7217,6 +7257,9 @@ vm_map_copyout_kernel_buffer(
 		vm_map_deallocate(map);
 	}
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_small_ool_note(3,map,*addr,copy,NULL,kr);
+#endif
 	if (kr != KERN_SUCCESS) {
 		/* the copy failed, clean up */
 		if (!overwrite) {
