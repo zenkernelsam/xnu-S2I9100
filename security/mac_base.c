@@ -101,6 +101,7 @@
 #include <pexpert/pexpert.h>
 #include <libkern/OSAtomic.h>
 #include "i9100_tcc_development.h"
+#include "i9100_tcc_extension.h"
 #include "i9100_mdns_development.h"
 /* count +16 {pid,operation,original,result,providers,unconfined,stage}. */
 volatile uint32_t i9100_tcc_development_diag[1 + 16 * 7];
@@ -112,6 +113,42 @@ volatile uint32_t i9100_mdns_development_diag[1 + 8 * 7];
 /* Observe UI Sandbox calls; these records never alter any policy result. */
 volatile uint32_t i9100_ui_sandbox_diag[1+64*10];
 static volatile UInt32 i9100_ui_sandbox_guard;
+/* 32 rolling snapshots:16 scalar words,class[96],path[128]. */
+volatile uint32_t i9100_tcc_extension_diag[1+32*72];
+static volatile UInt32 i9100_tcc_extension_guard;
+static int i9100_tcc_extension_noop(proc_t p, const char *policy, int call,
+    user_addr_t address, unsigned providers, int enabled, int original)
+{
+    if (!i9100_tcc_extension_gate(p->p_comm, policy, call, providers, enabled, original)) return original;
+    uint32_t w[10] = {0}; char name[96] = {0}, path[128] = {0}; size_t length = 0;
+    int copy_error = copyin(address, w, sizeof(w)), result = original, eligible = 0;
+    if (!copy_error && i9100_tcc_extension_wire(w)) {
+        copy_error = copyinstr((user_addr_t)w[0], name, sizeof(name), &length);
+        if (!copy_error) copy_error = copyinstr((user_addr_t)w[4], path, sizeof(path), &length);
+        eligible = !copy_error && i9100_tcc_extension_class(name, path);
+        if (eligible) {
+            /* No real rights are minted: the library's canonical token is
+             * meaningful only while this kernel has no Sandbox provider. */
+            static const char token[] = "invalid";
+            result = copyout(token, (user_addr_t)w[8], sizeof(token));
+        }
+    }
+    int diagnostic = 0;
+    if (PE_parse_boot_argn("i9100xpcdiag", &diagnostic, sizeof(diagnostic)) && diagnostic == 1 &&
+        OSCompareAndSwap(0U, 1U, &i9100_tcc_extension_guard)) {
+        unsigned sequence = i9100_tcc_extension_diag[0] + 1U;
+        if (!sequence) sequence = 1;
+        volatile uint32_t *row = &i9100_tcc_extension_diag[1+((sequence-1U)&31U)*72];
+        row[0] = 0; row[1] = p->p_pid; row[2] = original; row[3] = result;
+        row[4] = w[2]; row[5] = w[6]; row[6] = w[0]; row[7] = w[4]; row[8] = w[8];
+        row[9] = copy_error; row[10] = enabled; row[11] = providers; row[12] = eligible;
+        row[13] = eligible && !result ? 8 : 0; row[14] = 0; row[15] = 1;
+        memcpy((void *)&row[16], name, sizeof(name)); memcpy((void *)&row[40], path, sizeof(path));
+        OSMemoryBarrier(); row[0] = sequence; i9100_tcc_extension_diag[0] = sequence;
+        OSMemoryBarrier(); i9100_tcc_extension_guard = 0;
+    }
+    return result;
+}
 #endif
 
 #if CONFIG_MACF
@@ -2218,6 +2255,8 @@ done:
              * TCC still owns all permission decisions and database access. */
             error = 0;
         }
+        error = i9100_tcc_extension_noop(p, target, uap->call, uap->arg,
+            mac_policy_list.numloaded, enabled, error);
         int mdns_enabled = 0;
         PE_parse_boot_argn("i9100mdnsdev", &mdns_enabled, sizeof(mdns_enabled));
         if (i9100_mdns_development_allowed(p->p_comm, target, uap->call,
