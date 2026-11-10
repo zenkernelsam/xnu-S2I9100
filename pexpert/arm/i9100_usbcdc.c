@@ -20,6 +20,8 @@
  * visibility already exists; keeps private headers out of pexpert units. */
 extern unsigned i9ctl_thread_dump(char *buf, unsigned cap, const char *want);
 extern unsigned i9ctl_ports_dump(char *buf, unsigned cap, const char *want);
+extern unsigned i9100_hid_swipe(unsigned x0,unsigned y0,unsigned x1,unsigned y1,unsigned ms);
+extern unsigned i9100_hid_home(unsigned ms);
 #endif
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
@@ -335,6 +337,43 @@ static void uctl_command(void)
 				uctl_action = !strcmp(verb, "reboot-download") ? 2 : 1;
 				answer = uctl_action == 2 ? "OK reboot-download" : "OK reboot";
 			}
+		} else if (!strncmp(verb, "hid-home ", 9)) {
+            const char *p=verb+9,*start=p;unsigned ms=uctl_hex(&p);
+            if(!uctl_enabled)answer="ERR disabled";
+            else if(uctl_doff<uctl_dlen)answer="ERR busy";
+            else if(p==start || p-start>4 || *p)answer="ERR input-args";
+            else {
+#ifdef I9100_USB_SIM
+                unsigned result=0;
+#else
+                unsigned result=i9100_hid_home(ms);
+#endif
+                answer=result==1?"OK input-queued":result==2?"ERR input-args":
+                    result==3?"ERR busy":result==4?"ERR input-not-ready":"ERR disabled";
+            }
+		} else if (!strncmp(verb, "hid-swipe ", 10)) {
+            /* Only publish a bounded RAM mailbox here. The HID workloop
+             * builds events later; no IOKit locks/queues from the USB IRQ. */
+            unsigned a[5], valid=1;
+            const char *p=verb+10;
+            for(unsigned n=0;n<5;n++){
+                const char *start=p;a[n]=uctl_hex(&p);
+                if(p==start || p-start>4){valid=0;break;}
+                if(n<4){if(*p!=' '){valid=0;break;}p++;}
+                else if(*p)valid=0;
+            }
+            if(!uctl_enabled)answer="ERR disabled";
+            else if(uctl_doff<uctl_dlen)answer="ERR busy";
+            else if(!valid)answer="ERR input-args";
+            else {
+#ifdef I9100_USB_SIM
+                unsigned result=0;
+#else
+                unsigned result=i9100_hid_swipe(a[0],a[1],a[2],a[3],a[4]);
+#endif
+                answer=result==1?"OK input-queued":result==2?"ERR input-args":
+                    result==3?"ERR busy":result==4?"ERR input-not-ready":"ERR disabled";
+            }
 		} else if (!strncmp(verb, "read-memory ", 12)) {
 			/* read-memory <pa> <len>: snapshot DRAM [0x40000000,0x80000000)
 			 * into uctl_data, then stream raw bytes after the DATA header.

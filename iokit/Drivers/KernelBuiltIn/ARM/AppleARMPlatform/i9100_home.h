@@ -50,12 +50,12 @@ static inline void i9100_home_reset(I9100HomeState *s)
  s->initialized=s->armed=s->stable=s->candidate=s->head=s->count=s->overflows=0;
  s->candidateSince=0;
 }
-static inline void i9100_home_sample(I9100HomeState *s,unsigned down,uint64_t now)
+static inline void i9100_home_sample_period(I9100HomeState *s,unsigned down,uint64_t now,uint64_t debounce)
 {
  if(down>1 || !now)return;
  if(!s->initialized){s->initialized=1;s->stable=s->candidate=down;s->candidateSince=now;s->armed=!down;return;}
  if(down!=s->candidate){s->candidate=down;s->candidateSince=now;return;}
- if(now-s->candidateSince<20000000ULL)return;
+ if(now-s->candidateSince<debounce)return;
  if(!s->armed){if(!down){s->stable=0;s->armed=1;}return;}
  if(s->stable==down)return;
  if(s->count==16){if(s->overflows!=UINT32_MAX)s->overflows++;return;}
@@ -63,4 +63,6 @@ static inline void i9100_home_sample(I9100HomeState *s,unsigned down,uint64_t no
  s->edges[tail].timestamp=s->candidateSince;s->edges[tail].down=down;
  s->count++;s->stable=down;
 }
+static inline void i9100_home_sample(I9100HomeState *s,unsigned down,uint64_t now)
+{i9100_home_sample_period(s,down,now,20000000ULL);}
 #endif
