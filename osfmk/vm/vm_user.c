@@ -133,6 +133,9 @@ static void i9100_vm_remap_note(unsigned api, vm_map_t target, vm_map_t source,
     int copy, int inheritance, kern_return_t result, unsigned cur, unsigned max)
 {
     int enabled=0;char name[16]={0};UInt32 slot=i9100_vm_remap_diag[0];
+    /* vm32_remap also forwards here. Successful font/shared-region remaps
+     * must not exhaust the witness before CoreData's fixed code-page copy. */
+    if (result==KERN_SUCCESS && !(copy && size==4096 && flags==0))return;
     if (slot>=128 || !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
     proc_name(proc_selfpid(),name,sizeof(name));
     if (strcmp(name,"SpringBoard") && strcmp(name,"accountsd") && strcmp(name,"backboardd"))return;
@@ -1074,6 +1077,9 @@ mach_vm_remap(
 {
 	vm_map_offset_t		map_addr;
 	kern_return_t		kr;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    mach_vm_offset_t i9100_before=*address;
+#endif
 #if BOARD_CONFIG_ARMPBA8
     UInt32 lab_remap_sequence = 0;
 #endif
@@ -1130,7 +1136,7 @@ mach_vm_remap(
 			  inheritance);
 	*address = map_addr;
 #if BOARD_CONFIG_EXYNOS4210_I9100
-    i9100_vm_remap_note(64,target_map,src_map,0,map_addr,size,mask,flags,
+    i9100_vm_remap_note(64,target_map,src_map,i9100_before,map_addr,size,mask,flags,
         memory_address,copy,inheritance,kr,
         kr==KERN_SUCCESS?*cur_protection:0,kr==KERN_SUCCESS?*max_protection:0);
 #endif

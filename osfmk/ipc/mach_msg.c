@@ -171,6 +171,9 @@ volatile uint32_t i9100_mach_failure_diag[1 + 64 * 6];
 /* Error MIG replies can have a successful transport result. count +128
  * rows {pid,id,retcode,size,bits,options}; original reply remains untouched. */
 volatile uint32_t i9100_mig_error_diag[1 + 128 * 6];
+/* VM errors have their own capacity; frequent bootstrap and LS errors
+ * cannot hide the legacy remap failure that creates a null CoreData IMP. */
+volatile uint32_t i9100_vm_error_diag[1 + 64 * 6];
 /* The actual iOS6 launchd MIG table starts at400. Its second routine is
  * _Xreboot2 (static21ac), ID401: simple40B request, NDR +64-bit flags.
  * count +16 rows {receiver,sender,flags-lo,flags-hi,id,size,bits,name[4],stage}.
@@ -233,7 +236,9 @@ i9100_mig_error_record(ipc_kmsg_t kmsg, mach_msg_option_t option,
     const unsigned char *body;
     if (result != MACH_MSG_SUCCESS || !kmsg ||
         !(header = kmsg->ikm_header) || header->msgh_size != 36 ||
-        (header->msgh_bits & MACH_MSGH_BITS_COMPLEX) || !i9100_xpc_boundary_enabled()) return;
+        (header->msgh_bits & MACH_MSGH_BITS_COMPLEX) ||
+        MACH_MSGH_BITS_PORTS(header->msgh_bits)!=MACH_MSGH_BITS(MACH_MSG_TYPE_PORT_SEND_ONCE,0) ||
+        !i9100_xpc_boundary_enabled()) return;
     body = (const unsigned char *)(header + 1);
     /* Native little-endian NDR: avoid mistaking unrelated simple payloads
      * for a generated MIG error reply. */
@@ -245,6 +250,16 @@ i9100_mig_error_record(ipc_kmsg_t kmsg, mach_msg_option_t option,
     if (strcmp(name, "lsd") && strcmp(name, "installd") &&
         strcmp(name, "SpringBoard") && strcmp(name, "accountsd") &&
         strcmp(name, "backboardd")) return;
+    if ((header->msgh_id>=3900 && header->msgh_id<4000) ||
+        (header->msgh_id>=4900 && header->msgh_id<5000)) {
+        UInt32 vm_slot=i9100_vm_error_diag[0];
+        if (vm_slot<64 && OSCompareAndSwap(vm_slot,vm_slot+1,&i9100_vm_error_diag[0])) {
+            volatile uint32_t *vm_row=&i9100_vm_error_diag[1+vm_slot*6];
+            vm_row[0]=proc_selfpid();vm_row[1]=header->msgh_id;vm_row[2]=retcode;
+            vm_row[3]=header->msgh_size;vm_row[4]=header->msgh_bits;vm_row[5]=option;
+            OSMemoryBarrier();
+        }
+    }
     slot = i9100_mig_error_diag[0];
     if (slot >= 128 || !OSCompareAndSwap(slot, slot + 1, &i9100_mig_error_diag[0])) return;
     row = &i9100_mig_error_diag[1 + slot * 6];
