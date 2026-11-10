@@ -145,6 +145,49 @@ volatile uint32_t i9100_render_receive_payload[6+32];
 /* Latest BB commit header and descriptor prefix, after native copyout. */
 volatile uint32_t i9100_render_commit_payload[6+32];
 static int i9100_xpc_boundary_enabled(void);
+/* Pair the real TCC bootstrap lookup with its reply on the same Mach thread.
+ * No lookup redirection, reply fabrication or policy changes. */
+volatile uint32_t i9100_tcc_bootstrap_diag[1+32*72];
+static volatile UInt32 i9100_tcc_bootstrap_guard;
+static uint32_t i9100_tcc_bootstrap_pending[8][3];
+static void i9100_tcc_bootstrap_record(unsigned stage,ipc_kmsg_t kmsg,unsigned status,
+    unsigned id)
+{
+    unsigned sequence=i9100_tcc_bootstrap_diag[0]+1U,length=0,bits=0;
+    if(kmsg){length=kmsg->ikm_header->msgh_size;bits=kmsg->ikm_header->msgh_bits;if(length>256)length=256;}
+    volatile uint32_t *row=&i9100_tcc_bootstrap_diag[1+((sequence-1U)&31U)*72];
+    row[0]=0;row[1]=proc_selfpid();row[2]=(uint32_t)(uintptr_t)current_thread();
+    row[3]=stage;row[4]=id;row[5]=length;row[6]=bits;row[7]=status;
+    if(length)memcpy((void *)&row[8],kmsg->ikm_header,length);
+    OSMemoryBarrier();row[0]=sequence?sequence:1;i9100_tcc_bootstrap_diag[0]=row[0];
+}
+static int i9100_tcc_bootstrap_send(ipc_kmsg_t kmsg)
+{
+    if(!kmsg || !kmsg->ikm_header || !i9100_xpc_boundary_enabled())return 0;
+    mach_msg_header_t *h=kmsg->ikm_header;uintptr_t begin=(uintptr_t)(kmsg+1),address=(uintptr_t)h;
+    if(h->msgh_id<400 || h->msgh_id>=500 || h->msgh_size<24 || h->msgh_size>256 ||
+       address<begin || address-begin>kmsg->ikm_size || h->msgh_size>kmsg->ikm_size-(address-begin))return 0;
+    const char *bytes=(const char *)h;unsigned found=0;
+    for(unsigned n=24;n+15<=h->msgh_size;n++)if(!memcmp(bytes+n,"com.apple.tccd",15)){found=1;break;}
+    if(!found || !OSCompareAndSwap(0U,1U,&i9100_tcc_bootstrap_guard))return 0;
+    unsigned thread=(uint32_t)(uintptr_t)current_thread(),slot=i9100_tcc_bootstrap_diag[0]&7U;
+    for(unsigned n=0;n<8;n++)if(i9100_tcc_bootstrap_pending[n][0]==thread || !i9100_tcc_bootstrap_pending[n][0]){slot=n;break;}
+    i9100_tcc_bootstrap_pending[slot][0]=thread;i9100_tcc_bootstrap_pending[slot][1]=proc_selfpid();
+    i9100_tcc_bootstrap_pending[slot][2]=h->msgh_id;
+    i9100_tcc_bootstrap_record(1,kmsg,0,h->msgh_id);
+    OSMemoryBarrier();i9100_tcc_bootstrap_guard=0;return 1;
+}
+static void i9100_tcc_bootstrap_finish(ipc_kmsg_t kmsg,unsigned status)
+{
+    if(!OSCompareAndSwap(0U,1U,&i9100_tcc_bootstrap_guard))return;
+    unsigned thread=(uint32_t)(uintptr_t)current_thread(),pid=proc_selfpid();
+    for(unsigned n=0;n<8;n++){
+        uint32_t *p=i9100_tcc_bootstrap_pending[n];
+        if(p[0]!=thread || p[1]!=pid || (kmsg && kmsg->ikm_header->msgh_id!=p[2]+100))continue;
+        i9100_tcc_bootstrap_record(kmsg?2:3,kmsg,status,kmsg?kmsg->ikm_header->msgh_id:p[2]);p[0]=0;break;
+    }
+    OSMemoryBarrier();i9100_tcc_bootstrap_guard=0;
+}
 static void i9100_render_payload_record(ipc_kmsg_t kmsg)
 {
     if (!kmsg || !kmsg->ikm_header ||
@@ -864,6 +907,7 @@ mach_msg_receive_results(void)
     /* Copyout may contract internal OOL descriptors. kmsg is still live here. */
 #if BOARD_CONFIG_EXYNOS4210_I9100
     if (mr==MACH_MSG_SUCCESS && lab_boundary_receive==3)i9100_render_payload_record(kmsg);
+    if(mr==MACH_MSG_SUCCESS)i9100_tcc_bootstrap_finish(kmsg,mr);
 #endif
     if (lab_ls_receive)
         printf("IOS7LAB LSIPC COPYOUT pid=%d tid=%llu id=%d internal-size=%u converted-user-size=%u result=%x\n",
@@ -998,6 +1042,7 @@ mach_msg_overwrite_trap(
 		ipc_kmsg_t kmsg;
 #if BOARD_CONFIG_EXYNOS4210_I9100
         unsigned int i9100_ls_budget = 0;
+        unsigned int i9100_tcc_lookup = 0;
 #endif
 
 		mr = ipc_kmsg_get(msg_addr, send_size, &kmsg);
@@ -1011,6 +1056,7 @@ mach_msg_overwrite_trap(
 			return mr;
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
+        i9100_tcc_lookup=i9100_tcc_bootstrap_send(kmsg);
         i9100_ls_budget = i9100_ls_bootstrap_send_budget(kmsg->ikm_header,
             option, send_size, rcv_size, msg_timeout);
 #endif
@@ -1045,6 +1091,9 @@ mach_msg_overwrite_trap(
 #endif
 		if (mr != MACH_MSG_SUCCESS) {
 #if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
+#if BOARD_CONFIG_EXYNOS4210_I9100
+            if(i9100_tcc_lookup)i9100_tcc_bootstrap_finish(0,mr);
+#endif
             if (lab_send) printf("IOS7LAB checkin COPYIN-ERROR pid=%d id=%d result=%x\n", proc_selfpid(), lab_send_id, mr);
             if (lab_ls_send) printf("IOS7LAB LSIPC COPYIN-ERROR pid=%d id=%d result=%x\n", proc_selfpid(), lab_ls_send_id, mr);
             if (lab_boundary_send)
@@ -1103,6 +1152,7 @@ mach_msg_overwrite_trap(
 #endif
 		mr = ipc_kmsg_send(kmsg, option & MACH_SEND_TIMEOUT, msg_timeout);
 #if BOARD_CONFIG_EXYNOS4210_I9100
+        if(i9100_tcc_lookup && mr!=MACH_MSG_SUCCESS)i9100_tcc_bootstrap_finish(0,mr);
         if (i9100_ls_budget && (option & MACH_SEND_TIMEOUT) &&
             mr == MACH_SEND_TIMED_OUT)
             OSIncrementAtomic((volatile SInt32 *)&i9100_ls_bootstrap_diag[1]);

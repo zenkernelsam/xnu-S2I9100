@@ -142,6 +142,7 @@ static void i9100_addressbook_file_note(struct proc *p,unsigned code,void *args,
     char text[128]={0};size_t copied=0;
     int copy_error=copyinstr(path,text,sizeof(text),&copied);text[127]=0;
     if(copy_error && copy_error!=ENAMETOOLONG)return;
+    if(!strncmp(text,"/System/",8))return; /* Shared-cache framework probes are unrelated to the data store. */
     unsigned matched=0;
     for(unsigned i=0;i+11U<=sizeof(text) && text[i];i++)
         if(!strncmp(text+i,"AddressBook",11)){matched=1;break;}
