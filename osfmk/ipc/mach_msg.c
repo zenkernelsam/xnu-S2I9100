@@ -151,9 +151,61 @@ static int i9100_xpc_boundary_enabled(void);
 volatile uint32_t i9100_tcc_wire_diag[1+64*140];
 volatile uint32_t i9100_ls_wire_diag[1+64*48];
 static volatile UInt32 i9100_service_wire_guard[2];
+/* Full publish envelopes must survive the many ordinary get-store calls.
+ * Send completion updates only this copied record, never a consumed kmsg. */
+volatile uint32_t i9100_ls_publish_wire_diag[1+16*352];
+static volatile UInt32 i9100_ls_publish_guard;
+static unsigned i9100_ls_publish_record(unsigned stage, ipc_kmsg_t kmsg,
+    mach_msg_option_t option, mach_msg_return_t status)
+{
+    if (!kmsg || !kmsg->ikm_header) return 0;
+    const mach_msg_header_t *h = kmsg->ikm_header;
+    uintptr_t begin=(uintptr_t)(kmsg+1), address=(uintptr_t)h;
+    if (address<begin || address-begin>kmsg->ikm_size) return 0;
+    unsigned available=kmsg->ikm_size-(address-begin);
+    if (available<sizeof(*h)) return 0;
+    if ((h->msgh_id != 14008 && h->msgh_id != 14108) || !i9100_xpc_boundary_enabled()) return 0;
+    char name[16] = {0}; proc_name(proc_selfpid(), name, sizeof(name));
+    if (strcmp(name,"lsd") && strcmp(name,"installd") && strcmp(name,"SpringBoard")) return 0;
+    unsigned length=h->msgh_size;
+    if (length<sizeof(*h) || length>available) return 0;
+    unsigned wire=length,sender=UINT32_MAX,euid=UINT32_MAX,offset=round_msg(length);
+    if ((stage==3 || stage==4) && offset<=available && available-offset>=sizeof(mach_msg_audit_trailer_t)) {
+        const mach_msg_audit_trailer_t *t=(const void *)(address+offset);
+        if(t->msgh_trailer_type==MACH_MSG_TRAILER_FORMAT_0 &&
+           t->msgh_trailer_size>=sizeof(*t) && t->msgh_trailer_size<=MAX_TRAILER_SIZE &&
+           t->msgh_trailer_size<=available-offset){
+            sender=t->msgh_audit.val[5];euid=t->msgh_audit.val[1];
+            if(offset+t->msgh_trailer_size<=1344)length=offset+t->msgh_trailer_size;
+        }
+    }
+    if(length>1344)length=1344;
+    if(!OSCompareAndSwap(0U,1U,&i9100_ls_publish_guard))return 0;
+    unsigned sequence=i9100_ls_publish_wire_diag[0]+1U;if(!sequence)sequence=1;
+    volatile uint32_t *r=&i9100_ls_publish_wire_diag[1+((sequence-1U)&15U)*352];
+    memset((void *)r,0,352*4);
+    r[1]=proc_selfpid();r[2]=(uint32_t)(uintptr_t)current_thread();r[3]=stage;
+    r[4]=h->msgh_id;r[5]=wire;r[6]=length;r[7]=h->msgh_bits;r[8]=option;r[9]=status;
+    r[10]=sender;r[11]=euid;
+    if(stage==2){r[12]=1;r[13]=MACH_MSG_SUCCESS;}
+    memcpy((void *)&r[16],h,length);
+    OSMemoryBarrier();r[0]=sequence;i9100_ls_publish_wire_diag[0]=sequence;
+    OSMemoryBarrier();i9100_ls_publish_guard=0;return sequence;
+}
+static void i9100_ls_publish_finish(unsigned sequence, unsigned sending, mach_msg_return_t status)
+{
+    if(!sequence || !OSCompareAndSwap(0U,1U,&i9100_ls_publish_guard))return;
+    volatile uint32_t *r=&i9100_ls_publish_wire_diag[1+((sequence-1U)&15U)*352];
+    if(r[0]==sequence && r[1]==(unsigned)proc_selfpid() &&
+       r[2]==(uint32_t)(uintptr_t)current_thread()){
+        unsigned field=sending?14:12;r[field]=0;r[field+1]=status;OSMemoryBarrier();r[field]=1;
+    }
+    OSMemoryBarrier();i9100_ls_publish_guard=0;
+}
 static void i9100_service_wire_record(unsigned stage, ipc_kmsg_t kmsg,
     mach_msg_option_t option, mach_msg_return_t status)
 {
+    if(stage==3 || stage==4)(void)i9100_ls_publish_record(stage,kmsg,option,status);
     if (!kmsg || !kmsg->ikm_header || !i9100_xpc_boundary_enabled()) return;
     const mach_msg_header_t *header = kmsg->ikm_header;
     char name[16] = {0};
@@ -1155,6 +1207,7 @@ mach_msg_overwrite_trap(
 #if BOARD_CONFIG_EXYNOS4210_I9100
         unsigned int i9100_ls_budget = 0;
         unsigned int i9100_tcc_lookup = 0;
+        unsigned int i9100_ls_publish_sequence = 0;
 #endif
 
 		mr = ipc_kmsg_get(msg_addr, send_size, &kmsg);
@@ -1169,6 +1222,7 @@ mach_msg_overwrite_trap(
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
         i9100_service_wire_record(1, kmsg, option, mr);
+        i9100_ls_publish_sequence=i9100_ls_publish_record(1,kmsg,option,mr);
         i9100_tcc_lookup=i9100_tcc_bootstrap_send(kmsg);
         i9100_ls_budget = i9100_ls_bootstrap_send_budget(kmsg->ikm_header,
             option, send_size, rcv_size, msg_timeout);
@@ -1199,6 +1253,9 @@ mach_msg_overwrite_trap(
                    (unsigned)kmsg->ikm_header->msgh_remote_port, kmsg->ikm_header->msgh_bits, option);
 #endif
 		mr = ipc_kmsg_copyin(kmsg, space, map, option & MACH_SEND_NOTIFY);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        i9100_ls_publish_finish(i9100_ls_publish_sequence,0,mr);
+#endif
 #if BOARD_CONFIG_QSD8250_LEO
         leo_rpc060_note(leo_rpc060_seq,mr==MACH_MSG_SUCCESS?LEO_RPC060_COPYIN:LEO_RPC060_DONE,(uint32_t)mr,0);
 #endif
@@ -1263,8 +1320,12 @@ mach_msg_overwrite_trap(
             }
         }
 #endif
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        i9100_ls_publish_sequence=i9100_ls_publish_record(2,kmsg,option,MACH_MSG_SUCCESS);
+#endif
 		mr = ipc_kmsg_send(kmsg, option & MACH_SEND_TIMEOUT, msg_timeout);
 #if BOARD_CONFIG_EXYNOS4210_I9100
+        i9100_ls_publish_finish(i9100_ls_publish_sequence,1,mr);
         if(i9100_tcc_lookup && mr!=MACH_MSG_SUCCESS)i9100_tcc_bootstrap_finish(0,mr);
         if (i9100_ls_budget && (option & MACH_SEND_TIMEOUT) &&
             mr == MACH_SEND_TIMED_OUT)
