@@ -506,6 +506,22 @@ void ios7i9100_abort_publish(const struct I9100AbortTrace *record)
     __asm__ volatile("msr cpsr_c,%0" :: "r"(mask) : "memory");
 }
 
+void ios7i9100_backboard_stderr_bytes(unsigned pid, unsigned task, const char *bytes, unsigned size)
+{
+    unsigned mask;
+    __asm__ volatile("mrs %0,cpsr\n\tcpsid if" : "=r"(mask) :: "memory");
+    i9100_stderr_append_to(&i9100_backboard_stderr_buffer, pid, task, bytes, size);
+    __asm__ volatile("msr cpsr_c,%0" :: "r"(mask) : "memory");
+}
+
+void ios7i9100_backboard_abort_publish(const struct I9100AbortTrace *record)
+{
+    unsigned mask;
+    __asm__ volatile("mrs %0,cpsr\n\tcpsid if" : "=r"(mask) :: "memory");
+    i9100_abort_store_to(&i9100_backboard_abort_observation, &i9100_backboard_stderr_buffer, record);
+    __asm__ volatile("msr cpsr_c,%0" :: "r"(mask) : "memory");
+}
+
 void ios7i9100_signal_request(unsigned pid, unsigned task, unsigned signal,
     unsigned context_pid, const char *name, unsigned pc, unsigned lr,
     unsigned caller_pc, unsigned irq, unsigned flavor)

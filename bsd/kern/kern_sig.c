@@ -189,10 +189,11 @@ volatile uint32_t i9100_tccd_error_diag[4 + 32];
 static void i9100_springboard_abort_note(proc_t p, int signum)
 {
     int tccd = !strcmp(p->p_comm, "tccd");
-    if (signum != SIGABRT || (strcmp(p->p_comm, "SpringBoard") && !tccd) ||
+    int backboard = !strcmp(p->p_comm, "backboardd");
+    if (signum != SIGABRT || (strcmp(p->p_comm, "SpringBoard") && !tccd && !backboard) ||
         current_proc() != p || get_threadtask(current_thread()) != p->task ||
         ml_at_interrupt_context() || !ml_get_interrupts_enabled()) return;
-    if (tccd) {
+    if (tccd || backboard) {
         int enabled = 0;
         if (!PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) ||
             enabled != 1) return;
@@ -243,7 +244,7 @@ static void i9100_springboard_abort_note(proc_t p, int signum)
      * __assert_rtn saved r8 at FP-16 (descriptor) and r5 at FP-4 (magic).
      * Read only through copyin; unrelated assertions never enter this path. */
     unsigned slide = record.frames[0] - 0x38188fddU;
-    if (!tccd && record.count >= 4 && !(slide & 4095U) && slide < 0x40000000U-0x38188fddU &&
+    if (!tccd && !backboard && record.count >= 4 && !(slide & 4095U) && slide < 0x40000000U-0x38188fddU &&
         record.frames[1] == 0x38168cafU + slide &&
         record.frames[2] == 0x2f918b0bU + slide &&
         record.frames[3] == 0x2f909d4fU + slide && assert_fp >= 16) {
@@ -266,7 +267,7 @@ static void i9100_springboard_abort_note(proc_t p, int signum)
      *   localSP+36 = bucket list-link address, +40 = expected magic.
      * Capture the list's candidate pointer, including bad alignment, rather
      * than rounding it to a different page. No allocator repair or signal change. */
-    if (!tccd && record.count >= 4 && !(slide & 4095U) && slide < 0x40000000U-0x38188fddU &&
+    if (!tccd && !backboard && record.count >= 4 && !(slide & 4095U) && slide < 0x40000000U-0x38188fddU &&
         record.frames[1] == 0x38168cafU + slide &&
         record.frames[2] == 0x2f8f84cdU + slide &&
         record.frames[3] == 0x2f8f8313U + slide &&
@@ -286,7 +287,8 @@ static void i9100_springboard_abort_note(proc_t p, int signum)
                 record.slab_status = 1;
         }
     }
-    ios7i9100_abort_publish(&record);
+    if (backboard) ios7i9100_backboard_abort_publish(&record);
+    else ios7i9100_abort_publish(&record);
 }
 #endif
 #if BOARD_CONFIG_QSD8250_LEO

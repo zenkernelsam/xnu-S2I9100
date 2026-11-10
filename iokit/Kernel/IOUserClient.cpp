@@ -59,6 +59,10 @@ extern "C" {
 
 #include "IOServicePrivate.h"
 #include "IOKitKernelInternal.h"
+/* Kernel IPC exposes the proper nonblocking primitive; do not import its
+ * private message layout into the IOKit component's exported-header build. */
+extern "C" mach_msg_return_t mach_msg_send_from_kernel_nonblocking(
+    mach_msg_header_t *, mach_msg_size_t);
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 #include <pexpert/pexpert.h>
@@ -1475,6 +1479,19 @@ IOReturn IOUserClient::sendAsyncResult(OSAsyncReference reference,
 IOReturn IOUserClient::sendAsyncResult64(OSAsyncReference64 reference,
                                         IOReturn result, io_user_reference_t args[], UInt32 numArgs)
 {
+    return sendAsyncResult64Internal(reference, result, args, numArgs, false);
+}
+
+IOReturn IOUserClient::sendAsyncResult64Nonblocking(OSAsyncReference64 reference,
+                                        IOReturn result, io_user_reference_t args[], UInt32 numArgs)
+{
+    return sendAsyncResult64Internal(reference, result, args, numArgs, true);
+}
+
+IOReturn IOUserClient::sendAsyncResult64Internal(OSAsyncReference64 reference,
+                                        IOReturn result, io_user_reference_t args[], UInt32 numArgs,
+                                        bool nonblocking)
+{
     struct ReplyMsg
     {
 	mach_msg_header_t msgHdr;
@@ -1505,6 +1522,8 @@ IOReturn IOUserClient::sendAsyncResult64(OSAsyncReference64 reference,
     
     if (numArgs > kMaxAsyncArgs)
         return kIOReturnMessageTooLarge;
+
+    bzero(&replyMsg, sizeof(replyMsg));
 
     replyMsg.msgHdr.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND /*remote*/,
 						0 /*local*/);
@@ -1546,9 +1565,12 @@ IOReturn IOUserClient::sendAsyncResult64(OSAsyncReference64 reference,
 	    replyMsg.m.msg32.args[idx] = REF32(args[idx]);
     }
 
-     kr = mach_msg_send_from_kernel_proper( &replyMsg.msgHdr,
-            replyMsg.msgHdr.msgh_size);
-    if( KERN_SUCCESS != kr)
+    if (nonblocking) {
+        kr = mach_msg_send_from_kernel_nonblocking(&replyMsg.msgHdr, replyMsg.msgHdr.msgh_size);
+    } else {
+        kr = mach_msg_send_from_kernel_proper(&replyMsg.msgHdr, replyMsg.msgHdr.msgh_size);
+    }
+    if (kr != KERN_SUCCESS && !nonblocking)
         IOLog("%s: mach_msg_send_from_kernel_proper {%x}\n", __FILE__, kr );
     return kr;
 }

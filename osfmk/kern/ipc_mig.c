@@ -137,10 +137,11 @@ mach_msg_send_from_kernel(
 
 #endif /* IKM_SUPPORT_LEGACY */
 
-mach_msg_return_t
-mach_msg_send_from_kernel_proper(
+static mach_msg_return_t
+mach_msg_send_from_kernel_policy(
 	mach_msg_header_t	*msg,
-	mach_msg_size_t		send_size)
+	mach_msg_size_t		send_size,
+	mach_msg_option_t	option)
 {
 	ipc_kmsg_t kmsg;
 	mach_msg_return_t mr;
@@ -155,12 +156,24 @@ mach_msg_send_from_kernel_proper(
 		return mr;
 	}
 
-	mr = ipc_kmsg_send_always(kmsg);
+	mr = ipc_kmsg_send(kmsg, option, MACH_MSG_TIMEOUT_NONE);
 	if (mr != MACH_MSG_SUCCESS) {
 		ipc_kmsg_destroy(kmsg);
 	}
 
 	return mr;
+}
+
+mach_msg_return_t
+mach_msg_send_from_kernel_proper(mach_msg_header_t *msg, mach_msg_size_t send_size)
+{
+    return mach_msg_send_from_kernel_policy(msg, send_size, MACH_SEND_ALWAYS);
+}
+
+mach_msg_return_t
+mach_msg_send_from_kernel_nonblocking(mach_msg_header_t *msg, mach_msg_size_t send_size)
+{
+    return mach_msg_send_from_kernel_policy(msg, send_size, MACH_SEND_TIMEOUT);
 }
 
 #if IKM_SUPPORT_LEGACY

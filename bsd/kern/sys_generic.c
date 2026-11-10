@@ -177,7 +177,7 @@ static unsigned i9100_ui_stderr_note(proc_t p, int fd, user_addr_t base,
     unsigned mdns_role = i9100_mdns_observation_role(p->p_comm);
     if (strcmp(p->p_comm, "SpringBoard")) {
         int enabled = 0;
-        if ((!mdns_role && strcmp(p->p_comm, "tccd")) ||
+        if ((!mdns_role && strcmp(p->p_comm, "tccd") && strcmp(p->p_comm, "backboardd")) ||
             !PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) || enabled != 1)
             return 0;
     }
@@ -194,6 +194,8 @@ static unsigned i9100_ui_stderr_note(proc_t p, int fd, user_addr_t base,
             break;
         }
         if (mdns_role) i9100_mdns_stderr_store(p, mdns_role, bytes, count, 0);
+        else if (!strcmp(p->p_comm, "backboardd"))
+            ios7i9100_backboard_stderr_bytes((unsigned)p->p_pid, (unsigned)(uintptr_t)p->task, bytes, count);
         else ios7i9100_stderr_bytes((unsigned)p->p_pid, (unsigned)(uintptr_t)p->task, bytes, count);
         used += count;
     }
@@ -746,7 +748,7 @@ wr_uio(struct proc *p, int fdes, uio_t uio, user_ssize_t *retval)
 
 	context.vc_ucred = fp->f_cred;
 #if BOARD_CONFIG_EXYNOS4210_I9100
-    if (fdes == 2 && !strcmp(p->p_comm, "SpringBoard")) {
+    if (fdes == 2 && (!strcmp(p->p_comm, "SpringBoard") || !strcmp(p->p_comm, "backboardd"))) {
         unsigned budget = 512;
         for (int n = 0; n < uio_iovcnt(uio) && n < 8 && budget; n++) {
             user_addr_t base;

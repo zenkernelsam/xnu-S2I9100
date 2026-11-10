@@ -401,7 +401,9 @@ bool IOHIDEventService::publishProperties(void)
  setProperty("ProductID",1,32);setProperty("ReportInterval",20000,32);setProperty("QueueSize",4096,32);
  OSDictionary *pair=OSDictionary::withCapacity(2);OSArray *pairs=OSArray::withCapacity(1);
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
- OSNumber *page=OSNumber::withNumber(homeDevice?12:13,32),*usage=OSNumber::withNumber(homeDevice?1:4,32);
+ /* Keep the advertised usage pair with the primary usage that the iOS6
+  * multitouch matcher actually selected, rather than a generic digitizer. */
+ OSNumber *page=OSNumber::withNumber(homeDevice?12:0xff00,32),*usage=OSNumber::withNumber(homeDevice?1:4,32);
 #else
  OSNumber *page=OSNumber::withNumber(13,32),*usage=OSNumber::withNumber(4,32);
 #endif

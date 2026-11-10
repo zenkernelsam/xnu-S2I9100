@@ -255,6 +255,13 @@ protected:
 
     static IOReturn sendAsyncResult64(OSAsyncReference64 reference,
                                         IOReturn result, io_user_reference_t args[], UInt32 numArgs);
+    /* Periodic notifications may skip a tick when their receive queue is
+     * full. Preserve the ordinary async wire format without SEND_ALWAYS. */
+    static IOReturn sendAsyncResult64Nonblocking(OSAsyncReference64 reference,
+                                     IOReturn result, io_user_reference_t args[], UInt32 numArgs);
+    static IOReturn sendAsyncResult64Internal(OSAsyncReference64 reference,
+                                     IOReturn result, io_user_reference_t args[], UInt32 numArgs,
+                                     bool nonblocking);
     static void setAsyncReference64(OSAsyncReference64 asyncRef,
 					mach_port_t wakePort,
 					mach_vm_address_t callback, io_user_reference_t refcon);

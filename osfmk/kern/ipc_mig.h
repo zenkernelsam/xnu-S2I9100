@@ -146,6 +146,11 @@ extern mach_msg_return_t mach_msg_send_from_kernel_proper(
 	mach_msg_header_t	*msg,
 	mach_msg_size_t		send_size);
 
+/* Proper kernel rights, ordinary queue limit, zero send deadline. */
+extern mach_msg_return_t mach_msg_send_from_kernel_nonblocking(
+	mach_msg_header_t	*msg,
+	mach_msg_size_t		send_size);
+
 #define mach_msg_send_from_kernel mach_msg_send_from_kernel_proper
 
 extern mach_msg_return_t

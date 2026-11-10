@@ -1,6 +1,6 @@
 /* Bounded UI-startup stderr and SIGABRT snapshots. Optional tccd observation
- * shares the latest-record slot; PID/task checks prevent attribution to an
- * unrelated SpringBoard exit. No termination or permission policy. */
+ * shares the SpringBoard slot. Backboard has a separate retained record.
+ * PID/task checks prevent cross-attribution. No termination/permission policy. */
 #ifndef I9100_ABORT_OBSERVATION_H
 #define I9100_ABORT_OBSERVATION_H
 #define I9100_ABORT_TEXT 240U
@@ -18,6 +18,8 @@ struct I9100AbortObservation {
 };
 void ios7i9100_stderr_bytes(unsigned, unsigned, const char *, unsigned);
 void ios7i9100_abort_publish(const struct I9100AbortTrace *);
+void ios7i9100_backboard_stderr_bytes(unsigned, unsigned, const char *, unsigned);
+void ios7i9100_backboard_abort_publish(const struct I9100AbortTrace *);
 
 #ifdef I9100_ABORT_IMPLEMENTATION
 struct I9100StderrBuffer {
@@ -25,16 +27,17 @@ struct I9100StderrBuffer {
     char ring[512], line[I9100_ABORT_TEXT+1], diagnostic[I9100_ABORT_TEXT+1];
 };
 static struct I9100StderrBuffer i9100_stderr_buffer;
+static struct I9100StderrBuffer i9100_backboard_stderr_buffer;
 volatile struct I9100AbortObservation i9100_abort_observation;
+volatile struct I9100AbortObservation i9100_backboard_abort_observation;
 
 /* Raw IRQ/FIQ serialization is supplied by the board entry points. Matching
  * spans write/writev fragments. Keep the first diagnostic line, so a subsequent
  * stack dump or libc++abi footer cannot erase the exception's reason. */
-static void i9100_stderr_append(unsigned pid, unsigned task, const char *bytes,
-                                unsigned size)
+static void i9100_stderr_append_to(struct I9100StderrBuffer *b, unsigned pid,
+                                  unsigned task, const char *bytes, unsigned size)
 {
     static const char *patterns[3] = {"uncaught exception", "assertion failed", "malloc:"};
-    struct I9100StderrBuffer *b = &i9100_stderr_buffer;
     if (b->pid != pid || b->task != task) {
         b->pid = pid; b->task = task; b->head = b->used = b->length = b->critical = 0;
         b->diagnostic[0] = b->line[0] = 0;
@@ -71,9 +74,15 @@ static void i9100_stderr_append(unsigned pid, unsigned task, const char *bytes,
     }
 }
 
-static void i9100_abort_store(const struct I9100AbortTrace *in)
+static void i9100_stderr_append(unsigned pid, unsigned task, const char *bytes, unsigned size)
 {
-    volatile struct I9100AbortObservation *out = &i9100_abort_observation;
+    i9100_stderr_append_to(&i9100_stderr_buffer, pid, task, bytes, size);
+}
+
+static void i9100_abort_store_to(volatile struct I9100AbortObservation *out,
+                                struct I9100StderrBuffer *b,
+                                const struct I9100AbortTrace *in)
+{
     unsigned next = out->sequence + 1U;
     out->sequence = 0;
     out->trace.pid = in->pid; out->trace.task = in->task;
@@ -86,7 +95,6 @@ static void i9100_abort_store(const struct I9100AbortTrace *in)
     out->trace.slab_status = in->slab_status;
     out->text_kind = 0;
     unsigned used = 0;
-    struct I9100StderrBuffer *b = &i9100_stderr_buffer;
     if (b->pid == in->pid && b->task == in->task) {
         const char *line = b->diagnostic[0] ? b->diagnostic : b->critical ? b->line : NULL;
         if (line) {
@@ -103,6 +111,11 @@ static void i9100_abort_store(const struct I9100AbortTrace *in)
     }
     for (; used <= I9100_ABORT_TEXT; used++) out->text[used] = 0;
     out->sequence = next ? next : 1U;
+}
+
+static void i9100_abort_store(const struct I9100AbortTrace *in)
+{
+    i9100_abort_store_to(&i9100_abort_observation, &i9100_stderr_buffer, in);
 }
 
 /* Render only for the matching retained SIGABRT exit, after respawn as well. */

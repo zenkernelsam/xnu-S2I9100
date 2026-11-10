@@ -1166,7 +1166,13 @@ void IOS7LabFramebufferClient::emitVsyncGated(IOTimerEventSource *sender)
     IOLockUnlock(transactionLock);
     retain();sender->retain();
     leo_graphics_send_attempt();
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    IOReturn result=sendAsyncResult64Nonblocking(reference,kIOReturnSuccess,values,6);
+    bool temporary = result == MACH_SEND_TIMED_OUT || result == MACH_SEND_NO_BUFFER;
+#else
     IOReturn result=sendAsyncResult64(reference,kIOReturnSuccess,values,6);
+    bool temporary = false;
+#endif
     releaseNotificationPort(heldPort);
     leo_graphics_send_result((uint32_t)result);
     static unsigned int logs;
@@ -1185,8 +1191,10 @@ void IOS7LabFramebufferClient::emitVsyncGated(IOTimerEventSource *sender)
     IOLockLock(transactionLock);
     bool current=vsyncGeneration==generation;
     bool rearm=current && !vsyncClosed && vsyncRequested && vsyncEnabled &&
-               IPC_PORT_VALID(vsyncPort) && vsyncCallback && result==kIOReturnSuccess;
-    if(current && result!=kIOReturnSuccess)vsyncEnabled=false;
+               IPC_PORT_VALID(vsyncPort) && vsyncCallback && (result==kIOReturnSuccess || temporary);
+    /* A skipped periodic tick is not a delivery success. Keep pacing armed
+     * for a fresh later tick; invalid/dead destinations still stop it. */
+    if(current && result!=kIOReturnSuccess && !temporary)vsyncEnabled=false;
     LeoGraphicsCall note={0,0,LEO_GRAPHICS_REASON_NONE,UINT32_MAX,false};
     LeoGraphicsEvent event=graphicsEvent(current?LEO_GRAPHICS_EVENT_SEND_FAILURE:
         LEO_GRAPHICS_EVENT_STALE_SEND,9,result,note);
