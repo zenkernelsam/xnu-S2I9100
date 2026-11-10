@@ -56,6 +56,9 @@ static inline void ios6_digitizer_wire(const uint8_t *src,IOS6HIDDigitizer *out,
   * alignment on a class member. The 72-byte digitizer payload is unchanged. */
  uint8_t *bytes=(uint8_t *)out;
  for(unsigned n=0;n<72;n++)bytes[32+n]=src[16+n];
+ /* iOS6 IOHIDEventCreateDigitizerFingerEvent passes 0x22, and its
+  * public enum defines Hand=0x23. The iOS7 producer's 2/3 are not these IDs. */
+ if(out->transducerType==2 || out->transducerType==3)out->transducerType+=0x20;
 }
 static inline bool ios6_touch_wire(const LeoHIDPacket *src,IOS6TouchPacket *out)
 {

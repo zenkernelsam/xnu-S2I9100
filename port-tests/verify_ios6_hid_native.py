@@ -121,7 +121,9 @@ class Native:
         children = self.arrays.get(self.u32(event+0x18), [])
         result['children'] = [dict(type=self.call(0x31d220a8, child),
             size=self.u32(child+0x20), depth=self.uc.mem_read(child+0x34,1)[0],
-            x=self.u32(child+0x40), y=self.u32(child+0x44)) for child in children]
+            x=self.u32(child+0x40), y=self.u32(child+0x44),
+            transducer_type=self.u32(child+0x50)) for child in children]
+        if result['type']==11:result['transducer_type']=self.u32(event+0x50)
         return result
 
 
@@ -145,7 +147,17 @@ def main():
         assert results['home7'].get('keyboard') != [12, 64, 1]
         assert results['touch6']['type'] == 11 and results['touch6']['size'] == 104
         child, = results['touch6']['children']
-        assert child == dict(type=11, size=104, depth=1, x=240*65536//479, y=400*65536//799)
+        # Native factory instruction at31d21d36 is movs r3,#0x22;
+        # the generic factory stores r3 as the transducer type at+50h.
+        def fileoff(va):
+            mo,mc=struct.unpack_from('<2I',cache,16)
+            maps=[struct.unpack_from('<QQQII',cache,mo+n*32) for n in range(mc)]
+            for start,size,offset,_,_ in maps:
+                if start<=va<start+size:return offset+va-start
+            raise ValueError(hex(va))
+        assert cache[fileoff(0x31d21d36):fileoff(0x31d21d36)+2]==b'\x22\x23'
+        assert results['touch6']['transducer_type']==0x23
+        assert child == dict(type=11, size=104, depth=1, x=240*65536//479, y=400*65536//799,transducer_type=0x22)
         report = dict(result='PASS original iOS6 HID instructions', cf_runtime='modeled',
                       decoder='0x31d2329c', getters=['0x31d220a8','0x31d22250'], results=results)
         a.output.write_text(json.dumps(report, indent=2)+'\n')
