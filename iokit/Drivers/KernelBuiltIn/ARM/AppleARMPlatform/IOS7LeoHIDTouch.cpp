@@ -513,9 +513,10 @@ void IOHIDEventService::pollHome(void)
 {
  IOLockLock(lock);
  unsigned down=i9100_home_down(readRegister(this,1,I9100_HOME_DAT));
- unsigned physical=down;uint64_t now=mach_absolute_time(),delay=0,hold=0;
- nanoseconds_to_absolutetime(5000000000ULL,&delay);
- nanoseconds_to_absolutetime(200000000ULL,&hold);
+ unsigned physical=down;uint64_t now=mach_absolute_time();AbsoluteTime delayTime,holdTime;
+ nanoseconds_to_absolutetime(5000000000ULL,&delayTime);
+ nanoseconds_to_absolutetime(200000000ULL,&holdTime);
+ uint64_t delay=__OSAbsoluteTime(delayTime),hold=__OSAbsoluteTime(holdTime);
  down=i9100_home_test_sample(&homeTest,physical,opened,now,delay,hold);
  i9100_home_test_diag[0]=homeTest.enabled;i9100_home_test_diag[1]=homeTest.phase;
  i9100_home_test_diag[2]=physical;i9100_home_test_diag[3]=down;
