@@ -272,8 +272,12 @@ done:
 #endif
 
 
+/* ARMv7 iOS6/7 uses five/seven saved register words for these traps even
+ * though mach_vm_address_t/mach_vm_size_t are narrowed inside this kernel.
+ * Share the verified Leo wire decoder with Samsung: the native C struct
+ * would otherwise read address_high as size and silently unmap zero bytes. */
 /* IOS7LEO_VM_RANGE054_BEGIN */
-#if BOARD_CONFIG_QSD8250_LEO
+#if BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
 #include "ios7lab_vm_range_wire.h"
 #include "IOS7LeoVmRangeObservation.h"
 #include <machine/machine_routines.h>
@@ -480,7 +484,7 @@ done:
 int
 _kernelrpc_mach_vm_deallocate_trap(struct _kernelrpc_mach_vm_deallocate_args *args)
 {
-#if BOARD_CONFIG_QSD8250_LEO
+#if BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
     return ios7leo_vm_deallocate64((struct ios7lab_vm_range_wire *)args);
 #endif
 	task_t task = port_name_to_task(args->target);
@@ -500,7 +504,7 @@ done:
 int
 _kernelrpc_mach_vm_protect_trap(struct _kernelrpc_mach_vm_protect_args *args)
 {
-#if BOARD_CONFIG_QSD8250_LEO
+#if BOARD_CONFIG_QSD8250_LEO || BOARD_CONFIG_EXYNOS3475_J1XLTE || BOARD_CONFIG_EXYNOS4210_I9100
     return ios7leo_vm_protect64((struct ios7lab_vm_protect_wire *)args);
 #endif
 	task_t task = port_name_to_task(args->target);
