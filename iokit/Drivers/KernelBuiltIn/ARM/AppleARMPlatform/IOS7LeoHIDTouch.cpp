@@ -26,6 +26,7 @@
 #include "IOS7LeoTouchWire.h"
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 #include "i9100_home.h"
+#include "IOS6I9100HIDWire.h"
 #include "i9100_home_observation.h"
 #include "I9100HomeTest.h"
 #include "i9100_touch_observation.h"
@@ -137,7 +138,7 @@ class IOHIDEventService : public IOService {
  IOS7LeoHIDTouchClient *consumer;
  LeoTouchState state;
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
- bool homeDevice;
+ bool homeDevice,ios6Wire;
  uint32_t homeSavedCon,homeSavedPull;
  I9100HomeState homeState;
  I9100HomeTest homeTest;
@@ -167,6 +168,7 @@ class IOHIDEventService : public IOService {
  void poll(void);
  bool publishProperties(void);
  void commitPacket(void);
+ bool enqueuePacket(void);
  void closeReader(void);
  void publishSnapshot(void);
 public:
@@ -211,6 +213,7 @@ bool IOHIDEventService::init(OSDictionary *dictionary)
  bzero(&state,sizeof(state));
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
  homeDevice=getProperty("I9100HomeButton")!=0;homeSavedCon=homeSavedPull=0;
+ int wireABI=0;PE_parse_boot_argn("i9100hidabi",&wireABI,sizeof(wireABI));ios6Wire=wireABI==6;
  i9100_home_reset(&homeState);bzero(&lastHomePacket,sizeof(lastHomePacket));lastHomeValid=false;
  bzero(&homeTest,sizeof(homeTest));
  if(homeDevice){int diagnostic=0,control=0,enabled=0;
@@ -508,6 +511,18 @@ void IOHIDEventService::commitPacket(void)
  previousDown=down;bcopy(&pendingPacket,&lastPacket,sizeof(lastPacket));lastValid=true;pending=false;
  publishSnapshot();
 }
+bool IOHIDEventService::enqueuePacket(void)
+{
+ if(!queue->sane())return false;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+ if(ios6Wire){
+  IOS6TouchPacket packet;
+  if(!ios6_touch_wire(&pendingPacket,&packet))return false;
+  return queue->enqueue(&packet,sizeof(packet));
+ }
+#endif
+ return queue->enqueue(&pendingPacket,sizeof(pendingPacket));
+}
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 void IOHIDEventService::pollHome(void)
 {
@@ -532,12 +547,18 @@ void IOHIDEventService::pollHome(void)
  for(unsigned n=0;n<16 && homeState.count;n++){
   I9100HomeEdge *edge=&homeState.edges[homeState.head];I9100HomePacket packet;
   if(!i9100_home_packet(edge->down,edge->timestamp,getRegistryEntryID(),&packet))break;
-  if(!queue->sane() || !queue->enqueue(&packet,sizeof(packet)))break;
+  if(!queue->sane())break;
+  unsigned bytes=sizeof(packet);
+  if(ios6Wire){
+   IOS6HomePacket wire;
+   if(!ios6_home_wire(&packet,&wire) || !queue->enqueue(&wire,sizeof(wire)))break;
+   bytes=sizeof(wire);
+  }else if(!queue->enqueue(&packet,sizeof(packet)))break;
   bcopy(&packet,&lastHomePacket,sizeof(lastHomePacket));lastHomeValid=true;
   homeState.head=(homeState.head+1U)&15U;homeState.count--;
   unsigned sent=i9100_home_observation.enqueued;
   if(sent!=UINT32_MAX)i9100_home_observation.enqueued=sent+1U;
-  if(eventLogs<12){eventLogs++;IOLog("I9100 HOME %s enqueued\n",edge->down?"down":"up");}
+  if(eventLogs<12){eventLogs++;IOLog("I9100 HOME %s enqueued bytes=%u abi=%u\n",edge->down?"down":"up",bytes,ios6Wire?6U:7U);}
  }
  publishSnapshot();
  IOLockUnlock(lock);
@@ -559,7 +580,7 @@ void IOHIDEventService::poll(void)
   * no new input/read errors. Observation never initiates hardware reads. */
  publishSnapshot();
  if(pending && opened){
-  if(!queue->sane() || !queue->enqueue(&pendingPacket,sizeof(pendingPacket))){leo_touch_inc(&queueFailures);publishSnapshot();IOLockUnlock(lock);return;}
+  if(!enqueuePacket()){leo_touch_inc(&queueFailures);publishSnapshot();IOLockUnlock(lock);return;}
   commitPacket();
  }
 #if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
@@ -609,7 +630,7 @@ void IOHIDEventService::poll(void)
  if(!report.down && !previousDown)continue;
  if(!leo_touch_make_hid_packet(report.x,report.y,report.down,previousDown,
   mach_absolute_time(),getRegistryEntryID(),&pendingPacket))continue;
- if(!queue->sane() || !queue->enqueue(&pendingPacket,sizeof(pendingPacket))){
+ if(!enqueuePacket()){
   pending=true;
   leo_touch_inc(&queueFailures);publishSnapshot();
   if(queueErrors<4U){++queueErrors;IOLog(TOUCH_LOG_PREFIX " queue-full-or-invalid; retained pending actual contact, no new hardware read\n");}
@@ -670,6 +691,29 @@ IOReturn IOHIDEventService::method(uint32_t selector,IOExternalMethodArguments *
   return kIOReturnSuccess;
  }
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+ if(ios6Wire && selector==2 && args->scalarInputCount==2 && args->scalarInput &&
+  !args->scalarOutputCount && args->structureOutput){
+  if(args->scalarInput[1])return kIOReturnUnsupported;
+  if(homeDevice && args->scalarInput[0]==3){
+   /* A headset/telephony matching event is not the physical Menu switch. */
+   if(!ios6_home_match(args->structureInput,args->structureInputSize))return kIOReturnNotFound;
+   if(args->structureOutputSize<sizeof(IOS6HomePacket))return kIOReturnNoSpace;
+   I9100HomePacket source;IOS6HomePacket wire;
+   IOLockLock(lock);
+   bool available=homeState.initialized &&
+    i9100_home_packet(homeState.stable,mach_absolute_time(),getRegistryEntryID(),&source) &&
+    ios6_home_wire(&source,&wire);
+   if(available){bcopy(&wire,args->structureOutput,sizeof(wire));args->structureOutputSize=sizeof(wire);}
+   IOLockUnlock(lock);return available?kIOReturnSuccess:kIOReturnNotFound;
+  }
+  if(!homeDevice && args->scalarInput[0]==11 && !args->structureInputSize){
+   if(args->structureOutputSize<sizeof(IOS6TouchPacket))return kIOReturnNoSpace;
+   IOS6TouchPacket wire;IOLockLock(lock);bool available=lastValid && ios6_touch_wire(&lastPacket,&wire);
+   if(available){bcopy(&wire,args->structureOutput,sizeof(wire));args->structureOutputSize=sizeof(wire);}
+   IOLockUnlock(lock);return available?kIOReturnSuccess:kIOReturnNotFound;
+  }
+  return kIOReturnNotFound;
+ }
  if(homeDevice && selector==2 && args->scalarInputCount==2 && args->scalarInput &&
   !args->structureInputSize && !args->scalarOutputCount && args->structureOutput &&
   args->structureOutputSize>=sizeof(lastHomePacket)){
