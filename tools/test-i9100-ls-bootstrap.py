@@ -29,6 +29,9 @@ def main():
     source=(repo/'osfmk/ipc/mach_msg.c').read_text()
     function='\n'.join(extract(source,name) for name in
         ('i9100_ls_bootstrap_budget','i9100_ls_bootstrap_peer','i9100_ls_bootstrap_store_reply'))
+    historical=subprocess.check_output(['git','show','b22387c:osfmk/ipc/mach_msg.c'],cwd=repo,text=True)
+    function += '\n' + extract(historical,'i9100_ls_bootstrap_store_reply').replace(
+        'i9100_ls_bootstrap_store_reply','historical_store_reply')
     harness=r'''
 #include <stdint.h>
 #include <stdio.h>
@@ -47,9 +50,10 @@ typedef struct {uint32_t msgh_bits,msgh_size,remote,local,reserved;int32_t msgh_
 typedef uint32_t mach_msg_return_t;
 typedef struct {uint32_t msgh_descriptor_count;} mach_msg_body_t;
 typedef union {
- struct {uint32_t address,size;uint8_t deallocate,copy,pad,type;} out_of_line;
+ struct {uint32_t address,size;uint8_t deallocate,copy,pad,type;uint32_t pad_end;} out_of_line;
  struct {uint32_t a,b;uint8_t c,d,e,type;} type;
 } mach_msg_descriptor_t;
+typedef struct {uint32_t address,size;uint8_t deallocate,copy,pad,type;} mach_msg_ool_descriptor32_t;
 typedef struct ipc_kmsg {mach_msg_header_t *ikm_header;} *ipc_kmsg_t;
 static unsigned checks;
 #define CHECK(c) do {checks++;if(!(c)){printf("FAIL %u %s\n",__LINE__,#c);return 1;}}while(0)
@@ -112,10 +116,14 @@ int main(void){
   * descriptor is TYPE0 and must never be taken for a usable store reply. */
  struct {mach_msg_header_t header;mach_msg_body_t body;mach_msg_descriptor_t d;} reply={0};
  struct ipc_kmsg message={&reply.header};
- reply.header.msgh_id=14107;reply.header.msgh_bits=0x80000000;reply.header.msgh_size=0x538;
+ CHECK(sizeof(mach_msg_descriptor_t)==16 && sizeof(mach_msg_ool_descriptor32_t)==12);
+ reply.header.msgh_id=14107;reply.header.msgh_bits=0x80000000;reply.header.msgh_size=0x53c;
  reply.body.msgh_descriptor_count=1;reply.d.out_of_line.type=1;
  reply.d.out_of_line.address=0x257000;reply.d.out_of_line.size=0x10000;
  CHECK(i9100_ls_bootstrap_store_reply(&message,0));
+ CHECK(!historical_store_reply(&message,0));
+ reply.header.msgh_size=0x538;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
+ reply.header.msgh_size=0x53c;
  CHECK(!i9100_ls_bootstrap_store_reply(&message,0x10004003));
  CHECK(!i9100_ls_bootstrap_store_reply(0,0));
  message.ikm_header=0;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));message.ikm_header=&reply.header;
@@ -125,7 +133,7 @@ int main(void){
  reply.d.out_of_line.size=0x10000;reply.body.msgh_descriptor_count=0;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
  reply.body.msgh_descriptor_count=2;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
  reply.body.msgh_descriptor_count=1;reply.header.msgh_size=36;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
- reply.header.msgh_size=0x538;reply.header.msgh_id=14108;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
+ reply.header.msgh_size=0x53c;reply.header.msgh_id=14108;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
  reply.header.msgh_id=14107;reply.header.msgh_bits=0;CHECK(!i9100_ls_bootstrap_store_reply(&message,0));
  printf("LS bootstrap budget: %u checks; original MIG handles timeout errors\n",checks);
  return 0;

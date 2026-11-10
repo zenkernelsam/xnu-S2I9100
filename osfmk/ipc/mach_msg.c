@@ -159,7 +159,8 @@ static void i9100_service_wire_record(unsigned stage, ipc_kmsg_t kmsg,
     char name[16] = {0};
     proc_name(proc_selfpid(), name, sizeof(name));
     unsigned category, stride, cap;
-    if ((header->msgh_id == 0x10000000 || header->msgh_id == 0x77303074) &&
+    if ((header->msgh_id == 0x10000000 || header->msgh_id == 0x20000000 ||
+         header->msgh_id == 0x30000000 || header->msgh_id == 0x77303074) &&
         (!strcmp(name, "tccd") || !strcmp(name, "kbd") || !strcmp(name, "SpringBoard"))) {
         category = 0; stride = 140; cap = 512;
     } else if (header->msgh_id >= 14000 && header->msgh_id < 14200 &&
@@ -616,6 +617,31 @@ extern void proc_name(int pid, char *buffer, int size);
 /* First four: budgets, timeouts, replies, ready. Last four: most recently
  * bounded request id/send size/receive size/original options (not atomic). */
 volatile uint32_t i9100_ls_bootstrap_diag[8];
+/* Native and contracted store sizes must be observed at different stages.
+ * count +16 {pid,native-size,user-size,type,bytes,initial-result,result,stage}. */
+volatile uint32_t i9100_ls_store_reply_diag[1+16*8];
+static unsigned
+i9100_ls_store_reply_record(ipc_kmsg_t kmsg, mach_msg_return_t result)
+{
+    if (result != MACH_MSG_SUCCESS || !kmsg || !kmsg->ikm_header ||
+        kmsg->ikm_header->msgh_id != 14107 || !i9100_xpc_boundary_enabled()) return 0;
+    UInt32 slot = i9100_ls_store_reply_diag[0];
+    if (slot >= 16 || !OSCompareAndSwap(slot, slot + 1, &i9100_ls_store_reply_diag[0])) return 0;
+    const mach_msg_header_t *header = kmsg->ikm_header;
+    volatile uint32_t *row = &i9100_ls_store_reply_diag[1+slot*8];
+    row[0] = proc_selfpid(); row[1] = header->msgh_size; row[2] = 0;
+    row[3] = UINT32_MAX; row[4] = 0; row[5] = result; row[6] = UINT32_MAX; row[7] = 0;
+    if ((header->msgh_bits & MACH_MSGH_BITS_COMPLEX) &&
+        header->msgh_size >= sizeof(*header) + sizeof(mach_msg_body_t) + sizeof(mach_msg_descriptor_t)) {
+        const mach_msg_body_t *body = (const void *)(header + 1);
+        if (body->msgh_descriptor_count == 1) {
+            const mach_msg_descriptor_t *d = (const void *)(body + 1);
+            row[3] = d->type.type;
+            if (d->type.type == MACH_MSG_OOL_DESCRIPTOR) row[4] = d->out_of_line.size;
+        }
+    }
+    return slot + 1;
+}
 
 static unsigned int
 i9100_ls_bootstrap_budget(const mach_msg_header_t *header, int enabled,
@@ -670,8 +696,13 @@ i9100_ls_bootstrap_store_reply(ipc_kmsg_t kmsg, mach_msg_return_t result)
     mach_msg_header_t *header;
     mach_msg_body_t *body;
     mach_msg_descriptor_t *descriptor;
+    /* iOS6 MIG checks0x538 on the user wire. The normalized kernel OOL
+     * descriptor is16 bytes instead of12, before ipc_kmsg_copyout contracts
+     * the message. Checking the wire size here leaves ready permanently0. */
+    const mach_msg_size_t native_size = 0x538U + sizeof(mach_msg_descriptor_t) -
+        sizeof(mach_msg_ool_descriptor32_t);
     if (result != MACH_MSG_SUCCESS || !kmsg || !(header = kmsg->ikm_header) ||
-        header->msgh_id != 14107 || header->msgh_size != 0x538 ||
+        header->msgh_id != 14107 || header->msgh_size != native_size ||
         !(header->msgh_bits & MACH_MSGH_BITS_COMPLEX))
         return 0;
     body = (mach_msg_body_t *)(header + 1);
@@ -894,6 +925,7 @@ mach_msg_receive_results(void)
 	mach_msg_trailer_size_t trailer_size;
 #if BOARD_CONFIG_EXYNOS4210_I9100
     int i9100_store_reply = i9100_ls_bootstrap_store_reply(kmsg, mr);
+    unsigned int i9100_store_trace = i9100_ls_store_reply_record(kmsg, mr);
     i9100_mig_error_record(kmsg, option, mr);
 #endif
 #if BOARD_CONFIG_QSD8250_LEO
@@ -979,6 +1011,8 @@ mach_msg_receive_results(void)
 #if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
     /* Copyout may contract internal OOL descriptors. kmsg is still live here. */
 #if BOARD_CONFIG_EXYNOS4210_I9100
+    if (i9100_store_trace && mr == MACH_MSG_SUCCESS)
+        i9100_ls_store_reply_diag[1+(i9100_store_trace-1)*8+2] = kmsg->ikm_header->msgh_size;
     i9100_service_wire_record(4, kmsg, option, mr);
     if (mr==MACH_MSG_SUCCESS && lab_boundary_receive==3)i9100_render_payload_record(kmsg);
     if(mr==MACH_MSG_SUCCESS)i9100_tcc_bootstrap_finish(kmsg,mr);
@@ -1012,6 +1046,10 @@ mach_msg_receive_results(void)
 			  trailer_size);
  out:
 #if BOARD_CONFIG_EXYNOS4210_I9100
+    if (i9100_store_trace) {
+        volatile uint32_t *row = &i9100_ls_store_reply_diag[1+(i9100_store_trace-1)*8];
+        row[6] = mr; OSMemoryBarrier(); row[7] = 1;
+    }
     i9100_mach_failure_record(2, msg_addr, self->ith_msize, option, mr);
     i9100_ls_bootstrap_receive_done(self, mr, i9100_store_reply);
 #endif
