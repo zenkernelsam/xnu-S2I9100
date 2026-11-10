@@ -11,6 +11,10 @@
 #include <IOKit/IOCommand.h>
 #include <libkern/OSAtomic.h>
 #include <libkern/c++/OSUnserialize.h>
+#include <libkern/c++/OSDictionary.h>
+#include <libkern/c++/OSNumber.h>
+#include <libkern/c++/OSBoolean.h>
+#include <libkern/c++/OSString.h>
 #include <IOKit/IODeviceTreeSupport.h>
 #include "IOS7LabSurfaceGeometry.h"
 #if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
@@ -289,6 +293,7 @@ static bool ios7leo_memory_room(uint32_t additional)
   ((uint64_t)additional+4095U)/4096U<=(freePages-guard)/2U;
 }
 
+#if !defined(BOARD_CONFIG_EXYNOS4210_I9100)
 static const char ios7lab_fullscreen_surface_request[] =
     "<dict><key>IOSurfaceWidth</key><integer size=\"32\">0x1e0</integer>"
     "<key>IOSurfaceMemoryRegion</key><string>PurpleGfxMem</string>"
@@ -299,6 +304,51 @@ static const char ios7lab_fullscreen_surface_request[] =
     "<key>IOSurfaceCacheMode</key><integer size=\"32\">0x400</integer>"
     "<key>IOSurfaceAllocSize</key><integer size=\"32\">0x177000</integer>"
     "<key>IOSurfaceHeight</key><integer size=\"32\">0x320</integer></dict>";
+#endif
+
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+static bool ios7lab_surface_number(OSDictionary *dict, const char *key, uint32_t *value)
+{
+    OSNumber *number = OSDynamicCast(OSNumber, dict->getObject(key));
+    if (!number || number->unsigned64BitValue() > UINT32_MAX) return false;
+    *value = (uint32_t)number->unsigned64BitValue();
+    return true;
+}
+
+/* The native iOS6 client serializes the same linear-surface properties with
+ * different dimensions and dictionary order. Validate their meaning rather
+ * than comparing one captured fullscreen serialization. Unsupported planes,
+ * memory regions and cache policies still have no backing implementation. */
+static bool ios7lab_surface_xml_geometry(const void *bytes, unsigned length,
+                                         IOS7LabSimpleSurfaceRequest *geometry)
+{
+    if (!bytes || !geometry || !length || length > 2048) return false;
+    const char *xml = (const char *)bytes;
+    if (xml[length-1]) return false;
+    for (unsigned i = 0; i + 1 < length; ++i)
+        if (!xml[i]) return false;
+    OSObject *root = OSUnserializeXML(xml);
+    OSDictionary *dict = OSDynamicCast(OSDictionary, root);
+    bool valid = false;
+    if (dict && dict->getCount() == 9) {
+        IOS7LabSimpleSurfaceRequest input = {0,0,0,0,0,0,0,0};
+        uint32_t cache = 0;
+        OSString *region = OSDynamicCast(OSString, dict->getObject("IOSurfaceMemoryRegion"));
+        OSBoolean *global = OSDynamicCast(OSBoolean, dict->getObject("IOSurfaceIsGlobal"));
+        valid = region && region->isEqualTo("PurpleGfxMem") && global && global->isTrue() &&
+            ios7lab_surface_number(dict, "IOSurfaceWidth", &input.width) &&
+            ios7lab_surface_number(dict, "IOSurfaceHeight", &input.height) &&
+            ios7lab_surface_number(dict, "IOSurfaceBytesPerRow", &input.bytesPerRow) &&
+            ios7lab_surface_number(dict, "IOSurfacePixelFormat", &input.pixelFormat) &&
+            ios7lab_surface_number(dict, "IOSurfaceBytesPerElement", &input.bytesPerElement) &&
+            ios7lab_surface_number(dict, "IOSurfaceAllocSize", &input.allocationSize) &&
+            ios7lab_surface_number(dict, "IOSurfaceCacheMode", &cache) && cache == 0x400 &&
+            ios7lab_surface_geometry(&input, geometry);
+    }
+    if (root) root->release();
+    return valid;
+}
+#endif
 
 enum {
     IOS7LabSwapMetaTransaction = 3, IOS7LabSwapMetaSurfaceZero = 4,
@@ -590,13 +640,19 @@ IOReturn IOS7LabSurfaceClient::describeOffscreen(uint32_t id,
 IOReturn IOS7LabSurfaceClient::createOffscreen(IOExternalMethodArguments *args)
 {
     if (args->scalarInputCount || !args->structureInput ||
-        args->structureInputSize != sizeof(ios7lab_fullscreen_surface_request) ||
-        memcmp(args->structureInput, ios7lab_fullscreen_surface_request,
-               sizeof(ios7lab_fullscreen_surface_request)) != 0 ||
         !args->structureOutput || args->structureOutputSize < 0x548 ||
         args->scalarOutputCount) return kIOReturnUnsupported;
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    IOS7LabSimpleSurfaceRequest geometry;
+    if (!ios7lab_surface_xml_geometry(args->structureInput, args->structureInputSize, &geometry))
+        return kIOReturnUnsupported;
+#else
+    if (args->structureInputSize != sizeof(ios7lab_fullscreen_surface_request) ||
+        memcmp(args->structureInput, ios7lab_fullscreen_surface_request,
+               sizeof(ios7lab_fullscreen_surface_request)) != 0) return kIOReturnUnsupported;
     IOS7LabSimpleSurfaceRequest geometry = {0, 0, 480, 800, 0x42475241U, 4, 1920, offscreenPixelBytes};
+#endif
     return createSurface(&geometry, args);
 }
 

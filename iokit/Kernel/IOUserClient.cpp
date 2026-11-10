@@ -69,6 +69,9 @@ volatile uint32_t i9100_framebuffer_io_diag[1+64*40];
 volatile uint32_t i9100_surface_io_diag[1+64*40];
 volatile uint32_t i9100_other_io_error_diag[1+64*40];
 volatile uint32_t i9100_hid_copy_diag[1+16*30];
+/* Eight recent native XML creates, including failed requests. The usual
+ * 32-byte prefix cannot distinguish size, format or property-order failures. */
+volatile uint32_t i9100_surface_create_diag[1+8*268];
 static volatile UInt32 i9100_display_io_guard[3];
 static void i9100_display_io_note(IOUserClient *client, const IOExternalMethodArguments *args,
     IOReturn result, unsigned structureCapacity, unsigned scalarCapacity)
@@ -106,6 +109,22 @@ static void i9100_display_io_note(IOUserClient *client, const IOExternalMethodAr
     else if (result != kIOReturnSuccess) category = 2;
     else return;
     if (!OSCompareAndSwap(0U, 1U, &i9100_display_io_guard[category])) return;
+    if (category == 1 && args->selector == 0) {
+        unsigned createSequence = i9100_surface_create_diag[0] + 1U;
+        if (!createSequence) createSequence = 1;
+        volatile uint32_t *create = &i9100_surface_create_diag[1+((createSequence-1U)&7U)*268];
+        memset((void *)create, 0, 268*4);
+        unsigned copied = args->structureInput ? args->structureInputSize : 0;
+        if (copied > 1024) copied = 1024;
+        create[1]=proc_selfpid(); create[2]=args->structureInputSize; create[3]=result;
+        create[4]=copied; create[5]=args->structureOutputSize; create[6]=structureCapacity;
+        create[7]=args->scalarInputCount; create[8]=args->scalarOutputCount;
+        create[9]=(args->structureInputDescriptor ? 1U : 0U) |
+                  (args->structureOutputDescriptor ? 2U : 0U);
+        if (copied) memcpy((void *)&create[12], args->structureInput, copied);
+        OSMemoryBarrier(); create[11]=1; create[0]=createSequence;
+        OSMemoryBarrier(); i9100_surface_create_diag[0]=createSequence;
+    }
     volatile uint32_t *table = category == 2 ? i9100_other_io_error_diag :
         category == 1 ? i9100_surface_io_diag : i9100_framebuffer_io_diag;
     unsigned sequence = table[0]+1U; if (!sequence) sequence = 1;
