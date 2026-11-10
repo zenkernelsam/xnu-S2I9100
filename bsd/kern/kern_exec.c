@@ -330,6 +330,35 @@ exec_add_user_string(struct image_params *imgp, user_addr_t str, int seg, boolea
 	return error;
 }
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+/* iOS6 AppSupport uses getpwuid only when this shared-directory key is
+ * absent. Supply the mobile directory for the UI executables while keeping
+ * explicit caller values and the native argument-space limits. */
+volatile uint32_t i9100_shared_directory_added[2];
+static int i9100_exec_shared_directory(struct image_params *imgp,unsigned pointer_size,
+    const char *name,unsigned length)
+{
+    static const char key[]="IPHONE_SHARED_RESOURCES_DIRECTORY=";
+    static const char value[]="IPHONE_SHARED_RESOURCES_DIRECTORY=/var/mobile";
+    unsigned role=length==11 && !strncmp(name,"SpringBoard",11)?1:
+        length==3 && !strncmp(name,"kbd",3)?2:0;
+    if(!role || (pointer_size!=4 && pointer_size!=8))return 0;
+    char *env=imgp->ip_endargv;
+    for(unsigned n=0;n<(unsigned)imgp->ip_envc;n++){
+        if(!strncmp(env,key,sizeof(key)-1))return 0;
+        env+=strlen(env)+1;
+    }
+    /* Our pointer, the original NULL pointer and tail alignment stay charged.
+     * A caller already at ARG_MAX keeps its original environment intact. */
+    if(imgp->ip_strspace<(int)sizeof(value) ||
+        imgp->ip_argspace<(int)(sizeof(value)+3U*pointer_size))return 0;
+    int error=exec_add_user_string(imgp,CAST_USER_ADDR_T(value),UIO_SYSSPACE,TRUE);
+    if(error)return error;
+    imgp->ip_argspace-=pointer_size;imgp->ip_envc++;
+    if(i9100_shared_directory_added[role-1]!=UINT32_MAX)i9100_shared_directory_added[role-1]++;
+    return 0;
+}
+#endif
 /*
  * exec_save_path
  *
@@ -3164,6 +3193,13 @@ exec_extract_strings(struct image_params *imgp)
 		imgp->ip_envc++;
 	}
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    if(imgp->ip_ndp && imgp->ip_ndp->ni_cnd.cn_nameptr){
+        error=i9100_exec_shared_directory(imgp,new_ptr_size,
+            imgp->ip_ndp->ni_cnd.cn_nameptr,imgp->ip_ndp->ni_cnd.cn_namelen);
+        if(error)goto bad;
+    }
+#endif
 	/* Save space for envv[] NULL terminator */
 	if (imgp->ip_argspace < new_ptr_size) {
 		error = E2BIG;
