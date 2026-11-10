@@ -27,6 +27,7 @@
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 #include "i9100_home.h"
 #include "i9100_home_observation.h"
+#include "I9100HomeTest.h"
 #include "i9100_touch_observation.h"
 #include <pexpert/pexpert.h>
 #endif
@@ -44,6 +45,7 @@ extern void _enable_preemption(void);
 /* Input workloop owns the writes; panel diagnostics read RAM only. */
 volatile I9100HomeObservation i9100_home_observation;
 volatile I9100TouchObservation i9100_touch_observation;
+volatile uint32_t i9100_home_test_diag[6];
 #endif
 static volatile UInt32 leo_touch_observer_guard,leo_touch_observer_loss,leo_touch_observer_unknown;
 static LeoTouchObservation leo_touch_observer_state;
@@ -138,6 +140,7 @@ class IOHIDEventService : public IOService {
  bool homeDevice;
  uint32_t homeSavedCon,homeSavedPull;
  I9100HomeState homeState;
+ I9100HomeTest homeTest;
  I9100HomePacket lastHomePacket;
  bool lastHomeValid;
  void pollHome(void);
@@ -209,6 +212,13 @@ bool IOHIDEventService::init(OSDictionary *dictionary)
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
  homeDevice=getProperty("I9100HomeButton")!=0;homeSavedCon=homeSavedPull=0;
  i9100_home_reset(&homeState);bzero(&lastHomePacket,sizeof(lastHomePacket));lastHomeValid=false;
+ bzero(&homeTest,sizeof(homeTest));
+ if(homeDevice){int diagnostic=0,control=0,enabled=0;
+  PE_parse_boot_argn("i9100hometest",&enabled,sizeof(enabled));
+  PE_parse_boot_argn("i9100control",&control,sizeof(control));
+  PE_parse_boot_argn("i9100xpcdiag",&diagnostic,sizeof(diagnostic));
+  homeTest.enabled=enabled==1 && control==1 && diagnostic==1;
+ }
  bzero(&touchBus,sizeof(touchBus));bzero(&touchState,sizeof(touchState));
 #endif
  bzero(&pendingPacket,sizeof(pendingPacket));bzero(&lastPacket,sizeof(lastPacket));
@@ -503,10 +513,17 @@ void IOHIDEventService::pollHome(void)
 {
  IOLockLock(lock);
  unsigned down=i9100_home_down(readRegister(this,1,I9100_HOME_DAT));
+ unsigned physical=down;uint64_t now=mach_absolute_time(),delay=0,hold=0;
+ nanoseconds_to_absolutetime(5000000000ULL,&delay);
+ nanoseconds_to_absolutetime(200000000ULL,&hold);
+ down=i9100_home_test_sample(&homeTest,physical,opened,now,delay,hold);
+ i9100_home_test_diag[0]=homeTest.enabled;i9100_home_test_diag[1]=homeTest.phase;
+ i9100_home_test_diag[2]=physical;i9100_home_test_diag[3]=down;
+ i9100_home_test_diag[4]=homeTest.phase==3;i9100_home_test_diag[5]=clientPID;
  i9100_home_observation.down=down;publishSnapshot();
  if(!opened){i9100_home_reset(&homeState);IOLockUnlock(lock);return;}
  unsigned count=homeState.count;
- i9100_home_sample(&homeState,down,mach_absolute_time());
+ i9100_home_sample(&homeState,down,now);
  if(homeState.count!=count){
   unsigned edges=i9100_home_observation.edges;
   if(edges!=UINT32_MAX)i9100_home_observation.edges=edges+1U;
