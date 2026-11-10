@@ -322,6 +322,9 @@ static int __abort_count = 0;
  * LR is caller-clobbered and cannot by itself identify who passed NULL. */
 volatile uint32_t i9100_springboard_fault_stack[10+14*3];
 volatile uint32_t i9100_keyboard_fault_stack[10+14*3];
+volatile uint32_t i9100_ls_fault_stack[10+14*3];
+/* Actual bytes passed to the pinned iOS6 plist parser, retained before exit. */
+volatile uint32_t i9100_ls_fault_payload[16+2048];
 static volatile UInt32 i9100_ui_fault_stack_guard;
 static void i9100_ui_fault_stack_note(const struct i9100_fault_snapshot *state,
     const uint32_t *registers)
@@ -333,7 +336,8 @@ static void i9100_ui_fault_stack_note(const struct i9100_fault_snapshot *state,
         !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
     const char *name=proc_name_address(thread->task->bsd_info);
     volatile uint32_t *out=!strcmp(name,"SpringBoard")?i9100_springboard_fault_stack:
-        !strcmp(name,"kbd")?i9100_keyboard_fault_stack:0;
+        !strcmp(name,"kbd")?i9100_keyboard_fault_stack:
+        !strcmp(name,"lsd")?i9100_ls_fault_stack:0;
     if (!out || !OSCompareAndSwap(0U,1U,&i9100_ui_fault_stack_guard))return;
     uint32_t sequence=out[0]+1U,frame=registers[7];out[0]=0;
     out[1]=proc_pid(thread->task->bsd_info);out[2]=(uint32_t)(uintptr_t)thread->task;
@@ -347,6 +351,33 @@ static void i9100_ui_fault_stack_note(const struct i9100_fault_snapshot *state,
         if(link[0]<=frame)break;frame=link[0];
     }
     OSMemoryBarrier();out[0]=sequence?sequence:1;
+    if(out==i9100_ls_fault_stack){
+        uint32_t slide=state->pc-0x311001d4U;
+        /* CFGetTypeID(NULL) after the native XML plist parser. Its caller's
+         * frame holds the original OOL address/length at+8/+12. */
+        if(!(slide&4095U) && slide<0x40000000U-0x32464ab1U &&
+           state->lr==0x32464ab1U+slide && registers[0]==0 &&
+           registers[7]>=state->sp && registers[7]<=0x3ffffff0U &&
+           registers[7]-state->sp<=131072U){
+            volatile uint32_t *p=i9100_ls_fault_payload;
+            uint32_t args[2]={0,0},next=p[0]+1U;p[0]=0;
+            memset((void *)&p[1],0,(16+2048-1)*4);
+            p[1]=proc_pid(thread->task->bsd_info);p[2]=(uint32_t)(uintptr_t)thread->task;
+            p[3]=state->pc;p[4]=state->lr;p[5]=state->sp;p[6]=registers[7];p[12]=slide;
+            if(copyin((user_addr_t)registers[7]+8U,args,sizeof(args)))p[10]=1;
+            else{
+                p[7]=args[0];p[8]=args[1];
+                if(args[0]<4096 || args[0]>=0x40000000U || !args[1] ||
+                   args[1]>0x40000000U-args[0])p[10]=2;
+                else{
+                    unsigned count=args[1]>8192?8192:args[1];p[11]=count!=args[1];
+                    if(copyin((user_addr_t)args[0],(void *)&p[16],count))p[10]=3;
+                    else p[9]=count;
+                }
+            }
+            OSMemoryBarrier();p[0]=next?next:1;
+        }
+    }
     OSMemoryBarrier();i9100_ui_fault_stack_guard=0;
 }
 /* Ring of failed user exceptions with a real process identity. The older
