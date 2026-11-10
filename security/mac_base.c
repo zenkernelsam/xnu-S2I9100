@@ -109,6 +109,9 @@ volatile uint32_t i9100_tcc_development_diag[1 + 16 * 7];
 volatile uint32_t i9100_mdns_sandbox_diag[1 + 8 * 5];
 /* count +8 {pid,operation,original,result,providers,unconfined,stage}. */
 volatile uint32_t i9100_mdns_development_diag[1 + 8 * 7];
+/* Observe UI Sandbox calls; these records never alter any policy result. */
+volatile uint32_t i9100_ui_sandbox_diag[1+64*10];
+static volatile UInt32 i9100_ui_sandbox_guard;
 #endif
 
 #if CONFIG_MACF
@@ -2171,6 +2174,20 @@ __mac_syscall(proc_t p, struct __mac_syscall_args *uap, int *retv __unused)
 done:
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
+    if(!strcmp(target,"Sandbox") &&
+        (!strcmp(p->p_comm,"SpringBoard") || !strcmp(p->p_comm,"kbd") ||
+         !strcmp(p->p_comm,"addressbookd") || !strcmp(p->p_comm,"dataaccessd"))) {
+        int diagnostic=0;
+        if(PE_parse_boot_argn("i9100xpcdiag",&diagnostic,sizeof(diagnostic)) && diagnostic==1 &&
+            OSCompareAndSwap(0U,1U,&i9100_ui_sandbox_guard)) {
+            uint32_t sequence=i9100_ui_sandbox_diag[0]+1U;
+            volatile uint32_t *row=&i9100_ui_sandbox_diag[1+((sequence-1U)&63U)*10];
+            row[0]=0;row[1]=p->p_pid;row[2]=uap->call;row[3]=error;
+            row[4]=mac_policy_list.numloaded;memcpy((void *)&row[5],p->p_comm,16);row[9]=1;
+            OSMemoryBarrier();row[0]=sequence?sequence:1;i9100_ui_sandbox_diag[0]=row[0];
+            OSMemoryBarrier();i9100_ui_sandbox_guard=0;
+        }
+    }
     if (error == ENOPOLICY) {
         int diagnostic = 0;
         if (!strcmp(p->p_comm, "mDNSResponder") && !strcmp(target, "Sandbox") &&

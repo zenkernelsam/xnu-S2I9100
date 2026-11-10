@@ -108,6 +108,7 @@ extern const char *syscallnames[];
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
 #include <pexpert/pexpert.h>
+#include <sys/syscall.h>
 #include <libkern/OSAtomic.h>
 #include "../../../pexpert/arm/i9100_mdns_observation.h"
 
@@ -118,6 +119,42 @@ volatile uint32_t i9100_mdns_spawn_diag[1 + 8 * 4];
 /* count +8 rows: pid,status,pc,lr,sp,fp,nframes,walk-error,frames[8],
  * error-pointer,copy-error,role,stage,text[128]. Read before exit takes locks. */
 volatile uint32_t i9100_mdns_exit_user_diag[1 + 8 * 52];
+/* AddressBook file operations only, original results and pathname. No file
+ * contents or changes to syscall arguments. A rolling table survives retries. */
+volatile uint32_t i9100_addressbook_file_diag[1+64*44];
+static volatile UInt32 i9100_addressbook_file_guard;
+static void i9100_addressbook_file_note(struct proc *p,unsigned code,void *args,
+    int error,uint32_t result)
+{
+    user_addr_t path=0;uint32_t flags=0,mode=0;int enabled=0;
+    switch(code){
+    case SYS_open:{const struct open_args *a=args;path=a->path;flags=a->flags;mode=a->mode;break;}
+    case SYS_open_nocancel:{const struct open_nocancel_args *a=args;path=a->path;flags=a->flags;mode=a->mode;break;}
+    case SYS_stat64:path=((const struct stat64_args *)args)->path;break;
+    case SYS_lstat64:path=((const struct lstat64_args *)args)->path;break;
+    case SYS_access:path=((const struct access_args *)args)->path;break;
+    case SYS_mkdir:path=((const struct mkdir_args *)args)->path;break;
+    case SYS_unlink:path=((const struct unlink_args *)args)->path;break;
+    case SYS_rename:path=((const struct rename_args *)args)->from;break;
+    default:return;
+    }
+    if(!path || !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
+    char text[128]={0};size_t copied=0;
+    int copy_error=copyinstr(path,text,sizeof(text),&copied);text[127]=0;
+    if(copy_error && copy_error!=ENAMETOOLONG)return;
+    unsigned matched=0;
+    for(unsigned i=0;i+11U<=sizeof(text) && text[i];i++)
+        if(!strncmp(text+i,"AddressBook",11)){matched=1;break;}
+    if(!matched)return;
+    if(!OSCompareAndSwap(0U,1U,&i9100_addressbook_file_guard))return;
+    uint32_t sequence=i9100_addressbook_file_diag[0]+1U;
+    volatile uint32_t *row=&i9100_addressbook_file_diag[1+((sequence-1U)&63U)*44];
+    row[0]=0;row[1]=p->p_pid;row[2]=code;row[3]=error;row[4]=result;
+    row[5]=flags;row[6]=mode;row[7]=copy_error;
+    memcpy((void *)&row[8],p->p_comm,16);memcpy((void *)&row[12],text,sizeof(text));
+    OSMemoryBarrier();row[0]=sequence?sequence:1;i9100_addressbook_file_diag[0]=row[0];
+    OSMemoryBarrier();i9100_addressbook_file_guard=0;
+}
 
 static unsigned i9100_mdns_trace_role(struct proc *p)
 {
@@ -662,6 +699,7 @@ void unix_syscall(arm_saved_state_t * state)
     error = (*(callp->sy_call)) (p, (void *) uthread->uu_arg, &(uthread->uu_rval[0]));
 #if BOARD_CONFIG_EXYNOS4210_I9100
     i9100_workq_boundary_exit(i9100_workq_trace, error, (uint32_t)uthread->uu_rval[0]);
+    i9100_addressbook_file_note(p,code,(void *)uthread->uu_arg,error,(uint32_t)uthread->uu_rval[0]);
     if (mdns_role) i9100_mdns_syscall_note(p, mdns_role, code, mdns_args,
         (unsigned)callp->sy_narg, error, (uint32_t)uthread->uu_rval[0], mdns_pc, mdns_lr, 2);
     if (mdns_spawn_slot) {

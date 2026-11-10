@@ -317,6 +317,38 @@ j1_uda_pg_once(unsigned int pg)
 
 static int __abort_count = 0;
 #if BOARD_CONFIG_EXYNOS4210_I9100
+#include <libkern/OSAtomic.h>
+/* Copy only the faulting UI thread's own frame links after IRQs are enabled.
+ * LR is caller-clobbered and cannot by itself identify who passed NULL. */
+volatile uint32_t i9100_springboard_fault_stack[10+14*3];
+volatile uint32_t i9100_keyboard_fault_stack[10+14*3];
+static volatile UInt32 i9100_ui_fault_stack_guard;
+static void i9100_ui_fault_stack_note(const struct i9100_fault_snapshot *state,
+    const uint32_t *registers)
+{
+    thread_t thread=current_thread();int enabled=0;
+    if (!thread || !thread->task || !thread->task->bsd_info ||
+        (state->psr&0x1fU)!=0x10U || get_preemption_level()!=0 ||
+        !ml_get_interrupts_enabled() || ml_at_interrupt_context() ||
+        !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
+    const char *name=proc_name_address(thread->task->bsd_info);
+    volatile uint32_t *out=!strcmp(name,"SpringBoard")?i9100_springboard_fault_stack:
+        !strcmp(name,"kbd")?i9100_keyboard_fault_stack:0;
+    if (!out || !OSCompareAndSwap(0U,1U,&i9100_ui_fault_stack_guard))return;
+    uint32_t sequence=out[0]+1U,frame=registers[7];out[0]=0;
+    out[1]=proc_pid(thread->task->bsd_info);out[2]=(uint32_t)(uintptr_t)thread->task;
+    out[3]=state->type;out[4]=state->pc;out[5]=state->lr;out[6]=state->sp;out[7]=frame;
+    out[8]=out[9]=0;
+    for(unsigned n=0;n<14;n++){
+        uint32_t link[2];
+        if ((frame&3U) || frame<state->sp || frame>0x3ffffff8U || frame-state->sp>131072U){out[9]=1;break;}
+        if (copyin((user_addr_t)frame,link,sizeof(link))){out[9]=2;break;}
+        out[10+n*3]=frame;out[11+n*3]=link[0];out[12+n*3]=link[1];out[8]=n+1;
+        if(link[0]<=frame)break;frame=link[0];
+    }
+    OSMemoryBarrier();out[0]=sequence?sequence:1;
+    OSMemoryBarrier();i9100_ui_fault_stack_guard=0;
+}
 /* Ring of failed user exceptions with a real process identity. The older
  * thread-only witness cannot attribute a recycled thread to an exited PID. */
 volatile uint32_t i9100_user_fault_owner_diag[1+32*12];
@@ -867,6 +899,9 @@ void sleh_abort(void *context, int reason)
      */
     if (exception_type) {
         ml_set_interrupts_enabled(TRUE);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        if(exception_type==EXC_BAD_ACCESS)i9100_ui_fault_stack_note(&i9100_entry,i9100_entry_regs);
+#endif
 #if BOARD_CONFIG_QSD8250_LEO
         if(leo_installd_failed)
             ios7leo_installd_fault(thread,arm_ctx,leo_installd_fault_result);
