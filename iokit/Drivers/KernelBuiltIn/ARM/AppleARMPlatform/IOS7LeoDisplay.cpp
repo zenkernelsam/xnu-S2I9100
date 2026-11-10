@@ -1777,6 +1777,51 @@ static IOReturn i9stub_client(task_t t, IOUserClient **h) {
     *h = c; return kIOReturnSuccess;
 }
 #include "i9_ent_blob.h"
+#include <libkern/c++/OSData.h>
+#include "I9AmfiOutput.h"
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+#include <pexpert/pexpert.h>
+#include <sys/proc.h>
+volatile uint32_t i9100_amfi_output_diag[1+64*16];
+static unsigned i9_amfi_begin(unsigned selector, const IOExternalMethodArguments *args)
+{
+    int enabled = 0;
+    if (!args || !PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) || enabled != 1) return 0;
+    char name[16] = {0};
+    proc_name(proc_selfpid(), name, sizeof(name));
+    if (strcmp(name, "tccd") && strcmp(name, "SpringBoard") && strcmp(name, "kbd")) return 0;
+    UInt32 slot = i9100_amfi_output_diag[0];
+    if (slot >= 64 || !OSCompareAndSwap(slot, slot+1, &i9100_amfi_output_diag[0])) return 0;
+    volatile uint32_t *row = &i9100_amfi_output_diag[1+slot*16];
+    row[0] = proc_selfpid(); row[1] = selector;
+    row[2] = args->scalarInputCount; row[3] = args->scalarOutputCount;
+    row[4] = args->structureInputSize; row[5] = args->structureOutputSize;
+    row[6] = args->structureOutputDescriptorSize;
+    row[7] = (args->structureOutput ? 1U : 0U) |
+        (args->structureOutputDescriptor ? 2U : 0U) |
+        (args->structureVariableOutputData ? 4U : 0U) |
+        (args->structureInputDescriptor ? 8U : 0U);
+    row[8] = 0; row[9] = UINT32_MAX; row[10] = 0; row[11] = 0;
+    row[12] = UINT32_MAX; row[13] = sizeof(i9_ent_blob)-8; row[14] = 0; row[15] = 1;
+    if (args->structureInput && args->structureInputSize == 32)
+        memcpy((void *)&row[12], (const unsigned char *)args->structureInput+20, 4);
+    return slot+1;
+}
+static IOReturn i9_amfi_finish(unsigned slot, const IOExternalMethodArguments *args,
+    unsigned copied, IOReturn result)
+{
+    if (slot) {
+        volatile uint32_t *row = &i9100_amfi_output_diag[1+(slot-1)*16];
+        row[8] = copied; row[9] = result;
+        row[10] = args->structureOutputSize; row[11] = args->structureOutputDescriptorSize;
+        OSMemoryBarrier(); row[15] = 2;
+    }
+    return result;
+}
+#else
+static unsigned i9_amfi_begin(unsigned, const IOExternalMethodArguments *) { return 0; }
+static IOReturn i9_amfi_finish(unsigned, const IOExternalMethodArguments *, unsigned, IOReturn r) { return r; }
+#endif
 class I9AmfiClient : public IOUserClient {
     OSDeclareDefaultStructors(I9AmfiClient);
 public:
@@ -1787,6 +1832,7 @@ public:
     virtual IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
         IOExternalMethodDispatch *dispatch = 0, OSObject *target = 0, void *reference = 0)
     {
+        unsigned observation = i9_amfi_begin(selector, args);
         IOLog("I9AMFIC method=%u si=%u so=%u sti=%u sto=%u\n", selector,
             args ? args->scalarInputCount : 0, args ? args->scalarOutputCount : 0,
             args ? args->structureInputSize : 0, args ? args->structureOutputSize : 0);
@@ -1797,18 +1843,15 @@ public:
         /* selector 1: copy-entitlements-for-audit-token (sti=32 token, sto=dict buf).
          * Security.framework parses output with a property-list parser, so
          * feed the entitlement XML plist only (skip 8-byte CS superblob hdr). */
-        if (selector == 1 && args && args->structureOutput && args->structureOutputSize) {
-            size_t n = sizeof(i9_ent_blob) - 8;
-            if (n > args->structureOutputSize) n = args->structureOutputSize;
-            memcpy(args->structureOutput, i9_ent_blob + 8, n);
-            if (args->structureOutputSize > n)
-                memset((uint8_t*)args->structureOutput + n, 0, args->structureOutputSize - n);
-            IOLog("I9AMFIC   fed %u-byte ent blob\n", (unsigned)n);
-            return kIOReturnSuccess;
+        if (selector == 1 && args) {
+            unsigned copied = 0;
+            IOReturn result = i9_amfi_output(args, i9_ent_blob+8, sizeof(i9_ent_blob)-8, &copied);
+            IOLog("I9AMFIC   fed %u-byte ent blob result=%x\n", copied, result);
+            return i9_amfi_finish(observation, args, copied, result);
         }
         if (args && args->structureOutput && args->structureOutputSize)
             memset(args->structureOutput, 0, args->structureOutputSize);
-        return kIOReturnSuccess;
+        return i9_amfi_finish(observation, args, 0, kIOReturnSuccess);
     }
 };
 OSDefineMetaClassAndStructors(I9AmfiClient, IOUserClient);
