@@ -155,6 +155,22 @@ static void i9100_tcc_bootstrap_record(unsigned stage,ipc_kmsg_t kmsg,unsigned s
 {
     unsigned sequence=i9100_tcc_bootstrap_diag[0]+1U,length=0,bits=0;
     if(kmsg){length=kmsg->ikm_header->msgh_size;bits=kmsg->ikm_header->msgh_bits;if(length>256)length=256;}
+    if(stage==2 && kmsg){
+        uintptr_t begin=(uintptr_t)(kmsg+1),address=(uintptr_t)kmsg->ikm_header;
+        unsigned offset=round_msg(kmsg->ikm_header->msgh_size);
+        if(address>=begin && address-begin<=kmsg->ikm_size){
+            unsigned available=kmsg->ikm_size-(address-begin);
+            if(offset<=available && available-offset>=sizeof(mach_msg_trailer_t)){
+                const mach_msg_trailer_t *trailer=(const void *)(address+offset);
+                if(trailer->msgh_trailer_type==MACH_MSG_TRAILER_FORMAT_0 &&
+                   trailer->msgh_trailer_size>=sizeof(*trailer) &&
+                   trailer->msgh_trailer_size<=MAX_TRAILER_SIZE &&
+                   trailer->msgh_trailer_size<=available-offset &&
+                   offset+trailer->msgh_trailer_size<=256)
+                    length=offset+trailer->msgh_trailer_size;
+            }
+        }
+    }
     volatile uint32_t *row=&i9100_tcc_bootstrap_diag[1+((sequence-1U)&31U)*72];
     row[0]=0;row[1]=proc_selfpid();row[2]=(uint32_t)(uintptr_t)current_thread();
     row[3]=stage;row[4]=id;row[5]=length;row[6]=bits;row[7]=status;
