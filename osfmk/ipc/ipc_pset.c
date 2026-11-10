@@ -508,6 +508,11 @@ filt_machporttouch(struct knote *kn, struct kevent64_s *kev, long type)
         case EVENT_REGISTER:
                 kn->kn_sfflags = kev->fflags;
                 kn->kn_sdata = kev->data;
+                /* A rearmed direct receive may use a different buffer or
+                 * capacity. Keep both extensions with the new request, as
+                 * in Apple's xnu-2422.1.72, rather than the previous event. */
+                kn->kn_ext[0] = kev->ext[0];
+                kn->kn_ext[1] = kev->ext[1];
                 break;
         case EVENT_PROCESS:
                 *kev = kn->kn_kevent;
