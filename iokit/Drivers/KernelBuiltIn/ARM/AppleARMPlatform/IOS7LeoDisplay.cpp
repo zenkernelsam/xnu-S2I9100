@@ -2281,19 +2281,29 @@ void ios7leo_register_display(IOService *platform)
      * do-nothing stub — frames went to a fake RGB-out path instead of the
      * physical AppleCLCD. Only one display provider may answer. */
     /* i9stub_publish_AppleRGBOUT(platform); */
-    /* CA also queries AppleM2TVOut for EDID UUID during display enumeration;
-     * hand it the same panel identity so it can't poison the display check. */
+#if !defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    /* Retain the historical external-output discovery for the other boards. */
     {
         IOService *tv = i9stub_publish_AppleM2TVOut(platform);
         static const unsigned char i9edid[16] = { 0x49,0x39,0x31,0x30,0x00,0x00,0x4a,0x31,0x80,0x08,0x01,0xe0,0x03,0x20,0x42,0x10 };
         if (tv) tv->setProperty("EDID UUID", OSData::withBytes(i9edid, sizeof(i9edid)));
     }
+#else
+    /* There is no implemented S2 external-output backend. iOS6 opens
+     * AppleM2TVOut as an IMF display and queries selectors 7/15/3/4/8;
+     * the logging stub fails all five. Sharing the internal panel's EDID
+     * also incorrectly advertises a second output with the same identity.
+     * Keep unavailable outputs absent instead of inventing their state. */
+    IOLog("I9100 external displays disabled: no TV-out/HDMI/DisplayPort backend\n");
+#endif
     /* i9stub_publish_AppleWirelessDisplay disabled: fake wireless-display hw makes backboardd poll com.apple.coremedia.wirelessdisplayserver forever */
     i9stub_publish_IOSurfaceAccelerator(platform);
     i9stub_publish_IOAVController(platform);
     i9stub_publish_AppleMobileFileIntegrity(platform);
+#if !defined(BOARD_CONFIG_EXYNOS4210_I9100)
     i9_publish_named(platform, "displayport");
     i9_publish_named(platform, "hdmi");
+#endif
     i9_publish_macsvc(platform, "wlan", i9_wifimac);
     i9_publish_macsvc(platform, "sdio", i9_wifimac);
     i9_publish_macsvc(platform, "bluetooth", i9_btmac);
