@@ -1934,6 +1934,10 @@ static const UInt8 i9_syscfg[] = {
  * loop: next client sees "system bag exists, unlocked" -> lock_status. */
 static uint64_t aks_sys_bag_id;
 static uint8_t  aks_sys_bag[3072];
+#include "I9AksDevelopment.h"
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+volatile uint32_t i9100_aks_development_diag[1+32*12];
+#endif
 class I9AksClient : public IOUserClient {
     OSDeclareDefaultStructors(I9AksClient);
 public:
@@ -1947,6 +1951,23 @@ public:
         IOLog("I9AKSC method=%u si=%u so=%u sti=%u sto=%u\n", selector,
             args ? args->scalarInputCount : 0, args ? args->scalarOutputCount : 0,
             args ? args->structureInputSize : 0, args ? args->structureOutputSize : 0);
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        int stateDevelopment=0;
+        PE_parse_boot_argn("i9100aksdev",&stateDevelopment,sizeof(stateDevelopment));
+        IOReturn stateResult;
+        if(i9_aks_development(selector,args,stateDevelopment==1,&stateResult)){
+            UInt32 slot=i9100_aks_development_diag[0];
+            if(slot<32 && OSCompareAndSwap(slot,slot+1,&i9100_aks_development_diag[0])){
+                volatile uint32_t *row=&i9100_aks_development_diag[1+slot*12];
+                row[0]=proc_selfpid();row[1]=selector;row[2]=args?args->scalarInputCount:0;
+                row[3]=args?args->scalarOutputCount:0;row[4]=args?args->structureInputSize:0;
+                row[5]=args?args->structureOutputSize:0;row[6]=stateResult;
+                row[7]=stateResult==kIOReturnSuccess?(uint32_t)args->scalarOutput[0]:0;
+                row[8]=aks_sys_bag_id;row[9]=1;row[10]=0;OSMemoryBarrier();row[11]=2;
+            }
+            return stateResult;
+        }
+#endif
         if (!args) return kIOReturnSuccess;
         switch (selector) {
         case 14: /* KeyBagGetSystem -> nonzero bag id once one is stored */
