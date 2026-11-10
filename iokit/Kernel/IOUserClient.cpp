@@ -60,6 +60,57 @@ extern "C" {
 #include "IOServicePrivate.h"
 #include "IOKitKernelInternal.h"
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+#include <pexpert/pexpert.h>
+#include <libkern/OSAtomic.h>
+/* Keep actual native surface/display call results separately from routine
+ * traffic. The metadata never replaces a selector or its output. */
+volatile uint32_t i9100_framebuffer_io_diag[1+64*40];
+volatile uint32_t i9100_surface_io_diag[1+64*40];
+static volatile UInt32 i9100_display_io_guard[2];
+static void i9100_display_io_note(IOUserClient *client, const IOExternalMethodArguments *args,
+    IOReturn result, unsigned structureCapacity, unsigned scalarCapacity)
+{
+    int enabled = 0;
+    if (!client || !args || !PE_parse_boot_argn("i9100xpcdiag", &enabled, sizeof(enabled)) || enabled != 1) return;
+    const char *klass = client->getMetaClass()->getClassName();
+    unsigned category;
+    if (!strcmp(klass, "IOS7LabFramebufferClient")) category = 0;
+    else if (!strcmp(klass, "IOS7LabSurfaceClient")) category = 1;
+    else return;
+    char name[16] = {0}; proc_name(proc_selfpid(), name, sizeof(name));
+    if (strcmp(name, "backboardd") && strcmp(name, "SpringBoard")) return;
+    if (!OSCompareAndSwap(0U, 1U, &i9100_display_io_guard[category])) return;
+    volatile uint32_t *table = category ? i9100_surface_io_diag : i9100_framebuffer_io_diag;
+    unsigned sequence = table[0]+1U; if (!sequence) sequence = 1;
+    volatile uint32_t *row = &table[1+((sequence-1U)&63U)*40];
+    memset((void *)row, 0, 40*4);
+    row[1] = proc_selfpid(); row[2] = args->selector; row[3] = result;
+    row[4] = args->scalarInputCount; row[5] = args->structureInputSize;
+    row[6] = args->scalarOutputCount; row[7] = args->structureOutputSize;
+    row[8] = args->structureInputDescriptor ? args->structureInputDescriptor->getLength() : 0;
+    row[9] = args->structureOutputDescriptorSize;
+    row[10] = (args->scalarInput ? 1U : 0U) | (args->structureInput ? 2U : 0U) |
+        (args->scalarOutput ? 4U : 0U) | (args->structureOutput ? 8U : 0U) |
+        (args->structureInputDescriptor ? 16U : 0U) | (args->structureOutputDescriptor ? 32U : 0U) |
+        (args->structureVariableOutputData ? 64U : 0U);
+    row[11] = structureCapacity;
+    strncpy((char *)&row[12], klass, 31);
+    unsigned count = args->scalarOutputCount;
+    if (count > scalarCapacity) count = scalarCapacity;
+    if (count > 3) count = 3;
+    if (args->scalarOutput && count) memcpy((void *)&row[20], args->scalarOutput, count*8);
+    count = args->structureInputSize; if (count > 32) count = 32;
+    if (args->structureInput && count) memcpy((void *)&row[26], args->structureInput, count);
+    count = args->structureOutputSize;
+    if (count > structureCapacity) count = structureCapacity;
+    if (count > 24) count = 24;
+    if (args->structureOutput && count) memcpy((void *)&row[34], args->structureOutput, count);
+    OSMemoryBarrier(); row[0] = sequence; table[0] = sequence;
+    OSMemoryBarrier(); i9100_display_io_guard[category] = 0;
+}
+#endif
+
 /* IOS7LEO_WAIT_BEGIN */
 #if defined(BOARD_CONFIG_QSD8250_LEO)
 #include <libkern/OSAtomic.h>
@@ -3237,7 +3288,13 @@ kern_return_t is_io_connect_method_var_output
     args.structureOutputDescriptorSize = 0;
 
     IOStatisticsClientCall();
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    unsigned i9100_structure_capacity = args.structureOutputSize, i9100_scalar_capacity = args.scalarOutputCount;
+#endif
     ret = client->externalMethod( selector, &args );
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    i9100_display_io_note(client, &args, ret, i9100_structure_capacity, i9100_scalar_capacity);
+#endif
 /* IOS7LEO_FRONTIER_BEGIN */
 #if defined(BOARD_CONFIG_QSD8250_LEO)
     const bool frontierCandidate = ios7leo_frontier_candidate(client, selector, &args, ret);
@@ -3346,7 +3403,13 @@ kern_return_t is_io_connect_method
     args.structureOutputDescriptorSize = ool_output_size ? *ool_output_size : 0;
 
     IOStatisticsClientCall();
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    unsigned i9100_structure_capacity = args.structureOutputSize, i9100_scalar_capacity = args.scalarOutputCount;
+#endif
     ret = client->externalMethod( selector, &args );
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    i9100_display_io_note(client, &args, ret, i9100_structure_capacity, i9100_scalar_capacity);
+#endif
 /* IOS7LEO_FRONTIER_BEGIN */
 #if defined(BOARD_CONFIG_QSD8250_LEO)
     const bool frontierCandidate = ios7leo_frontier_candidate(client, selector, &args, ret);
@@ -3438,7 +3501,13 @@ kern_return_t is_io_connect_async_method
     args.structureOutputDescriptorSize = *ool_output_size;
 
     IOStatisticsClientCall();
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    unsigned i9100_structure_capacity = args.structureOutputSize, i9100_scalar_capacity = args.scalarOutputCount;
+#endif
     ret = client->externalMethod( selector, &args );
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    i9100_display_io_note(client, &args, ret, i9100_structure_capacity, i9100_scalar_capacity);
+#endif
 
     *inband_outputCnt = args.structureOutputSize;
     *ool_output_size  = args.structureOutputDescriptorSize;
