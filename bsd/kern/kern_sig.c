@@ -204,7 +204,10 @@ static void i9100_ios6_slab_bytes(const struct I9100AbortTrace *record, unsigned
         if (!row[8]) row[7]=bytes;
     } else row[8]=1;
     OSMemoryBarrier();row[0]=1;
-    if (backboard && i9100_backboard_vm_diag[1]==record->pid) i9100_backboard_vm_diag[3]=1;
+    if (backboard && i9100_backboard_vm_diag[1]==record->pid) {
+        i9100_backboard_vm_diag[3]=1;
+        i9100_ios6_slab_vm_diag[3]=1;
+    }
     OSMemoryBarrier();i9100_ios6_slab_payload_guard[slot]=0;
 }
 /* Latest candidate sandbox error buffer from the real tccd main abort site.

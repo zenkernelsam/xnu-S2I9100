@@ -113,7 +113,7 @@ extern const char *syscallnames[];
 #include "../../../pexpert/arm/i9100_mdns_observation.h"
 #define I9100_VM_OBSERVATION_IMPLEMENTATION 1
 #include "../../../pexpert/arm/i9100_vm_observation.h"
-static unsigned i9100_backboard_vm_enter(struct proc *p, unsigned code,
+static uint64_t i9100_backboard_vm_enter(struct proc *p, unsigned code,
     const void *arguments, unsigned nargs, unsigned argument_error,
     const arm_saved_state_t *state, unsigned indirect)
 {
@@ -690,7 +690,7 @@ void unix_syscall(arm_saved_state_t * state)
 #endif
     AUDIT_SYSCALL_ENTER(code, p, uthread);
 #if BOARD_CONFIG_EXYNOS4210_I9100
-    unsigned i9100_vm_sequence=i9100_backboard_vm_enter(p,code,uthread->uu_arg,
+    uint64_t i9100_vm_sequence=i9100_backboard_vm_enter(p,code,uthread->uu_arg,
         (unsigned)callp->sy_narg,arm_argument_error,state,shift_args);
 #endif
 #if BOARD_CONFIG_ARMPBA8

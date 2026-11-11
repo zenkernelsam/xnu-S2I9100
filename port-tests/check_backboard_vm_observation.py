@@ -49,7 +49,7 @@ static void dump(const char *name,const void *data,unsigned bytes){
 }
 int main(void){
  uint32_t raw[7]={0,4096,3,0x1002,0xffffffffU,0,0};
- unsigned seq=i9100_vm_enter(8,0x123,197,0x392c1234,0x32ce23dc,0,4096,3,0x1002,0xffffffffU,0,0,raw,7);
+ uint64_t seq=i9100_vm_enter(8,0x123,197,0x392c1234,0x32ce23dc,0,4096,3,0x1002,0xffffffffU,0,0,raw,7);
  assert(seq==1);raw[1]=8192;
  i9100_vm_leave(seq,8,0x123,0,0x1a9000,0);
  assert(i9100_backboard_vm_diag[4+8]==4096 && i9100_backboard_vm_diag[4+21]==4096);
@@ -84,12 +84,50 @@ int main(void){
  trace.slab=0x3fffff90U;unsigned old_copies=copies;i9100_ios6_slab_bytes(&trace,0);
  assert(copies==old_copies && i9100_ios6_slab_payload[0][8]==1);
  memset((void*)i9100_backboard_vm_diag,0,sizeof(i9100_backboard_vm_diag));
+ memset((void*)i9100_ios6_slab_vm_diag,0,sizeof(i9100_ios6_slab_vm_diag));
  for(unsigned n=0;n<256;n++){
   seq=i9100_vm_enter(8,0x123,197,0,0,0,4096,3,0x1002,0xffffffffU,0,0,raw,7);
   assert(seq==n+1);i9100_vm_leave(seq,8,0x123,0,0x1a9000,0);
  }
  assert(!i9100_vm_enter(8,0x123,197,0,0,0,0,0,0,0,0,0,raw,7));
  assert(i9100_backboard_vm_diag[0]==256 && i9100_backboard_vm_diag[2]==1);
+ // Dedicated calls remain recordable after the generic table is exhausted.
+ unsigned slide=0x673000U;
+ seq=i9100_vm_enter(8,0x123,197,0x392ccc40U+slide,0x32ce23ddU+slide,
+                   0,4096,3,0x1002,0xffffffffU,0,0,raw,7);
+ assert(seq==(1ULL<<32));i9100_vm_leave(seq,8,0x123,0,0x10b000,0);
+ assert(i9100_ios6_slab_vm_diag[0]==1 && i9100_ios6_slab_vm_diag[4+17]==0x10b000);
+ i9100_vm_leave(seq,8,0x123,22,0,0);assert(!i9100_ios6_slab_vm_diag[4+16]);
+ assert(!i9100_vm_enter(9,0x123,197,0x392ccc40U+slide,0x32ce23ddU+slide,
+                       0,4096,3,0x1002,0xffffffffU,0,0,raw,7));
+ assert(!i9100_vm_enter(8,0x123,197,0x392ccc44U+slide,0x32ce23ddU+slide,
+                       0,4096,3,0x1002,0xffffffffU,0,0,raw,7));
+ assert(!i9100_vm_enter(8,0x123,197,0x392ccc40U+slide,0x32ce23ddU+slide+2U,
+                       0,4096,3,0x1002,0xffffffffU,0,0,raw,7));
+ for(unsigned n=0;n<7;n++){
+  assert(!i9100_vm_enter(8,0x123,197,0x392ccc40U+slide,0x32ce23ddU+slide,
+    n==0?4096:0,n==1?8192:4096,n==2?1:3,n==3?0x1012:0x1002,
+    n==4?0:0xffffffffU,n==5?4096:0,n==6?14:0,raw,7));
+ }
+ assert(i9100_ios6_slab_vm_diag[0]==1);
+ seq=i9100_vm_enter(8,0x123,197,0x392ccc40U+slide,0x32ce23ddU+slide,
+                   0,4096,3,0x1002,0xffffffffU,0,0,raw,7);
+ i9100_vm_leave(seq,8,0x456,12,0,0);assert(!i9100_ios6_slab_vm_diag[4+28]);
+ i9100_vm_leave(seq,8,0x123,12,0,0);assert(i9100_ios6_slab_vm_diag[4+28+16]==12);
+ (void)i9100_vm_enter(8,0x456,197,0x392ccc40U+slide,0x32ce23ddU+slide,
+                     0,4096,3,0x1002,0xffffffffU,0,0,raw,7);
+ dump("slab-vm.bin",(const void*)i9100_ios6_slab_vm_diag,sizeof(i9100_ios6_slab_vm_diag));
+ for(unsigned n=3;n<64;n++){
+  seq=i9100_vm_enter(8,0x123,197,0x392ccc40U+slide,0x32ce23ddU+slide,
+                    0,4096,3,0x1002,0xffffffffU,0,0,raw,7);
+  assert(seq==((uint64_t)(n+1)<<32));i9100_vm_leave(seq,8,0x123,0,0x10c000,0);
+ }
+ assert(!i9100_vm_enter(8,0x123,197,0x392ccc40U+slide,0x32ce23ddU+slide,
+                       0,4096,3,0x1002,0xffffffffU,0,0,raw,7));
+ assert(i9100_ios6_slab_vm_diag[0]==64 && i9100_ios6_slab_vm_diag[2]==1);
+ i9100_backboard_vm_diag[3]=1;
+ assert(!i9100_vm_enter(8,0x123,197,0x392ccc40U+slide,0x32ce23ddU+slide,
+                       0,4096,3,0x1002,0xffffffffU,0,0,raw,7));
  memset((void*)i9100_backboard_vm_diag,0,sizeof(i9100_backboard_vm_diag));
  i9100_backboard_vm_diag[1]=8;reject_cas=1;
  assert(!i9100_vm_enter(8,0x123,197,0,0,0,0,0,0,0,0,0,raw,7));
