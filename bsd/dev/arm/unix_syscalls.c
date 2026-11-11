@@ -111,6 +111,43 @@ extern const char *syscallnames[];
 #include <sys/syscall.h>
 #include <libkern/OSAtomic.h>
 #include "../../../pexpert/arm/i9100_mdns_observation.h"
+#include "../../../pexpert/arm/i9100_ls_files.h"
+static void i9100_ls_file_note(struct proc *p,unsigned code,void *arguments,
+    unsigned argument_error,int error,uint32_t result,const arm_saved_state_t *state)
+{
+    if(argument_error || strcmp(p->p_comm,"lsd") || ml_at_interrupt_context() ||
+       !ml_get_interrupts_enabled() || get_preemption_level()!=0)return;
+    int enabled=0;
+    if(!PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
+    user_addr_t path=0,path2=0;unsigned fd=UINT32_MAX,flags=0,mode=0,count=0,kind=0;
+    switch(code){
+    case SYS_open:case SYS_open_nocancel:{
+        const struct open_args *a=arguments;path=a->path;flags=a->flags;mode=a->mode;kind=1;break;
+    }
+    case SYS_close:case SYS_close_nocancel:{
+        const struct close_args *a=arguments;fd=a->fd;kind=2;break;
+    }
+    case SYS_write:case SYS_write_nocancel:case SYS_read:case SYS_read_nocancel:{
+        const struct write_args *a=arguments;fd=a->fd;count=a->nbyte;break;
+    }
+    case SYS_mkdir:{const struct mkdir_args*a=arguments;path=a->path;mode=a->mode;break;}
+    case SYS_unlink:path=((const struct unlink_args*)arguments)->path;break;
+    case SYS_rename:{const struct rename_args*a=arguments;path=a->from;path2=a->to;break;}
+    case SYS_stat64:path=((const struct stat64_args*)arguments)->path;break;
+    case SYS_lstat64:path=((const struct lstat64_args*)arguments)->path;break;
+    case SYS_access:path=((const struct access_args*)arguments)->path;break;
+    default:return;
+    }
+    char text[192]={0},other[192]={0};size_t copied=0;unsigned first_error=0,second_error=0;
+    if(path){
+        first_error=copyinstr(path,text,sizeof(text),&copied);text[191]=0;
+        if(first_error && first_error!=ENAMETOOLONG)return;
+        if(!i9100_ls_file_match(text))return;
+    }
+    if(path2){second_error=copyinstr(path2,other,sizeof(other),&copied);other[191]=0;}
+    i9100_ls_file_publish(p->p_pid,(unsigned)(uintptr_t)current_thread(),code,error,result,fd,
+        flags,mode,count,path?text:0,path2?other:0,first_error,second_error,state->pc,state->lr,kind);
+}
 #define I9100_VM_OBSERVATION_IMPLEMENTATION 1
 #include "../../../pexpert/arm/i9100_vm_observation.h"
 static uint64_t i9100_backboard_vm_enter(struct proc *p, unsigned code,
@@ -761,6 +798,8 @@ void unix_syscall(arm_saved_state_t * state)
         (unsigned)callp->sy_narg, error, (uint32_t)uthread->uu_rval[0], state);
     i9100_workq_boundary_exit(i9100_workq_trace, error, (uint32_t)uthread->uu_rval[0]);
     i9100_addressbook_file_note(p,code,(void *)uthread->uu_arg,error,(uint32_t)uthread->uu_rval[0]);
+    i9100_ls_file_note(p,code,(void *)uthread->uu_arg,arm_argument_error,error,
+        (uint32_t)uthread->uu_rval[0],state);
     if (mdns_role) i9100_mdns_syscall_note(p, mdns_role, code, mdns_args,
         (unsigned)callp->sy_narg, error, (uint32_t)uthread->uu_rval[0], mdns_pc, mdns_lr, 2);
     if (mdns_spawn_slot) {

@@ -26,7 +26,7 @@ source=r'''
 typedef uint32_t UInt32;typedef uint64_t user_addr_t;
 static int OSCompareAndSwap(unsigned old,unsigned next,volatile unsigned*p){if(*p!=old)return 0;*p=next;return 1;}
 #define OSMemoryBarrier() ((void)0)
-static unsigned char user[1400];static unsigned copies,read_error;
+static unsigned char user[1664];static unsigned copies,read_error;
 static int copyin(user_addr_t address,void*dst,unsigned n){
  copies++;if(read_error)return 14;assert(address==0x12000 && n<=sizeof(user));memcpy(dst,user,n);return 0;
 }
@@ -40,7 +40,7 @@ static unsigned current_thread(void){return 0x1234;}
 static void proc_name(int pid,char*out,int n){(void)pid;strncpy(out,process_name,n);}
 '''+func+r'''
 int main(void){
- unsigned char source[1400]={0};uint32_t id=14008;memcpy(source+20,&id,4);source[42]=0x41;
+ unsigned char source[1664]={0};uint32_t id=14008;memcpy(source+20,&id,4);source[42]=0x41;
  unsigned token=i9100_ls_delivery_begin(source,sizeof(source),1400,0x12000,70,0x1234,0x80001200,"lsd",1,1,58);
  assert(token==1);memcpy(user,source,sizeof(user));
  i9100_ls_delivery_end(token,71,0x1234,0x80001200,0,1);assert(!copies);
@@ -51,17 +51,23 @@ int main(void){
  i9100_ls_delivery_end(token,70,0x1234,0x80001200,0,1);assert(copies==1);
  token=i9100_ls_delivery_begin(source,1400,352,0x12000,70,0x1234,0x80001200,"lsd",1,1,58);
  user[42]=0;i9100_ls_delivery_end(token,70,0x1234,0x80001200,0,1);
- assert(i9100_ls_delivery_diag[1+716+11]==1);
+ assert(i9100_ls_delivery_diag[1+848+11]==1);
  token=i9100_ls_delivery_begin(source,1400,352,0x12000,70,0x1234,0x80001200,"lsd",1,1,58);
  read_error=1;i9100_ls_delivery_end(token,70,0x1234,0x80001200,0,1);
- assert(i9100_ls_delivery_diag[1+2*716+8]==14);
+ assert(i9100_ls_delivery_diag[1+2*848+8]==14);
  token=i9100_ls_delivery_begin(source,1400,352,0x12000,70,0x1234,0x80001200,"lsd",1,1,58);
  unsigned prior=copies;i9100_ls_delivery_end(token,70,0x1234,0x80001200,0x1000400f,1);
- assert(copies==prior && i9100_ls_delivery_diag[1+3*716+7]==0x1000400f);
+ assert(copies==prior && i9100_ls_delivery_diag[1+3*848+7]==0x1000400f);
  for(unsigned n=0;n<7;n++){
-  assert(!i9100_ls_delivery_begin(source,n==0?24:1400,n==1?1401:352,n==2?0x3fffff80U:0x12000,
+  assert(!i9100_ls_delivery_begin(source,n==0?24:1400,n==1?1665:352,n==2?0x3fffff80U:0x12000,
        n==3?0:70,0x1234,0x80001200,n==4?"installd":"lsd",n==5?0:1,n==6?0:1,58));
  }
+ read_error=0;id=14014;memcpy(source+20,&id,4);strcpy((char*)source+48,"/Applications/AppStore.app.extra");
+ assert(!i9100_ls_delivery_begin(source,1664,1664,0x12000,70,0x1234,0x80001200,"lsd",1,1,58));
+ strcpy((char*)source+48,"/Applications/AppStore.app");
+ token=i9100_ls_delivery_begin(source,1664,1664,0x12000,70,0x1234,0x80001200,"lsd",1,1,58);
+ assert(token==5);memcpy(user,source,1664);i9100_ls_delivery_end(token,70,0x1234,0x80001200,0,1);
+ assert(i9100_ls_delivery_diag[1+4*848+9]==1);
  FILE*f=fopen("delivery.bin","wb");assert(f);fwrite((const void*)i9100_ls_delivery_diag,1,sizeof(i9100_ls_delivery_diag),f);fclose(f);
  struct j1_vm_allocate_wire w={1,0x12000,0x1040,0,0x14000001};
  i9100_ls_alloc_note(&w,3,1,0,0x23000);

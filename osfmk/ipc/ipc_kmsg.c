@@ -129,6 +129,7 @@ static unsigned i9100_ls_put_capture(ipc_kmsg_t kmsg,mach_vm_address_t address,m
     int enabled=0;
     if(!kmsg || !kmsg->ikm_header || size<sizeof(mach_msg_header_t) ||
        (kmsg->ikm_header->msgh_id!=14008 && kmsg->ikm_header->msgh_id!=14012 &&
+        kmsg->ikm_header->msgh_id!=14014 && kmsg->ikm_header->msgh_id!=14114 &&
         kmsg->ikm_header->msgh_id!=14108 && kmsg->ikm_header->msgh_id!=14112))return 0;
     if(current_task()==kernel_task || ml_at_interrupt_context() ||
        !ml_get_interrupts_enabled() || get_preemption_level()!=0 ||
