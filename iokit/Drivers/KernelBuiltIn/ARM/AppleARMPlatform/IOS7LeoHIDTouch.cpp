@@ -585,6 +585,9 @@ void IOHIDEventService::pollInput(void)
   !ios6_touch_wire(&source,&wire) || !queue->sane() || !queue->enqueue(&wire,sizeof(wire)))return;
  leo_touch_inc(&enqueued);
  if(down)leo_touch_inc(first?&downEvents:&moveEvents);else leo_touch_inc(&upEvents);
+ /* CopyEvent and the queue must describe the same accepted contact, as
+  * they do on the physical-report path. Failed enqueue never changes it. */
+ bcopy(&source,&lastPacket,sizeof(lastPacket));lastValid=true;
  previousDown=down;i9100_input_test[8]++;i9100_input_test[10]=x;i9100_input_test[11]=y;
  OSMemoryBarrier();i9100_input_test[1]=down?3U:4U;
  if(first || !down)IOLog("I9100 INPUT TEST seq=%u %s x=%u y=%u bytes=%u\n",
