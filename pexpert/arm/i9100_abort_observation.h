@@ -10,7 +10,7 @@ struct I9100AbortTrace {
     unsigned frames[I9100_ABORT_FRAMES];
     unsigned slab, slab_object, slab_expected, slab_actual, slab_status;
 };
-/* Supplied iOS6 CoreGraphics slab_alloc: its NEON frame aligns the stack
+/* Supplied iOS6 QuartzCore slab_alloc: its NEON frame aligns the stack
  * after saving48 bytes, then reserves112 bytes. Only the exact witnessed
  * abort/assert/allocator chain permits reading the two saved list slots. */
 static unsigned i9100_ios6_slab_local(const struct I9100AbortTrace *trace,

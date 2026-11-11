@@ -180,6 +180,33 @@ static void i9100_springboard_signal_note(proc_t p, int signum,
 #endif
 #if BOARD_CONFIG_EXYNOS4210_I9100
 #include "../../pexpert/arm/i9100_abort_observation.h"
+#include "../../pexpert/arm/i9100_vm_observation.h"
+#include <libkern/OSAtomic.h>
+/* First exact iOS6 slab page for each UI role, captured before task teardown.
+ * No map walk/port lock: use only the already validated self-task copyin. */
+volatile uint32_t i9100_ios6_slab_payload[2][12+1024];
+static volatile UInt32 i9100_ios6_slab_payload_guard[2];
+static void i9100_ios6_slab_bytes(const struct I9100AbortTrace *record, unsigned backboard)
+{
+    unsigned slot=backboard?1U:0U;
+    if (!OSCompareAndSwap(0U,1U,&i9100_ios6_slab_payload_guard[slot])) return;
+    volatile uint32_t *row=i9100_ios6_slab_payload[slot];
+    if (row[0]) {i9100_ios6_slab_payload_guard[slot]=0;return;}
+    for(unsigned n=0;n<12+1024;n++)row[n]=0;
+    row[1]=record->pid;row[2]=record->task;row[3]=record->slab;
+    row[4]=record->slab_object;row[5]=record->slab_expected;row[6]=record->slab_actual;
+    row[9]=1;row[10]=record->frames[0]-0x39280973U;row[11]=slot;
+    unsigned bytes=0;
+    if (record->slab>=4096 && record->slab<=0x3ffff000U && !(record->slab&4095U)) bytes=4096;
+    else if (record->slab>=4096 && record->slab<=0x3fffff00U) bytes=256;
+    if (bytes) {
+        row[8]=copyin((user_addr_t)record->slab,(void *)&row[12],bytes);
+        if (!row[8]) row[7]=bytes;
+    } else row[8]=1;
+    OSMemoryBarrier();row[0]=1;
+    if (backboard && i9100_backboard_vm_diag[1]==record->pid) i9100_backboard_vm_diag[3]=1;
+    OSMemoryBarrier();i9100_ios6_slab_payload_guard[slot]=0;
+}
 /* Latest candidate sandbox error buffer from the real tccd main abort site.
  * {sequence,pid,user-pointer,copy-status,text[128]}; never treated as stderr. */
 volatile uint32_t i9100_tccd_error_diag[4 + 32];
@@ -304,6 +331,7 @@ static void i9100_springboard_abort_note(proc_t p, int signum)
                 !copyin((user_addr_t)candidate+16U, &record.slab_actual, sizeof(unsigned)))
                 record.slab_status = 1;
         }
+        i9100_ios6_slab_bytes(&record,backboard);
     }
     if (backboard) ios7i9100_backboard_abort_publish(&record);
     else ios7i9100_abort_publish(&record);

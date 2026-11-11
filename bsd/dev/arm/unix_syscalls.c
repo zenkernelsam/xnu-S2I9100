@@ -111,6 +111,36 @@ extern const char *syscallnames[];
 #include <sys/syscall.h>
 #include <libkern/OSAtomic.h>
 #include "../../../pexpert/arm/i9100_mdns_observation.h"
+#define I9100_VM_OBSERVATION_IMPLEMENTATION 1
+#include "../../../pexpert/arm/i9100_vm_observation.h"
+static unsigned i9100_backboard_vm_enter(struct proc *p, unsigned code,
+    const void *arguments, unsigned nargs, unsigned argument_error,
+    const arm_saved_state_t *state, unsigned indirect)
+{
+    if ((code!=SYS_mmap && code!=SYS_munmap && code!=SYS_mprotect && code!=SYS_madvise) ||
+        strcmp(p->p_comm,"backboardd")) return 0;
+    int enabled=0;
+    if (!PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1) return 0;
+    uint64_t address=0,length=0,position=0;unsigned protection=0,flags=0,fd=0;
+    if (!argument_error) {
+        if (code==SYS_mmap) {
+            const struct mmap_args *a=arguments;
+            address=a->addr;length=a->len;protection=a->prot;flags=a->flags;
+            fd=a->fd;position=(uint64_t)a->pos;
+        } else if (code==SYS_munmap) {
+            const struct munmap_args *a=arguments;address=a->addr;length=a->len;
+        } else if (code==SYS_mprotect) {
+            const struct mprotect_args *a=arguments;
+            address=a->addr;length=a->len;protection=a->prot;
+        } else {
+            const struct madvise_args *a=arguments;
+            address=a->addr;length=a->len;flags=a->behav;
+        }
+    }
+    uint32_t raw[7];for(unsigned n=0;n<7;n++)raw[n]=state->r[n+(indirect?1U:0U)];
+    return i9100_vm_enter(p->p_pid,(unsigned)(uintptr_t)current_thread(),code,state->pc,state->lr,
+        address,length,protection,flags,fd,position,argument_error,raw,nargs);
+}
 
 /* count +64 {pid,role,code,nargs,args[7],error,result,pc,lr,stage}. */
 volatile uint32_t i9100_mdns_syscall_diag[1 + 64 * 16];
@@ -659,6 +689,10 @@ void unix_syscall(arm_saved_state_t * state)
     unsigned int lab_syslog_io_index = ios7lab_syslogd_io_enter(p, code, (void *)uthread->uu_arg);
 #endif
     AUDIT_SYSCALL_ENTER(code, p, uthread);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    unsigned i9100_vm_sequence=i9100_backboard_vm_enter(p,code,uthread->uu_arg,
+        (unsigned)callp->sy_narg,arm_argument_error,state,shift_args);
+#endif
 #if BOARD_CONFIG_ARMPBA8
     static boolean_t lab_preferences_marker_seen = FALSE;
     int lab_marker_enabled = 0;
@@ -721,6 +755,8 @@ void unix_syscall(arm_saved_state_t * state)
 #endif
     error = (*(callp->sy_call)) (p, (void *) uthread->uu_arg, &(uthread->uu_rval[0]));
 #if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_vm_leave(i9100_vm_sequence,p->p_pid,(unsigned)(uintptr_t)current_thread(),
+        error,(uint32_t)uthread->uu_rval[0],(uint32_t)uthread->uu_rval[1]);
     i9100_tcc_identity_note(p, code, (const uint32_t *)uthread->uu_arg,
         (unsigned)callp->sy_narg, error, (uint32_t)uthread->uu_rval[0], state);
     i9100_workq_boundary_exit(i9100_workq_trace, error, (uint32_t)uthread->uu_rval[0]);
