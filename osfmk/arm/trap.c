@@ -325,6 +325,32 @@ volatile uint32_t i9100_keyboard_fault_stack[10+14*3];
 volatile uint32_t i9100_ls_fault_stack[10+14*3];
 /* Actual bytes passed to the pinned iOS6 plist parser, retained before exit. */
 volatile uint32_t i9100_ls_fault_payload[16+2048];
+/* Exact witnessed iOS6 QuartzCore null-vtable fault. Retain the object's
+ * page before task teardown; these bytes do not repair the user object. */
+volatile uint32_t i9100_quartz_fault_payload[16+1024];
+static int i9100_quartz_fault_matches(const struct i9100_fault_snapshot *state,
+    const uint32_t *registers)
+{
+    uint32_t slide=state->pc-0x32cec750U,object=registers[5];
+    return state->type==4 && (state->psr&0x3fU)==0x30U &&
+        !(slide&4095U) && slide<0x40000000U-0x32cec750U &&
+        state->lr==0x32cec733U+slide && state->far==12U && !registers[0] &&
+        registers[1]==object && object>=4096U && object<=0x3ffffffcU && !(object&3U);
+}
+static void i9100_quartz_fault_bytes(const struct i9100_fault_snapshot *state,
+    const uint32_t *registers,unsigned pid,unsigned task)
+{
+    volatile uint32_t *p=i9100_quartz_fault_payload;
+    if(p[0] || !pid || !task || !i9100_quartz_fault_matches(state,registers))return;
+    memset((void *)p,0,sizeof(i9100_quartz_fault_payload));
+    uint32_t object=registers[5],page=object&~4095U;
+    p[1]=pid;p[2]=task;p[3]=state->pc;p[4]=state->lr;p[5]=state->far;
+    p[6]=object;p[7]=page;p[10]=1;p[11]=state->pc-0x32cec750U;
+    p[14]=object-page;p[15]=state->type;
+    p[9]=copyin((user_addr_t)page,(void *)&p[16],4096);
+    if(!p[9]){p[8]=4096;p[12]=p[20];p[13]=p[16+p[14]/4];}
+    OSMemoryBarrier();p[0]=1;
+}
 static volatile UInt32 i9100_ui_fault_stack_guard;
 static void i9100_ui_fault_stack_note(const struct i9100_fault_snapshot *state,
     const uint32_t *registers)
@@ -378,6 +404,9 @@ static void i9100_ui_fault_stack_note(const struct i9100_fault_snapshot *state,
             OSMemoryBarrier();p[0]=next?next:1;
         }
     }
+    if(out==i9100_springboard_fault_stack)
+        i9100_quartz_fault_bytes(state,registers,
+            proc_pid(thread->task->bsd_info),(uint32_t)(uintptr_t)thread->task);
     OSMemoryBarrier();i9100_ui_fault_stack_guard=0;
 }
 /* Ring of failed user exceptions with a real process identity. The older
