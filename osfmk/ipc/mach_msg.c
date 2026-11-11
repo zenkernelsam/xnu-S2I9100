@@ -151,8 +151,9 @@ static int i9100_xpc_boundary_enabled(void);
 volatile uint32_t i9100_tcc_wire_diag[1+64*140];
 volatile uint32_t i9100_ls_wire_diag[1+64*48];
 static volatile UInt32 i9100_service_wire_guard[2];
-/* Full publish envelopes must survive the many ordinary get-store calls.
- * Send completion updates only this copied record, never a consumed kmsg. */
+/* Full publish and witnessed application-query envelopes must survive the
+ * many ordinary get-store calls. Send completion updates only this copied
+ * record, never a consumed kmsg. */
 volatile uint32_t i9100_ls_publish_wire_diag[1+16*352];
 static volatile UInt32 i9100_ls_publish_guard;
 static unsigned i9100_ls_publish_record(unsigned stage, ipc_kmsg_t kmsg,
@@ -164,7 +165,9 @@ static unsigned i9100_ls_publish_record(unsigned stage, ipc_kmsg_t kmsg,
     if (address<begin || address-begin>kmsg->ikm_size) return 0;
     unsigned available=kmsg->ikm_size-(address-begin);
     if (available<sizeof(*h)) return 0;
-    if ((h->msgh_id != 14008 && h->msgh_id != 14108) || !i9100_xpc_boundary_enabled()) return 0;
+    if ((h->msgh_id != 14008 && h->msgh_id != 14108 &&
+         h->msgh_id != 14012 && h->msgh_id != 14112) ||
+        !i9100_xpc_boundary_enabled()) return 0;
     char name[16] = {0}; proc_name(proc_selfpid(), name, sizeof(name));
     if (strcmp(name,"lsd") && strcmp(name,"installd") && strcmp(name,"SpringBoard")) return 0;
     unsigned length=h->msgh_size;
