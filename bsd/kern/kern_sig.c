@@ -287,6 +287,24 @@ static void i9100_springboard_abort_note(proc_t p, int signum)
                 record.slab_status = 1;
         }
     }
+    /* iOS6 uses different libc/CoreGraphics addresses from the historical
+     * iOS7 captures above. Include the separately retained backboard record;
+     * an unrelated C++ terminate chain must not enter this copyin path. */
+    unsigned local6 = !tccd ? i9100_ios6_slab_local(&record, allocator_fp) : 0;
+    if (local6) {
+        unsigned slots[2], candidate;
+        record.slab_status = 2;
+        if (!copyin((user_addr_t)local6+36U, slots, sizeof(slots)) &&
+            slots[0] && slots[0] <= 0x3ffffffcU &&
+            (slots[1] & 0xffffff00U) == 0xdeafbe00U && (slots[1] & 255U) < 25U &&
+            !copyin((user_addr_t)slots[0], &candidate, sizeof(candidate))) {
+            record.slab_object = slots[0]; record.slab = candidate;
+            record.slab_expected = slots[1];
+            if (candidate && candidate <= 0x3fffffecU &&
+                !copyin((user_addr_t)candidate+16U, &record.slab_actual, sizeof(unsigned)))
+                record.slab_status = 1;
+        }
+    }
     if (backboard) ios7i9100_backboard_abort_publish(&record);
     else ios7i9100_abort_publish(&record);
 }

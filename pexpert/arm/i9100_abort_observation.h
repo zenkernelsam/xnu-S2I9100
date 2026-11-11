@@ -4,12 +4,29 @@
 #ifndef I9100_ABORT_OBSERVATION_H
 #define I9100_ABORT_OBSERVATION_H
 #define I9100_ABORT_TEXT 240U
-#define I9100_ABORT_FRAMES 8U
+#define I9100_ABORT_FRAMES 16U
 struct I9100AbortTrace {
     unsigned pid, task, pc, lr, sp, fp, count, error;
     unsigned frames[I9100_ABORT_FRAMES];
     unsigned slab, slab_object, slab_expected, slab_actual, slab_status;
 };
+/* Supplied iOS6 CoreGraphics slab_alloc: its NEON frame aligns the stack
+ * after saving48 bytes, then reserves112 bytes. Only the exact witnessed
+ * abort/assert/allocator chain permits reading the two saved list slots. */
+static unsigned i9100_ios6_slab_local(const struct I9100AbortTrace *trace,
+                                     unsigned allocator_fp)
+{
+    if (!trace || trace->count < 4) return 0;
+    unsigned slide = trace->frames[0] - 0x39280973U;
+    if ((slide & 4095U) || slide >= 0x40000000U - 0x39280973U ||
+        trace->frames[1] != 0x392614d1U + slide ||
+        trace->frames[2] != 0x32ce24f7U + slide ||
+        trace->frames[3] != 0x32ce2339U + slide ||
+        trace->sp < 4096U || trace->sp >= 0x40000000U ||
+        (allocator_fp & 3U) || allocator_fp < 160U || allocator_fp > 0x3ffffff0U) return 0;
+    unsigned local = ((allocator_fp + 8U - 48U) & ~15U) - 112U;
+    return local >= trace->sp && local <= 0x3fffffd0U ? local : 0;
+}
 struct I9100AbortObservation {
     unsigned sequence;
     struct I9100AbortTrace trace;
@@ -28,6 +45,8 @@ struct I9100StderrBuffer {
 };
 static struct I9100StderrBuffer i9100_stderr_buffer;
 static struct I9100StderrBuffer i9100_backboard_stderr_buffer;
+/* Host readers fall back to8 only for kernels lacking this schema marker. */
+volatile unsigned i9100_abort_frames = I9100_ABORT_FRAMES;
 volatile struct I9100AbortObservation i9100_abort_observation;
 volatile struct I9100AbortObservation i9100_backboard_abort_observation;
 
