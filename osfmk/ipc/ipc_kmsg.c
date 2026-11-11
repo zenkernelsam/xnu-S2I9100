@@ -117,6 +117,40 @@
 #include <security/mac_mach_internal.h>
 
 #include <string.h>
+#if BOARD_CONFIG_EXYNOS4210_I9100
+#include <pexpert/pexpert.h>
+#include <libkern/OSAtomic.h>
+#include <machine/machine_routines.h>
+extern int proc_selfpid(void);
+extern void proc_name(int,char *,int);
+#include "../../pexpert/arm/i9100_ls_delivery.h"
+static unsigned i9100_ls_put_capture(ipc_kmsg_t kmsg,mach_vm_address_t address,mach_msg_size_t size)
+{
+    int enabled=0;
+    if(!kmsg || !kmsg->ikm_header || size<sizeof(mach_msg_header_t) ||
+       (kmsg->ikm_header->msgh_id!=14008 && kmsg->ikm_header->msgh_id!=14012 &&
+        kmsg->ikm_header->msgh_id!=14108 && kmsg->ikm_header->msgh_id!=14112))return 0;
+    if(current_task()==kernel_task || ml_at_interrupt_context() ||
+       !ml_get_interrupts_enabled() || get_preemption_level()!=0 ||
+       !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1 ||
+       !kmsg || !kmsg->ikm_header)return 0;
+    uintptr_t start=(uintptr_t)(kmsg+1),at=(uintptr_t)kmsg->ikm_header;
+    if(at<start || at-start>kmsg->ikm_size)return 0;
+    unsigned available=kmsg->ikm_size-(at-start),sender=UINT32_MAX;
+    char name[16]={0};proc_name(proc_selfpid(),name,sizeof(name));
+    if(!strcmp(name,"lsd")){
+        unsigned offset=round_msg(kmsg->ikm_header->msgh_size);
+        if(size>available || offset>size || size-offset<sizeof(mach_msg_audit_trailer_t))return 0;
+        const mach_msg_audit_trailer_t *trailer=(const void *)(at+offset);
+        if(trailer->msgh_trailer_type!=MACH_MSG_TRAILER_FORMAT_0 ||
+           trailer->msgh_trailer_size<sizeof(*trailer) || trailer->msgh_trailer_size>size-offset)return 0;
+        sender=trailer->msgh_audit.val[5];char origin[16]={0};
+        proc_name(sender,origin,sizeof(origin));if(strcmp(origin,"SpringBoard"))return 0;
+    }
+    return i9100_ls_delivery_begin((const void *)at,available,size,address,
+        proc_selfpid(),(unsigned)(uintptr_t)current_thread(),(unsigned)(uintptr_t)current_task(),name,enabled,1,sender);
+}
+#endif
 
 #ifdef ppc
 #include <ppc/Firmware.h>
@@ -1516,11 +1550,19 @@ ipc_kmsg_put(
 		}
 		kprintf("type: %d\n", ((mach_msg_type_descriptor_t *)(((mach_msg_base_t *)kmsg->ikm_header)+1))->type);
 	}
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    unsigned delivery=i9100_ls_put_capture(kmsg,msg_addr,size);
+#endif
 	if (copyoutmsg((const char *) kmsg->ikm_header, msg_addr, size))
 		mr = MACH_RCV_INVALID_DATA;
 	else
 		mr = MACH_MSG_SUCCESS;
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_ls_delivery_end(delivery,proc_selfpid(),(unsigned)(uintptr_t)current_thread(),
+        (unsigned)(uintptr_t)current_task(),mr,!ml_at_interrupt_context() &&
+        ml_get_interrupts_enabled() && get_preemption_level()==0);
+#endif
 	ipc_kmsg_free(kmsg);
 	return mr;
 }

@@ -412,6 +412,29 @@ struct j1_vm_allocate_wire {
 };
 typedef char j1_vm_allocate_wire_size[
     sizeof(struct j1_vm_allocate_wire) == 20 ? 1 : -1];
+#if BOARD_CONFIG_EXYNOS4210_I9100
+#include <libkern/OSAtomic.h>
+extern int proc_selfpid(void);
+extern void proc_name(int,char *,int);
+/* The supplied lsd runloop handler allocates4160B before MIG demux. Keep
+ * this original trap result; failed allocation skips its reply callback. */
+volatile uint32_t i9100_ls_reply_alloc_diag[1+32*12];
+static void i9100_ls_alloc_note(const struct j1_vm_allocate_wire *wire,
+    unsigned result,unsigned backend,uint64_t before,unsigned after)
+{
+    int enabled=0;char name[16]={0};
+    if(wire->size_low!=0x1040U ||
+       !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
+    proc_name(proc_selfpid(),name,sizeof(name));if(strcmp(name,"lsd"))return;
+    UInt32 slot=i9100_ls_reply_alloc_diag[0];
+    if(slot>=32 || !OSCompareAndSwap(slot,slot+1,&i9100_ls_reply_alloc_diag[0]))return;
+    volatile uint32_t *r=&i9100_ls_reply_alloc_diag[1+slot*12];r[0]=0;
+    r[1]=proc_selfpid();r[2]=(unsigned)(uintptr_t)current_thread();r[3]=wire->target;
+    r[4]=wire->addr;r[5]=wire->size_low;r[6]=wire->size_high;r[7]=wire->flags;
+    r[8]=result;r[9]=backend;r[10]=(unsigned)before;r[11]=after;
+    OSMemoryBarrier();r[0]=slot+1;
+}
+#endif
 
 static kern_return_t
 j1_vm_allocate(struct j1_vm_allocate_wire *wire)
@@ -420,11 +443,17 @@ j1_vm_allocate(struct j1_vm_allocate_wire *wire)
     mach_vm_offset_t address32 = 0;
     task_t task = port_name_to_task(wire->target);
     kern_return_t rv = MACH_SEND_INVALID_DEST;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    unsigned allocated=0;uint64_t before=0;
+#endif
 
     if (task != current_task())
         goto done;
     if (copyin((user_addr_t)wire->addr, (char *)&address64, sizeof(address64)))
         goto done;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    before=address64;
+#endif
     if (wire->size_high ||
         (!(wire->flags & VM_FLAGS_ANYWHERE) && (address64 >> 32))) {
         rv = KERN_INVALID_ARGUMENT;
@@ -432,11 +461,17 @@ j1_vm_allocate(struct j1_vm_allocate_wire *wire)
     }
     address32 = (wire->flags & VM_FLAGS_ANYWHERE) ? 0 : (mach_vm_offset_t)address64;
     rv = mach_vm_allocate(task->map, &address32, wire->size_low, wire->flags);
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    allocated=1;
+#endif
     if (rv == KERN_SUCCESS) {
         address64 = (uint64_t)address32;
         rv = copyout(&address64, (user_addr_t)wire->addr, sizeof(address64));
     }
 done:
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_ls_alloc_note(wire,rv,allocated,before,address32);
+#endif
     if (task)
         task_deallocate(task);
     return rv;

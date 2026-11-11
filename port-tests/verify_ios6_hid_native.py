@@ -15,7 +15,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'assets/py-native-hid'))
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_HOOK_CODE, UC_HOOK_MEM_UNMAPPED
-from unicorn.arm_const import UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3, UC_ARM_REG_SP, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_CPSR
+from unicorn.arm_const import UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3, UC_ARM_REG_SP, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_CPSR, UC_ARM_REG_FPEXC
 
 REGS = [UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3]
 STACK, HEAP, STOP = 0x20000000, 0x21000000, 0x2001ffc0
@@ -27,11 +27,16 @@ STUBS = {0x31d48498:'data_ptr', 0x31d484b8:'data_len',
 
 
 class Native:
-    def __init__(self, cache, data):
+    def __init__(self, cache, data, cpu_model=None):
         self.cache, self.next, self.arrays, self.logs = cache, HEAP+0x10000, {}, []
         mo, mc = struct.unpack_from('<2I', cache, 16)
         self.maps = [struct.unpack_from('<QQQII', cache, mo+i*32) for i in range(mc)]
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
+        if cpu_model is not None:
+            # CPU selection must precede memory access/JIT initialization.
+            self.uc.ctl_set_cpu_model(cpu_model)
+            self.uc.cpr_write(15,0,1,0,2,0,False,0xf00000)
+            self.uc.reg_write(UC_ARM_REG_FPEXC,1<<30)
         self.uc.mem_map(STACK, 0x20000)
         self.uc.mem_map(HEAP, 0x200000)
         self.uc.mem_map(0x31d48000, 0x2000)
