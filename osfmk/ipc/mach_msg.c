@@ -672,6 +672,20 @@ extern void proc_name(int pid, char *buffer, int size);
 /* First four: budgets, timeouts, replies, ready. Last four: most recently
  * bounded request id/send size/receive size/original options (not atomic). */
 volatile uint32_t i9100_ls_bootstrap_diag[8];
+#define I9100_LS_UI_IMPLEMENTATION 1
+#include "../../pexpert/arm/i9100_ls_ui_budget.h"
+static unsigned i9100_ls_ui_send_budget(ipc_kmsg_t kmsg,mach_msg_option_t option,
+    mach_msg_size_t send_size,mach_msg_size_t receive_size,mach_msg_timeout_t timeout)
+{
+    int enabled=0;char caller[32]={0};
+    if(!kmsg || !kmsg->ikm_header || !i9100_xpc_boundary_enabled() ||
+       !PE_parse_boot_argn("i9100lsuitimeout",&enabled,sizeof(enabled)) || enabled!=1)return 0;
+    uintptr_t start=(uintptr_t)(kmsg+1),address=(uintptr_t)kmsg->ikm_header;
+    if(address<start || address-start>kmsg->ikm_size)return 0;
+    proc_name(proc_selfpid(),caller,sizeof(caller));
+    return i9100_ls_ui_pick(kmsg->ikm_header,kmsg->ikm_size-(address-start),
+        enabled,caller,option,send_size,receive_size,timeout);
+}
 /* Native and contracted store sizes must be observed at different stages.
  * count +16 {pid,native-size,user-size,type,bytes,initial-result,result,stage}. */
 volatile uint32_t i9100_ls_store_reply_diag[1+16*8];
@@ -1107,6 +1121,7 @@ mach_msg_receive_results(void)
     }
     i9100_mach_failure_record(2, msg_addr, self->ith_msize, option, mr);
     i9100_ls_bootstrap_receive_done(self, mr, i9100_store_reply);
+    i9100_ls_ui_done(proc_selfpid(),(uint32_t)(uintptr_t)self,mr,option);
 #endif
 #if BOARD_CONFIG_QSD8250_LEO
     leo_rpc060_note(leo_rpc060_receive_seq,LEO_RPC060_DONE,(uint32_t)mr,0);
@@ -1209,6 +1224,7 @@ mach_msg_overwrite_trap(
 		ipc_kmsg_t kmsg;
 #if BOARD_CONFIG_EXYNOS4210_I9100
         unsigned int i9100_ls_budget = 0;
+        unsigned int i9100_ls_ui_budget = 0;
         unsigned int i9100_tcc_lookup = 0;
         unsigned int i9100_ls_publish_sequence = 0;
 #endif
@@ -1229,6 +1245,7 @@ mach_msg_overwrite_trap(
         i9100_tcc_lookup=i9100_tcc_bootstrap_send(kmsg);
         i9100_ls_budget = i9100_ls_bootstrap_send_budget(kmsg->ikm_header,
             option, send_size, rcv_size, msg_timeout);
+        i9100_ls_ui_budget=i9100_ls_ui_send_budget(kmsg,option,send_size,rcv_size,msg_timeout);
 #endif
 
 #if BOARD_CONFIG_ARMPBA8 || BOARD_CONFIG_EXYNOS4210_I9100
@@ -1324,11 +1341,26 @@ mach_msg_overwrite_trap(
         }
 #endif
 #if BOARD_CONFIG_EXYNOS4210_I9100
+        if(i9100_ls_ui_budget){
+            ipc_port_t peer=(ipc_port_t)kmsg->ikm_header->msgh_remote_port;int is_lsd=0;
+            if(IP_VALID(peer)){
+                ip_lock(peer);
+                is_lsd=i9100_ls_bootstrap_peer(ip_active(peer),peer->ip_context,peer->ip_receiver_name);
+                ip_unlock(peer);
+            }
+            if(i9100_ls_ui_apply(i9100_ls_ui_budget,is_lsd,&option,&msg_timeout))
+                i9100_ls_ui_note(proc_selfpid(),(uint32_t)(uintptr_t)current_thread(),1,0,option);
+            else i9100_ls_ui_budget=0;
+        }
         i9100_ls_publish_sequence=i9100_ls_publish_record(2,kmsg,option,MACH_MSG_SUCCESS);
 #endif
 		mr = ipc_kmsg_send(kmsg, option & MACH_SEND_TIMEOUT, msg_timeout);
 #if BOARD_CONFIG_EXYNOS4210_I9100
         i9100_ls_publish_finish(i9100_ls_publish_sequence,1,mr);
+        if(i9100_ls_ui_budget){
+            i9100_ls_ui_note(proc_selfpid(),(uint32_t)(uintptr_t)current_thread(),2,mr,option);
+            if(mr==MACH_MSG_SUCCESS)i9100_ls_ui_begin(proc_selfpid(),(uint32_t)(uintptr_t)current_thread());
+        }
         if(i9100_tcc_lookup && mr!=MACH_MSG_SUCCESS)i9100_tcc_bootstrap_finish(0,mr);
         if (i9100_ls_budget && (option & MACH_SEND_TIMEOUT) &&
             mr == MACH_SEND_TIMED_OUT)
@@ -1368,6 +1400,9 @@ mach_msg_overwrite_trap(
 
 		mr = ipc_mqueue_copyin(space, rcv_name, &mqueue, &object);
 		if (mr != MACH_MSG_SUCCESS) {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+            i9100_ls_ui_done(proc_selfpid(),(uint32_t)(uintptr_t)self,mr,option);
+#endif
 #if BOARD_CONFIG_QSD8250_LEO
             leo_rpc060_note(leo_rpc060_seq,LEO_RPC060_DONE,(uint32_t)mr,0);
 #endif
