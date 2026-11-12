@@ -151,6 +151,29 @@ static int i9100_xpc_boundary_enabled(void);
 volatile uint32_t i9100_tcc_wire_diag[1+64*140];
 volatile uint32_t i9100_ls_wire_diag[1+64*48];
 static volatile UInt32 i9100_service_wire_guard[2];
+#define I9100_LS_QUERY_IMPLEMENTATION 1
+#include "../../pexpert/arm/i9100_ls_query_diag.h"
+static unsigned i9100_ls_query_kmsg(unsigned stage,ipc_kmsg_t kmsg,
+    mach_msg_option_t option,mach_msg_return_t result)
+{
+    if(!kmsg || !kmsg->ikm_header || !i9100_xpc_boundary_enabled())return 0;
+    uintptr_t begin=(uintptr_t)(kmsg+1),at=(uintptr_t)kmsg->ikm_header;
+    if(at<begin || at-begin>kmsg->ikm_size)return 0;
+    unsigned available=kmsg->ikm_size-(at-begin),length=kmsg->ikm_header->msgh_size;
+    if(length<24 || length>available || length>I9100_LS_QUERY_BYTES)return 0;
+    if(kmsg->ikm_header->msgh_id!=14012 && kmsg->ikm_header->msgh_id!=14112)return 0;
+    char name[16]={0};proc_name(proc_selfpid(),name,sizeof(name));
+    unsigned sender=UINT32_MAX,euid=UINT32_MAX;
+    unsigned offset=round_msg(length);
+    if((stage==3 || stage==4) && offset<=available && available-offset>=sizeof(mach_msg_audit_trailer_t)){
+        const mach_msg_audit_trailer_t *t=(const void *)(at+offset);
+        if(t->msgh_trailer_type==MACH_MSG_TRAILER_FORMAT_0 &&
+           t->msgh_trailer_size>=sizeof(*t) && t->msgh_trailer_size<=MAX_TRAILER_SIZE &&
+           t->msgh_trailer_size<=available-offset){sender=t->msgh_audit.val[5];euid=t->msgh_audit.val[1];}
+    }
+    return i9100_ls_query_record(stage,(const void *)at,available,length,proc_selfpid(),
+        (unsigned)(uintptr_t)current_thread(),name,1,sender,euid,option,result,0,0);
+}
 /* Full publish and witnessed application-query envelopes must survive the
  * many ordinary get-store calls. Send completion updates only this copied
  * record, never a consumed kmsg. */
@@ -208,6 +231,7 @@ static void i9100_ls_publish_finish(unsigned sequence, unsigned sending, mach_ms
 static void i9100_service_wire_record(unsigned stage, ipc_kmsg_t kmsg,
     mach_msg_option_t option, mach_msg_return_t status)
 {
+    if(stage==3 || stage==4)(void)i9100_ls_query_kmsg(stage,kmsg,option,status);
     if(stage==3 || stage==4)(void)i9100_ls_publish_record(stage,kmsg,option,status);
     if (!kmsg || !kmsg->ikm_header || !i9100_xpc_boundary_enabled()) return;
     const mach_msg_header_t *header = kmsg->ikm_header;
@@ -1227,6 +1251,7 @@ mach_msg_overwrite_trap(
         unsigned int i9100_ls_ui_budget = 0;
         unsigned int i9100_tcc_lookup = 0;
         unsigned int i9100_ls_publish_sequence = 0;
+        unsigned int i9100_ls_query_sequence = 0;
 #endif
 
 		mr = ipc_kmsg_get(msg_addr, send_size, &kmsg);
@@ -1242,6 +1267,7 @@ mach_msg_overwrite_trap(
 #if BOARD_CONFIG_EXYNOS4210_I9100
         i9100_service_wire_record(1, kmsg, option, mr);
         i9100_ls_publish_sequence=i9100_ls_publish_record(1,kmsg,option,mr);
+        i9100_ls_query_sequence=i9100_ls_query_kmsg(1,kmsg,option,mr);
         i9100_tcc_lookup=i9100_tcc_bootstrap_send(kmsg);
         i9100_ls_budget = i9100_ls_bootstrap_send_budget(kmsg->ikm_header,
             option, send_size, rcv_size, msg_timeout);
@@ -1275,6 +1301,7 @@ mach_msg_overwrite_trap(
 		mr = ipc_kmsg_copyin(kmsg, space, map, option & MACH_SEND_NOTIFY);
 #if BOARD_CONFIG_EXYNOS4210_I9100
         i9100_ls_publish_finish(i9100_ls_publish_sequence,0,mr);
+        i9100_ls_query_finish(i9100_ls_query_sequence,proc_selfpid(),(unsigned)(uintptr_t)current_thread(),mr);
 #endif
 #if BOARD_CONFIG_QSD8250_LEO
         leo_rpc060_note(leo_rpc060_seq,mr==MACH_MSG_SUCCESS?LEO_RPC060_COPYIN:LEO_RPC060_DONE,(uint32_t)mr,0);
@@ -1353,10 +1380,12 @@ mach_msg_overwrite_trap(
             else i9100_ls_ui_budget=0;
         }
         i9100_ls_publish_sequence=i9100_ls_publish_record(2,kmsg,option,MACH_MSG_SUCCESS);
+        i9100_ls_query_sequence=i9100_ls_query_kmsg(2,kmsg,option,MACH_MSG_SUCCESS);
 #endif
 		mr = ipc_kmsg_send(kmsg, option & MACH_SEND_TIMEOUT, msg_timeout);
 #if BOARD_CONFIG_EXYNOS4210_I9100
         i9100_ls_publish_finish(i9100_ls_publish_sequence,1,mr);
+        i9100_ls_query_finish(i9100_ls_query_sequence,proc_selfpid(),(unsigned)(uintptr_t)current_thread(),mr);
         if(i9100_ls_ui_budget){
             i9100_ls_ui_note(proc_selfpid(),(uint32_t)(uintptr_t)current_thread(),2,mr,option);
             if(mr==MACH_MSG_SUCCESS)i9100_ls_ui_begin(proc_selfpid(),(uint32_t)(uintptr_t)current_thread());

@@ -38,7 +38,7 @@ static int PE_parse_boot_argn(const char*n,int*p,unsigned s){(void)n;assert(s==4
 static int proc_selfpid(void){return 70;}
 static unsigned current_thread(void){return 0x1234;}
 static void proc_name(int pid,char*out,int n){(void)pid;strncpy(out,process_name,n);}
-'''+func+r'''
+'''+f'#define I9100_LS_QUERY_IMPLEMENTATION 1\n#include "{repo}/pexpert/arm/i9100_ls_query_diag.h"\n'+func+r'''
 int main(void){
  unsigned char source[1664]={0};uint32_t id=14008;memcpy(source+20,&id,4);source[42]=0x41;
  unsigned token=i9100_ls_delivery_begin(source,sizeof(source),1400,0x12000,70,0x1234,0x80001200,"lsd",1,1,58);

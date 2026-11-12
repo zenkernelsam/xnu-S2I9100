@@ -419,6 +419,7 @@ extern void proc_name(int,char *,int);
 /* The supplied lsd runloop handler allocates4160B before MIG demux. Keep
  * this original trap result; failed allocation skips its reply callback. */
 volatile uint32_t i9100_ls_reply_alloc_diag[1+32*12];
+#include "../../pexpert/arm/i9100_ls_query_diag.h"
 static void i9100_ls_alloc_note(const struct j1_vm_allocate_wire *wire,
     unsigned result,unsigned backend,uint64_t before,unsigned after)
 {
@@ -426,6 +427,8 @@ static void i9100_ls_alloc_note(const struct j1_vm_allocate_wire *wire,
     if(wire->size_low!=0x1040U ||
        !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
     proc_name(proc_selfpid(),name,sizeof(name));if(strcmp(name,"lsd"))return;
+    i9100_ls_query_allocation(proc_selfpid(),(unsigned)(uintptr_t)current_thread(),wire->target,
+        wire->addr,wire->size_low,wire->size_high,wire->flags,result,backend,(unsigned)before,after);
     UInt32 slot=i9100_ls_reply_alloc_diag[0];
     if(slot>=32 || !OSCompareAndSwap(slot,slot+1,&i9100_ls_reply_alloc_diag[0]))return;
     volatile uint32_t *r=&i9100_ls_reply_alloc_diag[1+slot*12];r[0]=0;
