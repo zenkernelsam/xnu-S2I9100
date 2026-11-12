@@ -9,6 +9,7 @@
 #include "AppleARMPE.h"
 #include <kern/debug.h>
 #include <pexpert/device_tree.h>
+#include <pexpert/pexpert.h>
 
 #define HIGH_SCORE  100000
 #define super IOPlatformExpert
@@ -128,6 +129,20 @@ IOService *AppleARMPE::probe(IOService * provider, SInt32 * score)
 
 bool AppleARMPE::getMachineName(char *name, int maxLength)
 {
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    /* Original iOS6 MobileGestalt classifies DeviceClass from hw.machine
+     * using iPhone/iPod/iPad prefixes. The Samsung model falls through to
+     * NULL and assetsd calls CFEqual(NULL, CFSTR("iPad")), trapping forever
+     * in the inherited undef handler. Supply the selected armv7 userland
+     * profile here; device-tree model/compatible and hw.model stay native. */
+    int wireABI = 0;
+    PE_parse_boot_argn("i9100hidabi", &wireABI, sizeof(wireABI));
+    if (wireABI == 6) {
+        if (!name || maxLength < 1) return false;
+        strlcpy(name, "iPhone3,1", maxLength);
+        return true;
+    }
+#endif
     OSData *        prop;
     bool        ok = false;
 
