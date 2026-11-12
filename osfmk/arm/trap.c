@@ -323,6 +323,8 @@ static int __abort_count = 0;
 volatile uint32_t i9100_springboard_fault_stack[10+14*3];
 volatile uint32_t i9100_keyboard_fault_stack[10+14*3];
 volatile uint32_t i9100_ls_fault_stack[10+14*3];
+volatile uint32_t i9100_commcenter_fault_stack[10+14*3];
+#include "i9100_commcenter_fault.h"
 /* Actual bytes passed to the pinned iOS6 plist parser, retained before exit. */
 volatile uint32_t i9100_ls_fault_payload[16+2048];
 /* Exact witnessed iOS6 QuartzCore null-vtable fault. Retain the object's
@@ -363,7 +365,9 @@ static void i9100_ui_fault_stack_note(const struct i9100_fault_snapshot *state,
     const char *name=proc_name_address(thread->task->bsd_info);
     volatile uint32_t *out=!strcmp(name,"SpringBoard")?i9100_springboard_fault_stack:
         !strcmp(name,"kbd")?i9100_keyboard_fault_stack:
+        !strncmp(name,"CommCenterClass",15)?i9100_commcenter_fault_stack:
         !strcmp(name,"lsd")?i9100_ls_fault_stack:0;
+    if(out==i9100_commcenter_fault_stack && out[0])return;
     if (!out || !OSCompareAndSwap(0U,1U,&i9100_ui_fault_stack_guard))return;
     uint32_t sequence=out[0]+1U,frame=registers[7];out[0]=0;
     out[1]=proc_pid(thread->task->bsd_info);out[2]=(uint32_t)(uintptr_t)thread->task;
@@ -407,6 +411,8 @@ static void i9100_ui_fault_stack_note(const struct i9100_fault_snapshot *state,
     if(out==i9100_springboard_fault_stack)
         i9100_quartz_fault_bytes(state,registers,
             proc_pid(thread->task->bsd_info),(uint32_t)(uintptr_t)thread->task);
+    if(out==i9100_commcenter_fault_stack)
+        i9100_commcenter_fault_note(state,registers);
     OSMemoryBarrier();i9100_ui_fault_stack_guard=0;
 }
 /* Ring of failed user exceptions with a real process identity. The older
