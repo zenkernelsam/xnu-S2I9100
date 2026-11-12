@@ -38,6 +38,20 @@ int main(void){
     q.ndr[4]=1;strcpy(q.name,"com.apple.AppStore");struct Query saved=q;
     assert(sizeof(q)==288);
     assert(i9100_ls_ui_pick(&q.header,sizeof(q),1,"SpringBoard",3,288,48,0)==5000);
+    struct Query location=q;strcpy(location.name,"com.apple.locationd");
+    assert(i9100_ls_ui_pick(&location.header,sizeof(location),1,"locationd",3,288,48,0)==5000);
+    assert(!i9100_ls_ui_pick(&location.header,sizeof(location),1,"SpringBoard",3,288,48,0));
+    assert(!i9100_ls_ui_pick(&q.header,sizeof(q),1,"locationd",3,288,48,0));
+    for(unsigned n=0;n<13;n++){
+        struct Query b=location;unsigned avail=sizeof(b),enabled=1,opt=3,sent=288,recv=48,t=0;
+        const char *caller="locationd";
+        switch(n){case 0:avail--;break;case 1:enabled=0;break;case 2:caller="lsd";break;
+        case 3:b.header.msgh_id=14007;break;case 4:opt=1;break;case 5:opt=0x103;break;
+        case 6:sent=284;break;case 7:recv=40;break;case 8:t=50;break;
+        case 9:b.header.msgh_bits|=0x80000000;break;case 10:b.ndr[4]=0;break;
+        case 11:strcpy(b.name,"com.apple.mobilephone");break;case 12:strcat(b.name,".extra");break;}
+        assert(!i9100_ls_ui_pick(&b.header,avail,enabled,caller,opt,sent,recv,t));
+    }
     for(unsigned n=0;n<13;n++){
         struct Query b=q;unsigned avail=sizeof(b),enabled=1,opt=3,sent=288,recv=48,t=0;
         const char *caller="SpringBoard";
@@ -60,13 +74,16 @@ int main(void){
     i9100_ls_ui_done(56,0x1234,0x10004003,option);assert(i9100_ls_ui_diag[0]==3);
     assert(i9100_ls_ui_diag[1+2*8+4]==0x10004003);
     i9100_ls_ui_done(56,0x1234,0,option);assert(i9100_ls_ui_diag[0]==3);
+    i9100_ls_ui_note(38,0x2468,1,0,option);i9100_ls_ui_begin(38,0x2468);
+    i9100_ls_ui_done(38,0x2468,0x10004003,option);assert(i9100_ls_ui_diag[0]==5);
+    i9100_ls_ui_done(38,0x2468,0,option);assert(i9100_ls_ui_diag[0]==5);
     i9100_ls_ui_note(56,0x5678,1,0,option);
     i9100_ls_ui_note(56,0x5678,2,0x10000003,option); /* Original send failure; no pending receive. */
-    i9100_ls_ui_done(56,0x5678,0,option);assert(i9100_ls_ui_diag[0]==5);
+    i9100_ls_ui_done(56,0x5678,0,option);assert(i9100_ls_ui_diag[0]==7);
     FILE *f=fopen("ui.bin","wb");assert(f);
     assert(fwrite((const void*)i9100_ls_ui_diag,1,sizeof(i9100_ls_ui_diag),f)==sizeof(i9100_ls_ui_diag));fclose(f);
     for(unsigned n=0;n<40;n++)i9100_ls_ui_note(56,0x1234,1,0,option);
-    assert(i9100_ls_ui_diag[0]==45);
+    assert(i9100_ls_ui_diag[0]==47);
     puts("PASS production exact query/bounds/peer application and real-result ownership; IPC/atomics modeled");
 }
 '''
