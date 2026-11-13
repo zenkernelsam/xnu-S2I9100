@@ -110,17 +110,17 @@ for depth in (1,2,3,8,16):
  cpu.mem_write(OWNER+12,struct.pack('<I',MUTEX));cpu.mem_write(OWNER+208,struct.pack('<I',77))
  cpu.mem_write(MUTEX,struct.pack('<3I',0x4d555458,0,(depth<<16)|0x2068))
  cpu.reg_write(UC_ARM_REG_SP,SP);cpu.reg_write(UC_ARM_REG_R5,OWNER);cpu.reg_write(UC_ARM_REG_R6,QUERY|1)
- cpu.reg_write(UC_ARM_REG_R8,0x8888);cpu.reg_write(UC_ARM_REG_R9,0x9999)
+ cpu.reg_write(UC_ARM_REG_R8,0x8888);cpu.reg_write(UC_ARM_REG_R10,0xaaaa)
  cpu.reg_write(UC_ARM_REG_R0,8);cpu.reg_write(UC_ARM_REG_R1,9);cpu.reg_write(UC_ARM_REG_R2,10);cpu.reg_write(UC_ARM_REG_R3,11)
  events=[];held=[depth]
  def hook(uc,at,size,unused):
   if at==0x3169e85c:uc.emu_stop();return
   if at==0x39217ec0:
    assert uc.reg_read(UC_ARM_REG_R0)==MUTEX and held[0]>0
-   held[0]-=1;events.append('unlock');uc.reg_write(UC_ARM_REG_R0,0)
+   held[0]-=1;events.append('unlock');uc.reg_write(UC_ARM_REG_R0,0);uc.reg_write(UC_ARM_REG_R9,0xdeadbeef)
   elif at==0x39215fa0:
    assert uc.reg_read(UC_ARM_REG_R0)==MUTEX
-   held[0]+=1;events.append('lock');uc.reg_write(UC_ARM_REG_R0,0)
+   held[0]+=1;events.append('lock');uc.reg_write(UC_ARM_REG_R0,0);uc.reg_write(UC_ARM_REG_R9,0xdeadbeef)
   elif at==QUERY:
    assert held[0]==0 and events==['unlock']*depth
    assert [uc.reg_read(r) for r in [UC_ARM_REG_R0,UC_ARM_REG_R1,UC_ARM_REG_R2,UC_ARM_REG_R3]]==[77,SP+12,0,0]
@@ -132,7 +132,7 @@ for depth in (1,2,3,8,16):
  cpu.hook_add(UC_HOOK_CODE,hook);cpu.emu_start(0x10000001,0x3169e85c,count=1200)
  assert cpu.reg_read(UC_ARM_REG_PC)==0x3169e85c and cpu.reg_read(UC_ARM_REG_SP)==SP
  assert cpu.reg_read(UC_ARM_REG_R0)==0x1234 and held[0]==depth
- assert cpu.reg_read(UC_ARM_REG_R8)==0x8888 and cpu.reg_read(UC_ARM_REG_R9)==0x9999
+ assert cpu.reg_read(UC_ARM_REG_R8)==0x8888 and cpu.reg_read(UC_ARM_REG_R10)==0xaaaa
  assert events==['unlock']*depth+['real-query']+['lock']*depth
  runtime=struct.unpack('<16I',cpu.mem_read(0x10003000,64))
  assert runtime[:9]==(1,4,MUTEX,0x4d555458,(depth<<16)|0x2068,depth,0,depth,0x1234)

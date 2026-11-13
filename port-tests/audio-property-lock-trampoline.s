@@ -4,7 +4,7 @@
 .global i9100_audio_property_trampoline
 .thumb_func
 i9100_audio_property_trampoline:
-    push {r8,r9}
+    push {r8,r10}
     push {r0-r3,r6,lr}
     ldr r12,.Ldiag
     ldr r0,[r12]
@@ -37,7 +37,7 @@ i9100_audio_property_trampoline:
 .Ldepth:
     ldr r12,.Ldiag
     str r8,[r12,#20]
-    mov r9,r8
+    mov r10,r8
     movs r8,#0
 .Lrelease:
     ldr r0,[r5,#12]
@@ -48,7 +48,7 @@ i9100_audio_property_trampoline:
     cmp r0,#0
     bne .Lquery
     add r8,r8,#1
-    subs r9,r9,#1
+    subs r10,r10,#1
     bne .Lrelease
 .Lquery:
     ldr r12,.Ldiag
@@ -86,7 +86,7 @@ i9100_audio_property_trampoline:
     str r0,[r12,#4]
     pop {r0-r3,r6,lr}
     add sp,#8
-    pop {r8,r9}
+    pop {r8,r10}
     ldr r12,.Lreturn
     bx r12
     .balign 4
