@@ -3,6 +3,8 @@
 #include <vm/vm_map.h>
 #include <vm/vm_kern.h>
 #include <vm/pmap.h>
+/* BSD's exported task header deliberately hides struct task. */
+extern int get_task_numacts(task_t);
 /* Own-task runtime repair for the exact witnessed iOS6 CoreMedia callback.
  * Its external AudioObject query enters VirtualAudio while the global lock
  * is held, reversing the initialization thread's plugin->global order.
@@ -22,12 +24,20 @@ static int i9100_audio_property_range(uint32_t slide)
 {
     return !(slide&4095U) && slide<0x40000000U-0x394951c0U;
 }
+static kern_return_t i9100_audio_property_rx(vm_map_t map,vm_map_offset_t start)
+{
+    kern_return_t result=vm_map_protect(map,start,start+4096,
+        VM_PROT_READ|VM_PROT_EXECUTE,FALSE);
+    if(result==KERN_SUCCESS)result=vm_map_protect(map,start,start+4096,
+        VM_PROT_READ|VM_PROT_EXECUTE,TRUE);
+    return result;
+}
 static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
     const arm_saved_state_t *state)
 {
     int abi=0,enabled=0,requested=0;
     if(code!=372U || !p || strcmp(p->p_comm,"mediaserverd") ||
-       !p->task || ((task_t)p->task)->thread_count!=1 ||
+       !p->task || get_task_numacts((task_t)p->task)!=1 ||
        (state->cpsr&0x1fU)!=0x10U || ml_at_interrupt_context() ||
        !ml_get_interrupts_enabled() || get_preemption_level()!=0 ||
        !PE_parse_boot_argn("i9100hidabi",&abi,sizeof(abi)) || abi!=6 ||
@@ -55,7 +65,7 @@ static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
     if(copyout(bytes,(user_addr_t)address,sizeof(storage))){diag[7]=1;goto failed;}
     flush_dcache((vm_offset_t)address,sizeof(storage),FALSE);
     invalidate_icache((vm_offset_t)address,sizeof(storage),FALSE);
-    result=vm_map_protect(map,address,address+4096,VM_PROT_READ|VM_PROT_EXECUTE,TRUE);
+    result=i9100_audio_property_rx(map,address);
     diag[6]=(uint32_t)result;if(result!=KERN_SUCCESS)goto failed;
     result=vm_map_protect(map,site&~4095U,(site&~4095U)+4096,
         VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY,FALSE);
@@ -66,14 +76,15 @@ static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
     if(copyout(branch,(user_addr_t)site,sizeof(branch))){
         diag[7]=2;
         if(copyout(original,(user_addr_t)site,8))diag[7]=3;
+        flush_dcache((vm_offset_t)site,8,FALSE);
+        invalidate_icache((vm_offset_t)site,8,FALSE);
         goto restore;
     }
     flush_dcache((vm_offset_t)site,8,FALSE);
     invalidate_icache((vm_offset_t)site,8,FALSE);
     diag[8]=1;
 restore:
-    result=vm_map_protect(map,site&~4095U,(site&~4095U)+4096,
-        VM_PROT_READ|VM_PROT_EXECUTE,TRUE);diag[9]=(uint32_t)result;
+    result=i9100_audio_property_rx(map,site&~4095U);diag[9]=(uint32_t)result;
     OSMemoryBarrier();diag[0]=diag[8] && result==KERN_SUCCESS?2U:3U;
     return;
 failed:

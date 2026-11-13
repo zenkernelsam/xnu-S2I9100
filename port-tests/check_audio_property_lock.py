@@ -23,7 +23,7 @@ typedef uint32_t UInt32,user_addr_t,vm_map_offset_t,vm_offset_t;typedef int kern
 struct map {unsigned min_offset;};typedef struct map*vm_map_t;
 struct task {unsigned thread_count;};typedef struct task*task_t;struct proc {const char*p_comm;unsigned p_pid;void*task;};typedef struct proc*proc_t;
 typedef struct {uint32_t cpsr,pc;} arm_saved_state_t;
-static unsigned abi=6,enabled=1,irq,preemption,interrupts=1,checks,protects,writes,fail_at,fail_write,reads;
+static unsigned abi=6,enabled=1,irq,preemption,interrupts=1,checks,protects,writes,fail_at,fail_write,reads,target_cur,target_max,site_cur,site_max;
 static struct map map={4096};static unsigned char site[24],target[68];
 #define FALSE 0
 #define TRUE 1
@@ -43,20 +43,29 @@ static int ml_get_interrupts_enabled(void){return interrupts;}
 static int PE_parse_boot_argn(const char*n,void*out,unsigned size){(void)size;*(int*)out=!strcmp(n,"i9100hidabi")?abi:enabled;return 1;}
 static int OSCompareAndSwap(unsigned old,unsigned v,volatile uint32_t*p){if(*p!=old)return 0;*p=v;return 1;}
 static vm_map_t current_map(void){return &map;}
+int get_task_numacts(task_t t){return t->thread_count;}
 static int copyin(user_addr_t at,void*out,unsigned size){reads++;if(at!=0x3179e848 || size!=24)return 14;memcpy(out,site,size);return 0;}
 static int copyout(const void*in,user_addr_t at,unsigned size){writes++;if(writes==fail_write)return 14;
  if(at==0x10000 && size==68)memcpy(target,in,size);else if(at==0x3179e848 && size==8)memcpy(site,in,size);else return 14;return 0;}
-static int vm_map_enter(vm_map_t m,vm_map_offset_t*a,unsigned n,unsigned mask,unsigned flags,void*o,unsigned off,unsigned copy,unsigned cur,unsigned max,unsigned inh){(void)m;(void)n;(void)mask;(void)flags;(void)o;(void)off;(void)copy;(void)cur;(void)max;(void)inh;*a=0x10000;return fail_at==1?2:0;}
-static int vm_map_protect(vm_map_t m,unsigned a,unsigned e,unsigned prot,unsigned max){(void)m;(void)a;(void)e;(void)prot;(void)max;protects++;return fail_at==protects+1?2:0;}
+static int vm_map_enter(vm_map_t m,vm_map_offset_t*a,unsigned n,unsigned mask,unsigned flags,void*o,unsigned off,unsigned copy,unsigned cur,unsigned max,unsigned inh){(void)m;(void)n;(void)mask;(void)flags;(void)o;(void)off;(void)copy;(void)inh;*a=0x10000;target_cur=cur;target_max=max;return fail_at==1?2:0;}
+static int vm_map_protect(vm_map_t m,unsigned a,unsigned e,unsigned prot,unsigned max){
+ (void)m;(void)e;protects++;if(fail_at==protects+1)return 2;
+ unsigned*cur=a==0x10000?&target_cur:&site_cur;unsigned*cap=a==0x10000?&target_max:&site_max;
+ if(prot&VM_PROT_COPY)*cap|=VM_PROT_WRITE;
+ if((prot&~VM_PROT_COPY)&~*cap)return 2;
+ if(max){*cap=prot&~VM_PROT_COPY;*cur&=*cap;}else *cur=prot&~VM_PROT_COPY;
+ return 0;
+}
 static void flush_dcache(unsigned a,unsigned n,unsigned phys){(void)a;(void)n;(void)phys;}
 static void invalidate_icache(unsigned a,unsigned n,unsigned phys){(void)a;(void)n;(void)phys;}
 static void check(int ok,const char*why){checks++;if(!ok){fprintf(stderr,"FAIL %s\n",why);exit(1);}}
 '''
 suffix=r'''
-static void reset(void){memset((void*)i9100_audio_property_lock_diag,0,sizeof(i9100_audio_property_lock_diag));memcpy(site,i9100_audio_property_original,24);reads=protects=writes=0;fail_at=fail_write=0;}
+static void reset(void){memset((void*)i9100_audio_property_lock_diag,0,sizeof(i9100_audio_property_lock_diag));memcpy(site,i9100_audio_property_original,24);reads=protects=writes=0;fail_at=fail_write=0;target_cur=0;target_max=0;site_cur=site_max=VM_PROT_READ|VM_PROT_EXECUTE;}
 int main(void){struct task t={1};struct proc p={"mediaserverd",33,&t};arm_saved_state_t s={0x10,0x393cdc34};
  reset();i9100_audio_property_lock_prepare(&p,372,&s);check(i9100_audio_property_lock_diag[0]==2,"installation complete");
- check(i9100_audio_property_lock_diag[8] && !i9100_audio_property_lock_diag[9] && protects==3,"RX restoration succeeded");
+ check(i9100_audio_property_lock_diag[8] && !i9100_audio_property_lock_diag[9] && protects==5,"RX restoration succeeded");
+ check(target_cur==5 && target_max==5 && site_cur==5 && site_max==5,"both pages execute with maximum RX under actual protection intersection semantics");
  check(!memcmp(site,"\xdf\xf8\x00\xf0",4) && *(uint32_t*)(site+4)==0x10001,"literal branch points to private target");
  check(*(uint32_t*)(target+56)==0x39317ec1 && *(uint32_t*)(target+60)==0x39315fa1 && *(uint32_t*)(target+64)==0x3179e85d,"all cache literals use actual slide");
  unsigned saved=writes;i9100_audio_property_lock_prepare(&p,372,&s);check(writes==saved,"no second installation");
@@ -69,7 +78,7 @@ int main(void){struct task t={1};struct proc p={"mediaserverd",33,&t};arm_saved_
  reset();s.pc+=2;i9100_audio_property_lock_prepare(&p,372,&s);check(!writes,"unrelated syscall point rejected");s.pc-=2;
  reset();site[0]^=1;i9100_audio_property_lock_prepare(&p,372,&s);check(!writes,"unknown original image rejected");
  reset();fail_at=1;i9100_audio_property_lock_prepare(&p,372,&s);check(i9100_audio_property_lock_diag[0]==3&&!writes,"VM allocation failure preserved");
- reset();fail_write=2;i9100_audio_property_lock_prepare(&p,372,&s);check(!memcmp(site,i9100_audio_property_original,8)&&protects==3&&i9100_audio_property_lock_diag[0]==3,"failed site write restores bytes and RX");
+ reset();fail_write=2;i9100_audio_property_lock_prepare(&p,372,&s);check(!memcmp(site,i9100_audio_property_original,8)&&protects==5&&site_cur==5&&site_max==5&&i9100_audio_property_lock_diag[0]==3,"failed site write restores bytes and RX");
  printf("%u production install gate/failure checks passed; VM and copy modeled\n",checks);}
 '''
 (out/'check.c').write_text(prefix+body+suffix)
