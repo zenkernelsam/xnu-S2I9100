@@ -10,7 +10,7 @@ if os.environ.get('I9100_CPU_CAPPED')!='1':
 from pathlib import Path
 from datetime import datetime
 import subprocess,struct,re,json,importlib.util,mmap
-repo=Path(__file__).resolve().parents[1];root=repo.parents[1]
+repo=Path(__file__).resolve().parents[1];root=repo.parent
 out=repo/'out'/('audio-property-check-'+datetime.now().strftime('%Y%m%d-%H%M%S'));out.mkdir()
 header=(repo/'bsd/dev/arm/i9100_audio_property_lock.h').read_text()
 body='\n'.join(line for line in header.splitlines() if not line.startswith('#include'))
@@ -26,7 +26,7 @@ struct map {unsigned min_offset;};typedef struct map*vm_map_t;
 struct task {unsigned thread_count;};typedef struct task*task_t;struct proc {const char*p_comm;unsigned p_pid;void*task;};typedef struct proc*proc_t;
 typedef struct {uint32_t cpsr,pc;} arm_saved_state_t;
 static unsigned abi=6,enabled=1,irq,preemption,interrupts=1,checks,protects,writes,fail_at,fail_write,reads,target_cur,target_max,site_cur,site_max;
-static struct map map={4096};static unsigned char site[24],target[68];
+static struct map map={4096};static unsigned char site[24],target[156];
 #define FALSE 0
 #define TRUE 1
 #define KERN_SUCCESS 0
@@ -48,7 +48,7 @@ static vm_map_t current_map(void){return &map;}
 int get_task_numacts(task_t t){return t->thread_count;}
 static int copyin(user_addr_t at,void*out,unsigned size){reads++;if(at!=0x3179e848 || size!=24)return 14;memcpy(out,site,size);return 0;}
 static int copyout(const void*in,user_addr_t at,unsigned size){writes++;if(writes==fail_write)return 14;
- if(at==0x10000 && size==68)memcpy(target,in,size);else if(at==0x3179e848 && size==8)memcpy(site,in,size);else return 14;return 0;}
+ if(at==0x10000 && size==156)memcpy(target,in,size);else if(at==0x3179e848 && size==8)memcpy(site,in,size);else return 14;return 0;}
 int vm_map_enter(vm_map_t m,vm_map_offset_t*a,unsigned n,unsigned mask,int flags,void*o,uint64_t off,int copy,int cur,int max,int inh){
  if(m!=&map || *a!=4096 || n!=4096 || mask || flags!=VM_FLAGS_ANYWHERE || o || off || copy || cur!=3 || max!=7 || inh!=VM_INHERIT_COPY)abort();
  *a=0x10000;target_cur=cur;target_max=max;return fail_at==1?2:0;}
@@ -71,7 +71,7 @@ int main(void){struct task t={1};struct proc p={"mediaserverd",33,&t};arm_saved_
  check(i9100_audio_property_lock_diag[8] && !i9100_audio_property_lock_diag[9] && protects==5,"RX restoration succeeded");
  check(target_cur==5 && target_max==5 && site_cur==5 && site_max==5,"both pages execute with maximum RX under actual protection intersection semantics");
  check(!memcmp(site,"\xdf\xf8\x00\xf0",4) && *(uint32_t*)(site+4)==0x10001,"literal branch points to private target");
- check(*(uint32_t*)(target+56)==0x39317ec1 && *(uint32_t*)(target+60)==0x39315fa1 && *(uint32_t*)(target+64)==0x3179e85d,"all cache literals use actual slide");
+ check(*(uint32_t*)(target+144)==0x39317ec1 && *(uint32_t*)(target+148)==0x39315fa1 && *(uint32_t*)(target+152)==0x3179e85d,"all cache literals use actual slide");
  unsigned saved=writes;i9100_audio_property_lock_prepare(&p,372,&s);check(writes==saved,"no second installation");
  memcpy(site,i9100_audio_property_original,24);site_cur=site_max=5;p.p_pid=78;
  i9100_audio_property_lock_prepare(&p,372,&s);
@@ -95,29 +95,85 @@ subprocess.run([str(out/'check')],check=True)
 subprocess.run(['clang','--target=armv7-none-eabi','-c',str(repo/'port-tests/audio-property-lock-trampoline.s'),'-o',str(out/'trampoline.o')],check=True)
 b=(out/'trampoline.o').read_bytes();off=struct.unpack_from('<I',b,32)[0];n,num,strings=struct.unpack_from('<3H',b,46);sh=[struct.unpack_from('<10I',b,off+i*n) for i in range(num)];st=b[sh[strings][4]:sh[strings][4]+sh[strings][5]]
 code=next(b[h[4]:h[4]+h[5]] for h in sh if st[h[0]:st.find(b'\0',h[0])]==b'.text')
-numbers=bytes(int(x,16) for x in re.search(r'i9100_audio_property_code\[68\]=\{(.*?)\};',header,re.S)[1].replace('\n','').split(',') if x.strip())
+numbers=bytes(int(x,16) for x in re.search(r'i9100_audio_property_code\[156\]=\{(.*?)\};',header,re.S)[1].replace('\n','').split(',') if x.strip())
 assert code==numbers
 sys.path.insert(0,str(root/'assets/py-native-hid'))
 from unicorn import Uc,UC_ARCH_ARM,UC_MODE_THUMB,UC_HOOK_CODE
 from unicorn.arm_const import *
-cpu=Uc(UC_ARCH_ARM,UC_MODE_THUMB);cpu.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_A9)
-cpu.mem_map(0x10000000,0x20000);cpu.mem_write(0x10000000,code)
-for page in [0x39217000,0x39215000,0x3169e000,0x10020000]:cpu.mem_map(page,4096)
-SP=0x1001f000;OWNER=0x10001000;QUERY=0x10020000
-cpu.mem_write(OWNER+12,struct.pack('<I',0x10002000));cpu.mem_write(OWNER+208,struct.pack('<I',77))
-cpu.reg_write(UC_ARM_REG_SP,SP);cpu.reg_write(UC_ARM_REG_R5,OWNER);cpu.reg_write(UC_ARM_REG_R6,QUERY|1)
-cpu.reg_write(UC_ARM_REG_R0,8);cpu.reg_write(UC_ARM_REG_R1,9);cpu.reg_write(UC_ARM_REG_R2,10);cpu.reg_write(UC_ARM_REG_R3,11)
-events=[]
-def hook(uc,at,size,unused):
- if at==0x3169e85c:uc.emu_stop();return
- if at in (0x39217ec0,0x39215fa0):
-  assert uc.reg_read(UC_ARM_REG_R0)==0x10002000;events.append('unlock' if at==0x39217ec0 else 'lock');uc.reg_write(UC_ARM_REG_R0,0)
- elif at==QUERY:
-  assert events==['unlock'];assert [uc.reg_read(r) for r in [UC_ARM_REG_R0,UC_ARM_REG_R1,UC_ARM_REG_R2,UC_ARM_REG_R3]]==[77,SP+12,0,0]
-  assert struct.unpack('<2I',uc.mem_read(SP,8))==(16,SP+24);events.append('real-query');uc.reg_write(UC_ARM_REG_R0,0x1234)
- else:return
- uc.reg_write(UC_ARM_REG_PC,uc.reg_read(UC_ARM_REG_LR))
-cpu.hook_add(UC_HOOK_CODE,hook);cpu.emu_start(0x10000001,0x3169e85c,count=500)
-assert cpu.reg_read(UC_ARM_REG_PC)==0x3169e85c and cpu.reg_read(UC_ARM_REG_SP)==SP and cpu.reg_read(UC_ARM_REG_R0)==0x1234 and events==['unlock','real-query','lock']
-result=dict(passed=True,scope=__doc__,events=events,original_result_preserved=True,phone_operations=0)
+results=[]
+for depth in (1,2,3,8,16):
+ cpu=Uc(UC_ARCH_ARM,UC_MODE_THUMB);cpu.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_A9)
+ cpu.mem_map(0x10000000,0x20000);cpu.mem_write(0x10000000,code)
+ for page in [0x39217000,0x39215000,0x3169e000,0x10020000]:cpu.mem_map(page,4096)
+ SP=0x1001f000;OWNER=0x10001000;QUERY=0x10020000;MUTEX=0x10002000
+ cpu.mem_write(OWNER+12,struct.pack('<I',MUTEX));cpu.mem_write(OWNER+208,struct.pack('<I',77))
+ cpu.mem_write(MUTEX,struct.pack('<3I',0x4d555458,0,(depth<<16)|0x2068))
+ cpu.reg_write(UC_ARM_REG_SP,SP);cpu.reg_write(UC_ARM_REG_R5,OWNER);cpu.reg_write(UC_ARM_REG_R6,QUERY|1)
+ cpu.reg_write(UC_ARM_REG_R8,0x8888);cpu.reg_write(UC_ARM_REG_R9,0x9999)
+ cpu.reg_write(UC_ARM_REG_R0,8);cpu.reg_write(UC_ARM_REG_R1,9);cpu.reg_write(UC_ARM_REG_R2,10);cpu.reg_write(UC_ARM_REG_R3,11)
+ events=[];held=[depth]
+ def hook(uc,at,size,unused):
+  if at==0x3169e85c:uc.emu_stop();return
+  if at==0x39217ec0:
+   assert uc.reg_read(UC_ARM_REG_R0)==MUTEX and held[0]>0
+   held[0]-=1;events.append('unlock');uc.reg_write(UC_ARM_REG_R0,0)
+  elif at==0x39215fa0:
+   assert uc.reg_read(UC_ARM_REG_R0)==MUTEX
+   held[0]+=1;events.append('lock');uc.reg_write(UC_ARM_REG_R0,0)
+  elif at==QUERY:
+   assert held[0]==0 and events==['unlock']*depth
+   assert [uc.reg_read(r) for r in [UC_ARM_REG_R0,UC_ARM_REG_R1,UC_ARM_REG_R2,UC_ARM_REG_R3]]==[77,SP+12,0,0]
+   query_sp=uc.reg_read(UC_ARM_REG_SP)
+   assert query_sp%8==0 and struct.unpack('<2I',uc.mem_read(query_sp,8))==(16,SP+24)
+   events.append('real-query');uc.reg_write(UC_ARM_REG_R0,0x1234)
+  else:return
+  uc.reg_write(UC_ARM_REG_PC,uc.reg_read(UC_ARM_REG_LR))
+ cpu.hook_add(UC_HOOK_CODE,hook);cpu.emu_start(0x10000001,0x3169e85c,count=1200)
+ assert cpu.reg_read(UC_ARM_REG_PC)==0x3169e85c and cpu.reg_read(UC_ARM_REG_SP)==SP
+ assert cpu.reg_read(UC_ARM_REG_R0)==0x1234 and held[0]==depth
+ assert cpu.reg_read(UC_ARM_REG_R8)==0x8888 and cpu.reg_read(UC_ARM_REG_R9)==0x9999
+ assert events==['unlock']*depth+['real-query']+['lock']*depth
+ results.append(dict(depth=depth,events=events,held_after=held[0],original_result_preserved=True))
+native_counts=[]
+with (root/'assets/ios6-extract/dyld_cache6_armv7').open('rb') as f:
+ with mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ) as cache:
+  mo,mc=struct.unpack_from('<2I',cache,16)
+  maps=[struct.unpack_from('<QQQII',cache,mo+n*32) for n in range(mc)]
+  def original(address,size):
+   va,length,offset,_,_=next(row for row in maps if row[0]<=address and address+size<=row[0]+row[1])
+   return bytes(cache[offset+address-va:offset+address-va+size])
+  for depth in (2,3,8,16):
+   uc=Uc(UC_ARCH_ARM,UC_MODE_THUMB);uc.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_A9)
+   uc.mem_map(0x10000000,0x20000);uc.mem_map(0x39245000,4096)
+   uc.mem_write(0x39245000,original(0x39245000,4096))
+   mutex=0x10002000;flags=(depth<<16)|0x2068
+   uc.mem_write(mutex+8,struct.pack('<I',flags));uc.mem_write(mutex+32,struct.pack('<Q',112))
+   uc.reg_write(UC_ARM_REG_R5,mutex);uc.reg_write(UC_ARM_REG_R8,flags)
+   uc.reg_write(UC_ARM_REG_SP,0x1001f000);uc.reg_write(UC_ARM_REG_R7,0x1001f080)
+   reached=[]
+   def native_stop(uc,at,size,unused):
+    if at==0x39245a8c:reached.append(at);uc.emu_stop()
+   uc.hook_add(UC_HOOK_CODE,native_stop)
+   uc.emu_start(0x39245921,0x39245a8c,count=32)
+   count=struct.unpack('<I',uc.mem_read(mutex+8,4))[0]>>16
+   owner=struct.unpack('<Q',uc.mem_read(mutex+32,8))[0]
+   assert count==depth-1 and owner==112 and uc.reg_read(UC_ARM_REG_PC)==0x39245a8c
+   native_counts.append(dict(operation='original recursive drop branch',depth=depth,
+       count_after=count,owner_after=owner,full_release_not_reached=True))
+  for depth in (1,2,3,8):
+   uc=Uc(UC_ARCH_ARM,UC_MODE_THUMB);uc.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_A9)
+   uc.mem_map(0x10000000,0x20000);uc.mem_map(0x39216000,4096)
+   uc.mem_write(0x39216000,original(0x39216000,4096));mutex=0x10002000
+   flags=(depth<<16)|0x2068;uc.mem_write(mutex+8,struct.pack('<I',flags))
+   uc.mem_write(mutex+32,struct.pack('<Q',112));uc.mem_write(0x1001f008,struct.pack('<Q',112))
+   uc.reg_write(UC_ARM_REG_R0,flags);uc.reg_write(UC_ARM_REG_R1,2)
+   uc.reg_write(UC_ARM_REG_R11,mutex);uc.reg_write(UC_ARM_REG_SP,0x1001f000)
+   def native_stop(uc,at,size,unused):
+    if at==0x39216162:uc.emu_stop()
+   uc.hook_add(UC_HOOK_CODE,native_stop);uc.emu_start(0x3921608f,0x39216162,count=40)
+   count=struct.unpack('<I',uc.mem_read(mutex+8,4))[0]>>16
+   assert count==depth+1 and uc.reg_read(UC_ARM_REG_PC)==0x39216162
+   native_counts.append(dict(operation='original recursive owner lock branch',depth=depth,count_after=count))
+result=dict(passed=True,scope=__doc__,recursive_depth_cases=results,
+            original_recursive_instruction_cases=native_counts,phone_operations=0)
 (out/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result,indent=2));print('EVIDENCE',out)
