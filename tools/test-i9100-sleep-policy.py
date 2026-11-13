@@ -19,9 +19,9 @@ def main():
     parser.add_argument('--kernel', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     a = parser.parse_args()
-    workspace = Path(__file__).resolve().parents[3]
+    workspace = Path(__file__).resolve().parents[2]
     spec = importlib.util.spec_from_file_location('memory',
-        workspace/'neighbor/uniloader/scripts/i9100/live-memory.py')
+        workspace/'uniloader-S2I9100/scripts/i9100/live-memory.py')
     m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
     symbols = m.Symbols(a.kernel)
     data = a.kernel.read_bytes()

@@ -1,0 +1,57 @@
+#!/bin/bash
+# Linux port of mig.sh — preprocesses .defs with armv7-darwin clang, pipes to migcom.
+HERE=$(cd -- "$(dirname -- "$0")" && pwd -P)
+if [[ -x "$HERE/migcom" ]]; then
+    DEFAULT_MIGCOM="$HERE/migcom"
+else
+    DEFAULT_MIGCOM=$(cd -- "$HERE/../../../.." && pwd -P)/assets/i9100-toolchain/bin/migcom
+fi
+MIGCOM=${MIGCOM:-$DEFAULT_MIGCOM}
+C=${MIGCC:-clang}
+ARCH=${MIGARCH:-armv7}
+TRIPLE=${MIGTRIPLE:-armv7-apple-darwin}
+
+if [ $# -eq 1 ] && [ "$1" = "-version" ] ; then
+    "$MIGCOM" "$@"
+    exit $?
+fi
+
+cppflags=("-D__MACH30__" "--target=${TRIPLE}" "-mthumb" "-D__arm__" "-DARM_BOARD_CONFIG_I9100")
+migflags=()
+files=()
+
+until [ $# -eq 0 ]
+do
+    case "$1" in
+        -[dtqkKQvVtTrRsSlLxXnN] ) migflags+=("$1"); shift;;
+        -i ) migflags+=("$1" "$2"); shift; shift;;
+        -user|-server|-header|-sheader|-iheader|-dheader|-maxonstack )
+            migflags+=("$1" "$2"); shift; shift;;
+        -arch ) shift; shift;;
+        -target ) shift; shift;;
+        -split|-novouchers ) migflags+=("$1"); shift;;
+        -MD ) cppflags+=("$1"); shift;;
+        -cpp) shift; shift;;
+        -cc) C="$2"; shift; shift;;
+        -migcom) MIGCOM="$2"; shift; shift;;
+        -isysroot) shift; shift;;  # sysroot headers come from xnu tree itself
+        -* ) cppflags+=("$1"); shift;;
+        * ) break;;
+    esac
+done
+
+rc=0
+until [ $# -eq 0 ]
+do
+    file="$1"; shift
+    base="$(basename "${file}" .defs)"
+    sourcedir="$(dirname "${file}")"
+    temp="$(mktemp -d)/${base}"
+    (echo "#line 1 \"${file}\"" ; cat "${file}") > "${temp}.c"
+    if ! "$C" -E "${cppflags[@]}" -I "${sourcedir}" "${temp}.c" | "$MIGCOM" "${migflags[@]}"; then
+        printf 'Retained MIG temporary input: %s\n' "$temp.c" >&2
+        exit 1
+    fi
+    # Temporary inputs remain in /tmp; never permanently delete user files.
+done
+exit $rc

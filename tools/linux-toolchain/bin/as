@@ -1,0 +1,17 @@
+#!/bin/bash
+# darwin `as` shim → clang integrated assembler (armv7 only)
+args=()
+for a in "$@"; do
+  case "$a" in
+    -arch) shift_next=1;;
+    *) args+=("$a");;
+  esac
+done
+# drop the arch VALUE too: rebuild without it
+out=(); skip=0
+for a in "$@"; do
+  if [ $skip -eq 1 ]; then skip=0; continue; fi
+  if [ "$a" = "-arch" ]; then skip=1; continue; fi
+  out+=("$a")
+done
+exec clang --target=armv7-apple-darwin -mthumb -c "${out[@]}"

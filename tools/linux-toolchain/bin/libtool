@@ -1,0 +1,15 @@
+#!/bin/bash
+# minimal darwin libtool -static shim → llvm-ar
+out=""; objs=(); i=1
+while [ $i -le $# ]; do
+  a="${!i}"
+  case "$a" in
+    -static) ;;
+    -o) i=$((i+1)); out="${!i}";;
+    -filelist) i=$((i+1)); while read -r f; do objs+=("$f"); done < "${!i}";;
+    -arch_only|-syslibroot|-L|-l*) i=$((i+1));;
+    *) objs+=("$a");;
+  esac
+  i=$((i+1))
+done
+exec llvm-ar-14 rcs "$out" "${objs[@]}"

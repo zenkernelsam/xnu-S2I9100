@@ -25,14 +25,15 @@ def main():
         parser.error('Output must stay inside this repository out')
     output.mkdir(parents=True, exist_ok=True)
     build = repo / 'BUILD/obj/RELEASE_ARM_EXYNOS4210_I9100'
-    env = dict(os.environ, TC='/root/i9100-toolchain', SDKROOT='/',
-        LD64_WRAPPER='/root/i9100-toolchain/bin/ld64', SRCROOT=str(repo),
+    toolchain = repo.parent / 'assets/i9100-toolchain'
+    env = dict(os.environ, TC=str(toolchain), SDKROOT='/',
+        LD64_WRAPPER=str(toolchain / 'bin/ld64'), SRCROOT=str(repo),
         OBJROOT=str(repo / 'BUILD/obj'), SYMROOT=str(repo / 'BUILD/sym'),
         DSTROOT=str(repo / 'BUILD/dst'), KERNEL_CONFIG='RELEASE',
         ARCH_CONFIG='ARM', MACHINE_CONFIG='EXYNOS4210_I9100',
         TARGET_CONFIGS='RELEASE ARM EXYNOS4210_I9100')
     env['TARGET'] = str(build)
-    env['PATH'] = '/root/i9100-toolchain/bin:' + env['PATH']
+    env['PATH'] = str(toolchain / 'bin') + ':' + env['PATH']
     commands = []
     for item in args.objects:
         rel = Path(item)
