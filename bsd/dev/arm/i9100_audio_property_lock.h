@@ -50,7 +50,9 @@ static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
     if(copyin((user_addr_t)site,original,sizeof(original)) ||
        memcmp(original,i9100_audio_property_original,sizeof(original)))return;
     if(!OSCompareAndSwap(0U,1U,&i9100_audio_property_lock_diag[0]))return;
-    vm_map_t map=current_map();vm_map_offset_t address=vm_map_min(map);
+    /* ANYWHERE uses this as a lower bound; avoid the private vm_map_min
+     * macro that is absent from BSD's exported vm_map.h. Keep page zero. */
+    vm_map_t map=current_map();vm_map_offset_t address=4096;
     volatile uint32_t *diag=i9100_audio_property_lock_diag;
     diag[1]=p->p_pid;diag[2]=(uint32_t)(uintptr_t)p->task;diag[3]=slide;diag[4]=site;
     uint32_t storage[17];unsigned char *bytes=(unsigned char *)storage;
