@@ -190,6 +190,8 @@ extern unsigned int vm_page_free_count;
 /* count +8 {pid,role,raw-wait-status,task,own-context,exception,code,subcode,stage}.
  * Scalar lifecycle only; no copyin or VM faults during process termination. */
 volatile uint32_t i9100_mdns_lifecycle_diag[1 + 8 * 9];
+/* First eight media exits, including original wait status and CS flags. */
+volatile uint32_t i9100_media_lifecycle_diag[1+8*10];
 extern void ios7i9100_process_exit(unsigned, unsigned, unsigned, unsigned,
     unsigned, unsigned, unsigned, unsigned, unsigned, unsigned);
 /* A remote termination (for example jetsam) must never attribute the killing
@@ -198,6 +200,19 @@ extern void ios7i9100_process_exit(unsigned, unsigned, unsigned, unsigned,
 static void i9100_springboard_exit_note(proc_t p, int rv, thread_t self,
                                       struct uthread *ut)
 {
+    int media_enabled=0;
+    if(!strcmp(p->p_comm,"mediaserverd") &&
+       PE_parse_boot_argn("i9100xpcdiag",&media_enabled,sizeof(media_enabled)) && media_enabled==1){
+        UInt32 slot=i9100_media_lifecycle_diag[0];
+        if(slot<8 && OSCompareAndSwap(slot,slot+1,&i9100_media_lifecycle_diag[0])){
+            unsigned own=get_threadtask(self)==p->task;
+            volatile uint32_t *row=&i9100_media_lifecycle_diag[1+slot*10];
+            row[0]=p->p_pid;row[1]=rv;row[2]=(uint32_t)(uintptr_t)p->task;row[3]=own;
+            row[4]=own?ut->uu_exception:0;row[5]=own?ut->uu_code:0;
+            row[6]=own?ut->uu_subcode:0;row[7]=p->p_csflags;row[8]=0;
+            OSMemoryBarrier();row[9]=1;
+        }
+    }
     unsigned mdns_role = i9100_mdns_observation_role(p->p_comm);
     int mdns_enabled = 0;
     if (mdns_role && PE_parse_boot_argn("i9100xpcdiag", &mdns_enabled,

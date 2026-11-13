@@ -17,6 +17,7 @@ extern kern_return_t vm_map_enter(vm_map_t,vm_map_offset_t *,vm_map_size_t,
  * Private COW code releases that lock around the query and reacquires it.
  * No API result is forged and the cached/SD image stays unchanged. */
 volatile uint32_t i9100_audio_property_lock_diag[12];
+volatile uint32_t i9100_audio_property_lock_history[1+8*12];
 static const unsigned char i9100_audio_property_original[24]={
     0xd5,0xf8,0xd0,0x00,0x06,0xac,0x10,0x23,0x03,0xa9,0x8d,0xe8,
     0x18,0x00,0x00,0x22,0x00,0x23,0xb0,0x47,0x08,0xbb,0x08,0x98};
@@ -50,16 +51,21 @@ static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
        !PE_parse_boot_argn("i9100audiolock",&requested,sizeof(requested)) || requested!=1 ||
        !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
     uint32_t slide=(state->pc&~1U)-0x392cdc34U;
-    if(!i9100_audio_property_range(slide) || i9100_audio_property_lock_diag[0])return;
+    if(!i9100_audio_property_range(slide))return;
+    volatile uint32_t *diag=i9100_audio_property_lock_diag;
+    uint32_t status=diag[0],attempt=diag[11];
+    if(status==1 || attempt>=8 || (status && diag[1]==(uint32_t)p->p_pid &&
+       diag[2]==(uint32_t)(uintptr_t)p->task))return;
     unsigned char original[24];
     uint32_t site=0x3169e848U+slide;
     if(copyin((user_addr_t)site,original,sizeof(original)) ||
        memcmp(original,i9100_audio_property_original,sizeof(original)))return;
-    if(!OSCompareAndSwap(0U,1U,&i9100_audio_property_lock_diag[0]))return;
+    if(!OSCompareAndSwap(status,1U,&diag[0]))return;
+    for(unsigned n=1;n<12;n++)diag[n]=0;
+    diag[11]=attempt+1;
     /* ANYWHERE uses this as a lower bound; avoid the private vm_map_min
      * macro that is absent from BSD's exported vm_map.h. Keep page zero. */
     vm_map_t map=current_map();vm_map_offset_t address=4096;
-    volatile uint32_t *diag=i9100_audio_property_lock_diag;
     diag[1]=p->p_pid;diag[2]=(uint32_t)(uintptr_t)p->task;diag[3]=slide;diag[4]=site;
     uint32_t storage[17];unsigned char *bytes=(unsigned char *)storage;
     memcpy(bytes,i9100_audio_property_code,sizeof(storage));
@@ -102,8 +108,11 @@ restore:
     result=i9100_audio_property_rx(map,site&~4095U);diag[9]=(uint32_t)result;
     diag[10]=8;
     OSMemoryBarrier();diag[0]=diag[8] && result==KERN_SUCCESS?2U:3U;
-    return;
+    goto record;
 failed:
     OSMemoryBarrier();diag[0]=3U;
+record:
+    for(unsigned n=0;n<12;n++)i9100_audio_property_lock_history[1+attempt*12+n]=diag[n];
+    OSMemoryBarrier();i9100_audio_property_lock_history[0]=attempt+1;
 }
 #endif

@@ -65,7 +65,7 @@ static void invalidate_icache(unsigned a,unsigned n,unsigned phys){(void)a;(void
 static void check(int ok,const char*why){checks++;if(!ok){fprintf(stderr,"FAIL %s\n",why);exit(1);}}
 '''
 suffix=r'''
-static void reset(void){memset((void*)i9100_audio_property_lock_diag,0,sizeof(i9100_audio_property_lock_diag));memcpy(site,i9100_audio_property_original,24);reads=protects=writes=0;fail_at=fail_write=0;target_cur=0;target_max=0;site_cur=site_max=VM_PROT_READ|VM_PROT_EXECUTE;}
+static void reset(void){memset((void*)i9100_audio_property_lock_diag,0,sizeof(i9100_audio_property_lock_diag));memset((void*)i9100_audio_property_lock_history,0,sizeof(i9100_audio_property_lock_history));memcpy(site,i9100_audio_property_original,24);reads=protects=writes=0;fail_at=fail_write=0;target_cur=0;target_max=0;site_cur=site_max=VM_PROT_READ|VM_PROT_EXECUTE;}
 int main(void){struct task t={1};struct proc p={"mediaserverd",33,&t};arm_saved_state_t s={0x10,0x393cdc34};
  reset();i9100_audio_property_lock_prepare(&p,372,&s);check(i9100_audio_property_lock_diag[0]==2,"installation complete");
  check(i9100_audio_property_lock_diag[8] && !i9100_audio_property_lock_diag[9] && protects==5,"RX restoration succeeded");
@@ -73,6 +73,10 @@ int main(void){struct task t={1};struct proc p={"mediaserverd",33,&t};arm_saved_
  check(!memcmp(site,"\xdf\xf8\x00\xf0",4) && *(uint32_t*)(site+4)==0x10001,"literal branch points to private target");
  check(*(uint32_t*)(target+56)==0x39317ec1 && *(uint32_t*)(target+60)==0x39315fa1 && *(uint32_t*)(target+64)==0x3179e85d,"all cache literals use actual slide");
  unsigned saved=writes;i9100_audio_property_lock_prepare(&p,372,&s);check(writes==saved,"no second installation");
+ memcpy(site,i9100_audio_property_original,24);site_cur=site_max=5;p.p_pid=78;
+ i9100_audio_property_lock_prepare(&p,372,&s);
+ check(i9100_audio_property_lock_diag[0]==2 && i9100_audio_property_lock_diag[1]==78 && i9100_audio_property_lock_history[0]==2,"new process gets its own installation");
+ check(i9100_audio_property_lock_history[2]==33 && i9100_audio_property_lock_history[14]==78,"old and new owners retained separately");p.p_pid=33;
  reset();p.p_comm="SpringBoard";i9100_audio_property_lock_prepare(&p,372,&s);check(!reads&&!writes,"process scope");p.p_comm="mediaserverd";
  reset();t.thread_count=2;i9100_audio_property_lock_prepare(&p,372,&s);check(!reads&&!writes,"only before worker creation");t.thread_count=1;
  reset();abi=7;i9100_audio_property_lock_prepare(&p,372,&s);check(!writes,"ABI scope");abi=6;
