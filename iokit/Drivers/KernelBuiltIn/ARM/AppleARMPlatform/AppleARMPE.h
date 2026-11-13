@@ -21,6 +21,7 @@ class AppleARMPE:public IODTPlatformExpert {
     IOService *probe(IOService * provider, SInt32 * score);
     bool start(IOService * provider);
     bool getMachineName(char *name, int maxLength);
+    bool getModelName(char *name, int maxLength);
     const char *deleteList(void);
     const char *excludeList(void);
     void registerNVRAMController(IONVRAMController * caller);

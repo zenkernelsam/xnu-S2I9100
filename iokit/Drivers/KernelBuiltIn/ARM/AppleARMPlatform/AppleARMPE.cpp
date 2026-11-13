@@ -134,7 +134,7 @@ bool AppleARMPE::getMachineName(char *name, int maxLength)
      * using iPhone/iPod/iPad prefixes. The Samsung model falls through to
      * NULL and assetsd calls CFEqual(NULL, CFSTR("iPad")), trapping forever
      * in the inherited undef handler. Supply the selected armv7 userland
-     * profile here; device-tree model/compatible and hw.model stay native. */
+     * profile here; device-tree model/compatible stay native. */
     int wireABI = 0;
     PE_parse_boot_argn("i9100hidabi", &wireABI, sizeof(wireABI));
     if (wireABI == 6) {
@@ -156,4 +156,23 @@ bool AppleARMPE::getMachineName(char *name, int maxLength)
         strlcpy( name, "Power Macintosh", maxLength );
     
     return(true);
+}
+
+bool AppleARMPE::getModelName(char *name, int maxLength)
+{
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    /* iOS6 CommCenterClassic asks MobileGestalt for HWModelStr, then parses
+     * an uppercase board letter, number and AP suffix. The native Samsung
+     * compatible string fails that parser and its "success" assertion.
+     * Match the selected iPhone3,1 userland profile without changing DT
+     * model/compatible or advertising a working modem. */
+    int wireABI = 0;
+    PE_parse_boot_argn("i9100hidabi", &wireABI, sizeof(wireABI));
+    if (wireABI == 6) {
+        if (!name || maxLength < 1) return false;
+        strlcpy(name, "N90AP", maxLength);
+        return true;
+    }
+#endif
+    return super::getModelName(name, maxLength);
 }
