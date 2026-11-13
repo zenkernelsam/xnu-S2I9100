@@ -129,6 +129,7 @@ extern void ios7i9100_signal_request(unsigned, unsigned, unsigned, unsigned,
  * Opt-in count +16 {target,signal,source,pc,lr,caller,irq,flavor,name[4],stage}. */
 volatile uint32_t i9100_init_term_diag[1 + 16 * 13];
 volatile uint32_t i9100_media_signal_diag[1+8*13];
+#include "i9100_media_kill_payload.h"
 static void i9100_springboard_signal_note(proc_t p, int signum,
     unsigned caller_pc, unsigned flavor)
 {
@@ -155,6 +156,7 @@ static void i9100_springboard_signal_note(proc_t p, int signum,
             if (context != PROC_NULL && state != NULL &&
                 (state->cpsr & 0x1fU) == 0x10U) {
                 pc = state->pc; lr = state->lr;
+                if(media && context==p)i9100_media_kill_note(p,state,signum,flavor);
             }
         }
     }
