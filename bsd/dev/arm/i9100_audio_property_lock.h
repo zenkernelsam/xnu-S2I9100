@@ -5,6 +5,12 @@
 #include <vm/pmap.h>
 /* BSD's exported task header deliberately hides struct task. */
 extern int get_task_numacts(task_t);
+/* vm_map_enter is MACH_KERNEL_PRIVATE in the exported header; its object
+ * offset is 64-bit even in this ARM32 build. An implicit call loses a word
+ * and changes needs_copy/protection/inheritance. Keep the real prototype. */
+extern kern_return_t vm_map_enter(vm_map_t,vm_map_offset_t *,vm_map_size_t,
+    vm_map_offset_t,int,vm_object_t,vm_object_offset_t,boolean_t,
+    vm_prot_t,vm_prot_t,vm_inherit_t);
 /* Own-task runtime repair for the exact witnessed iOS6 CoreMedia callback.
  * Its external AudioObject query enters VirtualAudio while the global lock
  * is held, reversing the initialization thread's plugin->global order.
@@ -59,19 +65,25 @@ static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
     memcpy(bytes,i9100_audio_property_code,sizeof(storage));
     uint32_t *literals=(uint32_t *)&bytes[56];
     literals[0]+=slide;literals[1]+=slide;literals[2]+=slide;
+    diag[10]=1;
     kern_return_t result=vm_map_enter(map,&address,4096,0,VM_FLAGS_ANYWHERE,
         VM_OBJECT_NULL,0,FALSE,VM_PROT_READ|VM_PROT_WRITE,VM_PROT_ALL,VM_INHERIT_COPY);
     diag[6]=(uint32_t)result;
     if(result!=KERN_SUCCESS || address<4096 || address>0x3ffff000U)goto failed;
     diag[5]=(uint32_t)address;
+    diag[10]=2;
     if(copyout(bytes,(user_addr_t)address,sizeof(storage))){diag[7]=1;goto failed;}
+    diag[10]=3;
     flush_dcache((vm_offset_t)address,sizeof(storage),FALSE);
     invalidate_icache((vm_offset_t)address,sizeof(storage),FALSE);
+    diag[10]=4;
     result=i9100_audio_property_rx(map,address);
     diag[6]=(uint32_t)result;if(result!=KERN_SUCCESS)goto failed;
+    diag[10]=5;
     result=vm_map_protect(map,site&~4095U,(site&~4095U)+4096,
         VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY,FALSE);
     diag[6]=(uint32_t)result;if(result!=KERN_SUCCESS)goto failed;
+    diag[10]=6;
     /* The process has one thread. Install only after the target is present;
      * failed writes attempt restoration before making this page executable. */
     uint32_t branch[2]={0xf000f8dfU,(uint32_t)address|1U};
@@ -85,8 +97,10 @@ static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
     flush_dcache((vm_offset_t)site,8,FALSE);
     invalidate_icache((vm_offset_t)site,8,FALSE);
     diag[8]=1;
+    diag[10]=7;
 restore:
     result=i9100_audio_property_rx(map,site&~4095U);diag[9]=(uint32_t)result;
+    diag[10]=8;
     OSMemoryBarrier();diag[0]=diag[8] && result==KERN_SUCCESS?2U:3U;
     return;
 failed:

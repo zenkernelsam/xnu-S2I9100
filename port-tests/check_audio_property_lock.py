@@ -20,6 +20,8 @@ prefix=r'''
 #include <stdlib.h>
 #include <string.h>
 typedef uint32_t UInt32,user_addr_t,vm_map_offset_t,vm_offset_t;typedef int kern_return_t;
+typedef uint32_t vm_map_size_t;typedef uint64_t vm_object_offset_t;
+typedef void*vm_object_t;typedef int boolean_t,vm_prot_t,vm_inherit_t;
 struct map {unsigned min_offset;};typedef struct map*vm_map_t;
 struct task {unsigned thread_count;};typedef struct task*task_t;struct proc {const char*p_comm;unsigned p_pid;void*task;};typedef struct proc*proc_t;
 typedef struct {uint32_t cpsr,pc;} arm_saved_state_t;
@@ -47,7 +49,9 @@ int get_task_numacts(task_t t){return t->thread_count;}
 static int copyin(user_addr_t at,void*out,unsigned size){reads++;if(at!=0x3179e848 || size!=24)return 14;memcpy(out,site,size);return 0;}
 static int copyout(const void*in,user_addr_t at,unsigned size){writes++;if(writes==fail_write)return 14;
  if(at==0x10000 && size==68)memcpy(target,in,size);else if(at==0x3179e848 && size==8)memcpy(site,in,size);else return 14;return 0;}
-static int vm_map_enter(vm_map_t m,vm_map_offset_t*a,unsigned n,unsigned mask,unsigned flags,void*o,unsigned off,unsigned copy,unsigned cur,unsigned max,unsigned inh){(void)m;(void)n;(void)mask;(void)flags;(void)o;(void)off;(void)copy;(void)inh;*a=0x10000;target_cur=cur;target_max=max;return fail_at==1?2:0;}
+int vm_map_enter(vm_map_t m,vm_map_offset_t*a,unsigned n,unsigned mask,int flags,void*o,uint64_t off,int copy,int cur,int max,int inh){
+ if(m!=&map || *a!=4096 || n!=4096 || mask || flags!=VM_FLAGS_ANYWHERE || o || off || copy || cur!=3 || max!=7 || inh!=VM_INHERIT_COPY)abort();
+ *a=0x10000;target_cur=cur;target_max=max;return fail_at==1?2:0;}
 static int vm_map_protect(vm_map_t m,unsigned a,unsigned e,unsigned prot,unsigned max){
  (void)m;(void)e;protects++;if(fail_at==protects+1)return 2;
  unsigned*cur=a==0x10000?&target_cur:&site_cur;unsigned*cap=a==0x10000?&target_max:&site_max;
