@@ -55,8 +55,32 @@ def main():
         if plan.returncode:
             print(plan.stderr[-3000:], file=sys.stderr)
             raise RuntimeError('Could not obtain a compiler command')
-        candidates = [line for line in plan.stdout.splitlines()
+        compile_lines = [line for line in plan.stdout.splitlines()
             if ('clang ' in line or 'clang++ ' in line) and ' -c ' in line]
+        candidates = [line for line in compile_lines if source in shlex.split(line)]
+        if len(compile_lines) > len(candidates):
+            # A branch round-trip refreshes source mtimes. make may propose
+            # regenerating assym even when its inputs are byte-identical.
+            # Recreate it in this output and compare the real definitions;
+            # changed structure offsets require a full build, not stale .o.
+            extras = [shlex.split(line) for line in compile_lines if line not in candidates]
+            if len(extras)!=1 or not any(arg.endswith('/genassym.c') for arg in extras[0]):
+                raise RuntimeError('Unexpected prerequisite compile commands; inspect '+rel.name+'.plan')
+            generated = output / 'generated-genassym.s'
+            command = extras[0]
+            command[command.index('-o')+1] = str(generated)
+            command += ['-I'+str(repo/'osfmk/libsa'), '-MF', str(output/'generated-genassym.d')]
+            result = subprocess.run(command,cwd=cwd,env=env,text=True,capture_output=True)
+            (output/'generated-genassym.log').write_text(result.stdout+result.stderr)
+            if result.returncode:
+                raise RuntimeError('Could not verify generated assembly offsets')
+            result = subprocess.run(['sed','-e','/DEFINITION#/!d','-e','s/^.*DEFINITION#//',
+                '-e','s/\\$//','-e','p','-e','s/#//2',
+                '-e','s/[^A-Za-z0-9_]*\\([A-Za-z0-9_]*\\)/ \\1_NUM/2',str(generated)],
+                text=True,capture_output=True,check=True)
+            generated_header=output/'generated-assym.s';generated_header.write_text(result.stdout)
+            if generated_header.read_bytes() != (cwd/'assym.s').read_bytes():
+                raise RuntimeError('Assembly offsets differ from retained BUILD; full rebuild required')
         if len(candidates) != 1:
             raise RuntimeError(f'Expected one compile command; see {rel.name}.plan')
         command = shlex.split(candidates[0])
