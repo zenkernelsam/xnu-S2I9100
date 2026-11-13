@@ -20,7 +20,8 @@ import mmap
 from pathlib import Path
 import struct
 
-ROOT = Path(__file__).resolve().parents[3]
+REPO = Path(__file__).resolve().parents[1]
+ROOT = REPO.parent
 sys.path.insert(0, str(ROOT / 'assets/py-native-hid'))
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_HOOK_CODE, UC_HOOK_MEM_UNMAPPED
 from unicorn.arm_const import (UC_CPU_ARM_CORTEX_A9, UC_ARM_REG_R0, UC_ARM_REG_R1,
@@ -182,11 +183,11 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--request', type=Path, required=True)
     a = p.parse_args(); source = a.request.resolve()
-    if not source.is_relative_to(ROOT / 'neighbor/uniloader/out'): p.error('Use saved real request from loader out')
+    if not source.is_relative_to(ROOT / 'uniloader-S2I9100/out'): p.error('Use saved real request from loader out')
     request = source.read_bytes()
     if len(request) != 288 or struct.unpack_from('<I', request, 20)[0] != 14012 or not request[32:].startswith(b'com.apple.locationd\0'):
         p.error('Expected the saved original locationd self query')
-    out = ROOT / 'neighbor/xnu/out' / ('ios6-ls-reply-callback-' + datetime.now().strftime('%Y%m%d-%H%M%S')); out.mkdir()
+    out = REPO / 'out' / ('ios6-ls-reply-callback-' + datetime.now().strftime('%Y%m%d-%H%M%S')); out.mkdir()
     cases = [dict(name='generated stub with modeled success', boolean=1), dict(name='generated stub with modeled business error5', business_result=5),
              dict(name='reply allocation failure', allocation_failure=True), dict(name='invalid subsystem id', id=15000),
              dict(name='absent reply capability', remote=0), dict(name='generic callback with modeled MIG_NO_REPLY', business_result=0xfffffecf),

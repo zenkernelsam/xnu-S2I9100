@@ -125,6 +125,8 @@ extern int proc_selfpid(void);
 extern void proc_name(int,char *,int);
 #include "../../pexpert/arm/i9100_ls_delivery.h"
 #include "../../pexpert/arm/i9100_ls_query_diag.h"
+#define I9100_LS_CALLBACK_IMPLEMENTATION 1
+#include "../../pexpert/arm/i9100_ls_callback_diag.h"
 static unsigned i9100_ls_query_put_begin(ipc_kmsg_t kmsg,mach_vm_address_t address,mach_msg_size_t size)
 {
     int enabled=0;
@@ -156,6 +158,8 @@ static void i9100_ls_query_put_end(unsigned token,ipc_kmsg_t kmsg,mach_vm_addres
      * source; never treat it as an observed user-buffer copy. */
     (void)i9100_ls_query_record(6,error?(const void *)kmsg->ikm_header:actual,size,size,
         pid,thread,name,1,UINT32_MAX,UINT32_MAX,0,error,(unsigned)address,kmsg->ikm_header->msgh_id);
+    if(!error && !strcmp(name,"lsd") && kmsg->ikm_header->msgh_id==14012)
+        i9100_ls_callback_received(pid,thread,(unsigned)address,actual,size);
 }
 static unsigned i9100_ls_put_capture(ipc_kmsg_t kmsg,mach_vm_address_t address,mach_msg_size_t size)
 {
@@ -1594,6 +1598,13 @@ ipc_kmsg_put(
 		mr = MACH_MSG_SUCCESS;
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
+    /* Every subsequent delivery invalidates the old per-thread query
+     * association, including ordinary icon/register messages. */
+    {
+        char name[16]={0};proc_name(proc_selfpid(),name,sizeof(name));
+        if(!strcmp(name,"lsd"))i9100_ls_callback_clear(proc_selfpid(),
+            (unsigned)(uintptr_t)current_thread());
+    }
     i9100_ls_delivery_end(delivery,proc_selfpid(),(unsigned)(uintptr_t)current_thread(),
         (unsigned)(uintptr_t)current_task(),mr,!ml_at_interrupt_context() &&
         ml_get_interrupts_enabled() && get_preemption_level()==0);

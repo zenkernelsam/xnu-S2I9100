@@ -34,6 +34,53 @@
 #include <kern/task.h>
 #include <kern/ipc_tt.h>
 #include <vm/vm_protos.h>
+#if BOARD_CONFIG_EXYNOS4210_I9100
+#include <kern/thread.h>
+#include <machine/machine_routines.h>
+#include <pexpert/pexpert.h>
+#include <string.h>
+#include "../../pexpert/arm/i9100_ls_callback_diag.h"
+static void i9100_ls_callback_vm(unsigned stage,unsigned result,unsigned address)
+{
+    int enabled=0;char name[16]={0};
+    if(current_task()==kernel_task || ml_at_interrupt_context() ||
+       !ml_get_interrupts_enabled() || get_preemption_level()!=0 ||
+       !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
+    extern int proc_selfpid(void);
+    extern void proc_name(int,char *,int);
+    unsigned pid=proc_selfpid(),thread=(unsigned)(uintptr_t)current_thread();
+    proc_name(pid,name,sizeof(name));if(strcmp(name,"lsd"))return;
+    uint32_t context[6];
+    if(!i9100_ls_callback_lookup(pid,thread,context) ||
+       ((stage==3 || stage==4) && context[2]!=address))return;
+    const arm_saved_state_t *state=current_thread()->machine.uss;
+    if(!state || (state->cpsr&31U)!=16U || state->sp<4096U ||
+       state->sp>=0x40000000U)return;
+    unsigned char request[192]={0},reply[48]={0};uint32_t frames[16]={0};
+    uint32_t fields[20]={0,1,stage,pid,thread,context[0],context[1],address,
+        result,0,0,context[3],context[4],context[5],state->pc,state->lr,
+        state->sp,state->r[7],0,0};
+    fields[9]=copyin((user_addr_t)context[1],request,sizeof(request));
+    if(address>=4096U && address<=0x40000000U-sizeof(reply))
+        fields[10]=copyin((user_addr_t)address,reply,sizeof(reply));
+    else fields[10]=UINT32_MAX;
+    uint32_t fp=state->r[7];
+    for(unsigned n=0;n<8;n++){
+        uint32_t pair[2];
+        if(fp<state->sp || fp-state->sp>32760U || fp>0x3ffffff8U || (fp&3U))break;
+        unsigned error=copyin((user_addr_t)fp,pair,8);
+        if(error){fields[19]=error;break;}
+        frames[n*2]=fp;frames[n*2+1]=pair[1];
+        /* Preserve the original vm_allocate/vm_deallocate return to the
+         * witnessed callback. This is a marker, not a control-flow patch. */
+        uint32_t lr=pair[1]&~1U;
+        if((stage==2 && (lr&4095U)==0xb16U) ||
+           (stage!=2 && (lr&4095U)==0xb80U))fields[18]=pair[0];
+        if(pair[0]<=fp)break;fp=pair[0];
+    }
+    i9100_ls_callback_event(fields,fields[9]?0:request,fields[10]?0:reply,frames);
+}
+#endif
 
 #include <arm/ios7_compat.h>
 #if IOS7_COMPAT_PLATFORM
@@ -320,8 +367,29 @@ static int ios7leo_vm_deallocate64(struct ios7lab_vm_range_wire *wire)
         goto done;
     }
     called = 1;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    if(size==4160U)i9100_ls_callback_vm(3,0,address);
+#endif
     rv = mach_vm_deallocate(task->map, (mach_vm_address_t)address, (mach_vm_size_t)size);
 done:
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    /* The before record owns the bytes. Do not read an unmapped buffer. */
+    if(called && size==4160U){
+        int enabled=0;char name[16]={0};extern int proc_selfpid(void);
+        extern void proc_name(int,char *,int);
+        if(!ml_at_interrupt_context() && ml_get_interrupts_enabled() &&
+           get_preemption_level()==0 && current_task()!=kernel_task &&
+           PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) && enabled==1){
+            unsigned pid=proc_selfpid(),thread=(unsigned)(uintptr_t)current_thread();
+            uint32_t context[6];proc_name(pid,name,sizeof(name));
+            if(!strcmp(name,"lsd") && i9100_ls_callback_lookup(pid,thread,context) && context[2]==address){
+                uint32_t fields[20]={0,1,4,pid,thread,context[0],context[1],address,
+                    (unsigned)rv,0,0,context[3],context[4],context[5]};
+                i9100_ls_callback_event(fields,0,0,0);
+            }
+        }
+    }
+#endif
     ios7leo_vm_range_record(0, wire, 0, rv, called);
     if (task) task_deallocate(task);
     return rv;
@@ -474,6 +542,8 @@ j1_vm_allocate(struct j1_vm_allocate_wire *wire)
 done:
 #if BOARD_CONFIG_EXYNOS4210_I9100
     i9100_ls_alloc_note(wire,rv,allocated,before,address32);
+    if(wire->size_low==4160U && !wire->size_high)
+        i9100_ls_callback_vm(2,(unsigned)rv,address32);
 #endif
     if (task)
         task_deallocate(task);
