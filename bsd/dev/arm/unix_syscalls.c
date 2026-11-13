@@ -112,6 +112,7 @@ extern const char *syscallnames[];
 #include <libkern/OSAtomic.h>
 #include "../../../pexpert/arm/i9100_mdns_observation.h"
 #include "../../../pexpert/arm/i9100_ls_files.h"
+#include "i9100_audio_property_lock.h"
 static void i9100_ls_file_note(struct proc *p,unsigned code,void *arguments,
     unsigned argument_error,int error,uint32_t result,const arm_saved_state_t *state)
 {
@@ -838,6 +839,9 @@ void unix_syscall(arm_saved_state_t * state)
 
     if (error)
         state->cpsr |= (1 << 29);  /* C-bit IIRC, turn this into a Define */
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    if(!error)i9100_audio_property_lock_prepare(p,code,state);
+#endif
 
     if (error == ERESTART) {
         panic("unix_syscall: restarting syscall\n");

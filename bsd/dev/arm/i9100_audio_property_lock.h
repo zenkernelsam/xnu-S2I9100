@@ -1,0 +1,82 @@
+#ifndef I9100_AUDIO_PROPERTY_LOCK_H
+#define I9100_AUDIO_PROPERTY_LOCK_H
+#include <vm/vm_map.h>
+#include <vm/vm_kern.h>
+#include <vm/pmap.h>
+/* Own-task runtime repair for the exact witnessed iOS6 CoreMedia callback.
+ * Its external AudioObject query enters VirtualAudio while the global lock
+ * is held, reversing the initialization thread's plugin->global order.
+ * Private COW code releases that lock around the query and reacquires it.
+ * No API result is forged and the cached/SD image stays unchanged. */
+volatile uint32_t i9100_audio_property_lock_diag[12];
+static const unsigned char i9100_audio_property_original[24]={
+    0xd5,0xf8,0xd0,0x00,0x06,0xac,0x10,0x23,0x03,0xa9,0x8d,0xe8,
+    0x18,0x00,0x00,0x22,0x00,0x23,0xb0,0x47,0x08,0xbb,0x08,0x98};
+static const unsigned char i9100_audio_property_code[68]={
+    0x4f,0xb5,0xe8,0x68,0xdf,0xf8,0x30,0xc0,0xe0,0x47,0xbd,0xe8,0x4f,0x40,
+    0xd5,0xf8,0xd0,0x00,0x06,0xac,0x10,0x23,0x03,0xa9,0x8d,0xe8,0x18,0x00,
+    0x00,0x22,0x00,0x23,0xb0,0x47,0x4f,0xb5,0xe8,0x68,0xdf,0xf8,0x14,0xc0,
+    0xe0,0x47,0xbd,0xe8,0x4f,0x40,0xdf,0xf8,0x0c,0xc0,0x60,0x47,0x00,0xbf,
+    0xc1,0x7e,0x21,0x39,0xa1,0x5f,0x21,0x39,0x5d,0xe8,0x69,0x31};
+static int i9100_audio_property_range(uint32_t slide)
+{
+    return !(slide&4095U) && slide<0x40000000U-0x394951c0U;
+}
+static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
+    const arm_saved_state_t *state)
+{
+    int abi=0,enabled=0,requested=0;
+    if(code!=372U || !p || strcmp(p->p_comm,"mediaserverd") ||
+       p->task->thread_count!=1 ||
+       (state->cpsr&0x1fU)!=0x10U || ml_at_interrupt_context() ||
+       !ml_get_interrupts_enabled() || get_preemption_level()!=0 ||
+       !PE_parse_boot_argn("i9100hidabi",&abi,sizeof(abi)) || abi!=6 ||
+       !PE_parse_boot_argn("i9100audiolock",&requested,sizeof(requested)) || requested!=1 ||
+       !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
+    uint32_t slide=(state->pc&~1U)-0x392cdc34U;
+    if(!i9100_audio_property_range(slide) || i9100_audio_property_lock_diag[0])return;
+    unsigned char original[24];
+    uint32_t site=0x3169e848U+slide;
+    if(copyin((user_addr_t)site,original,sizeof(original)) ||
+       memcmp(original,i9100_audio_property_original,sizeof(original)))return;
+    if(!OSCompareAndSwap(0U,1U,&i9100_audio_property_lock_diag[0]))return;
+    vm_map_t map=current_map();vm_map_offset_t address=vm_map_min(map);
+    volatile uint32_t *diag=i9100_audio_property_lock_diag;
+    diag[1]=p->p_pid;diag[2]=(uint32_t)(uintptr_t)p->task;diag[3]=slide;diag[4]=site;
+    uint32_t storage[17];unsigned char *bytes=(unsigned char *)storage;
+    memcpy(bytes,i9100_audio_property_code,sizeof(storage));
+    uint32_t *literals=(uint32_t *)&bytes[56];
+    literals[0]+=slide;literals[1]+=slide;literals[2]+=slide;
+    kern_return_t result=vm_map_enter(map,&address,4096,0,VM_FLAGS_ANYWHERE,
+        VM_OBJECT_NULL,0,FALSE,VM_PROT_READ|VM_PROT_WRITE,VM_PROT_ALL,VM_INHERIT_COPY);
+    diag[6]=(uint32_t)result;
+    if(result!=KERN_SUCCESS || address<4096 || address>0x3ffff000U)goto failed;
+    diag[5]=(uint32_t)address;
+    if(copyout(bytes,(user_addr_t)address,sizeof(storage))){diag[7]=1;goto failed;}
+    flush_dcache((vm_offset_t)address,sizeof(storage),FALSE);
+    invalidate_icache((vm_offset_t)address,sizeof(storage),FALSE);
+    result=vm_map_protect(map,address,address+4096,VM_PROT_READ|VM_PROT_EXECUTE,TRUE);
+    diag[6]=(uint32_t)result;if(result!=KERN_SUCCESS)goto failed;
+    result=vm_map_protect(map,site&~4095U,(site&~4095U)+4096,
+        VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY,FALSE);
+    diag[6]=(uint32_t)result;if(result!=KERN_SUCCESS)goto failed;
+    /* The process has one thread. Install only after the target is present;
+     * failed writes attempt restoration before making this page executable. */
+    uint32_t branch[2]={0xf000f8dfU,(uint32_t)address|1U};
+    if(copyout(branch,(user_addr_t)site,sizeof(branch))){
+        diag[7]=2;
+        if(copyout(original,(user_addr_t)site,8))diag[7]=3;
+        goto restore;
+    }
+    flush_dcache((vm_offset_t)site,8,FALSE);
+    invalidate_icache((vm_offset_t)site,8,FALSE);
+    diag[8]=1;
+restore:
+    result=vm_map_protect(map,site&~4095U,(site&~4095U)+4096,
+        VM_PROT_READ|VM_PROT_EXECUTE,TRUE);diag[9]=(uint32_t)result;
+    OSMemoryBarrier();diag[0]=diag[8] && result==KERN_SUCCESS?2U:3U;
+    return;
+failed:
+    OSMemoryBarrier();diag[0]=3U;
+}
+#endif
