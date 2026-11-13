@@ -4,6 +4,9 @@
  * syscall context. Preserve raw CFString storage and its native frame chain;
  * do not infer a string layout or change the signal/exception policy. */
 volatile uint32_t i9100_media_kill_payload[64+128];
+extern volatile uint32_t i9100_audio_property_runtime[4];
+extern volatile uint32_t i9100_audio_property_lock_diag[12];
+volatile uint32_t i9100_media_audio_runtime[8+16];
 static volatile UInt32 i9100_media_kill_guard;
 static void i9100_media_kill_note(proc_t p,const arm_saved_state_t *state,int signum,unsigned flavor)
 {
@@ -17,6 +20,25 @@ static void i9100_media_kill_note(proc_t p,const arm_saved_state_t *state,int si
        state->pc!=0x392cc838U+slide || state->r[1]!=SIGKILL ||
        !OSCompareAndSwap(0U,1U,&i9100_media_kill_guard))return;
     volatile uint32_t *out=i9100_media_kill_payload;
+    /* Preserve the first actual callback stage before this owner exits.
+     * Installation alone cannot prove the new code ever executed. */
+    if(i9100_audio_property_runtime[0]==1 &&
+       i9100_audio_property_runtime[1]==(uint32_t)p->p_pid &&
+       i9100_audio_property_runtime[2]==(uint32_t)(uintptr_t)p->task){
+        volatile uint32_t *audio=i9100_media_audio_runtime;
+        audio[1]=p->p_pid;audio[2]=(uint32_t)(uintptr_t)p->task;
+        unsigned address=i9100_audio_property_runtime[3];audio[3]=address;
+        if(address>=4096U && address<=0x3fffffc0U)
+            audio[4]=copyin((user_addr_t)address,(void *)&audio[8],64);
+        else audio[4]=UINT32_MAX;
+        unsigned site=i9100_audio_property_lock_diag[4];audio[5]=site;
+        uint32_t branch[2]={0};
+        if(site>=4096U && site<=0x3ffffff8U)
+            audio[6]=copyin((user_addr_t)site,branch,8);
+        else audio[6]=UINT32_MAX;
+        if(!audio[6])audio[7]=branch[1];
+        OSMemoryBarrier();audio[0]=1;
+    }
     out[1]=p->p_pid;out[2]=(uint32_t)(uintptr_t)p->task;out[3]=state->pc;
     out[4]=state->lr;out[5]=state->sp;out[6]=state->r[7];out[12]=slide;out[13]=1;
     uint32_t frame=state->r[7];

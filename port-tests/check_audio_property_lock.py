@@ -26,7 +26,7 @@ struct map {unsigned min_offset;};typedef struct map*vm_map_t;
 struct task {unsigned thread_count;};typedef struct task*task_t;struct proc {const char*p_comm;unsigned p_pid;void*task;};typedef struct proc*proc_t;
 typedef struct {uint32_t cpsr,pc;} arm_saved_state_t;
 static unsigned abi=6,enabled=1,irq,preemption,interrupts=1,checks,protects,writes,fail_at,fail_write,reads,target_cur,target_max,site_cur,site_max;
-static struct map map={4096};static unsigned char site[24],target[156];
+static struct map map={4096};static unsigned char site[24],target[256],runtime_data[64];
 #define FALSE 0
 #define TRUE 1
 #define KERN_SUCCESS 0
@@ -48,10 +48,10 @@ static vm_map_t current_map(void){return &map;}
 int get_task_numacts(task_t t){return t->thread_count;}
 static int copyin(user_addr_t at,void*out,unsigned size){reads++;if(at!=0x3179e848 || size!=24)return 14;memcpy(out,site,size);return 0;}
 static int copyout(const void*in,user_addr_t at,unsigned size){writes++;if(writes==fail_write)return 14;
- if(at==0x10000 && size==156)memcpy(target,in,size);else if(at==0x3179e848 && size==8)memcpy(site,in,size);else return 14;return 0;}
+ if(at==0x10000 && size==256)memcpy(target,in,size);else if(at==0x20000 && size==64)memcpy(runtime_data,in,size);else if(at==0x3179e848 && size==8)memcpy(site,in,size);else return 14;return 0;}
 int vm_map_enter(vm_map_t m,vm_map_offset_t*a,unsigned n,unsigned mask,int flags,void*o,uint64_t off,int copy,int cur,int max,int inh){
- if(m!=&map || *a!=4096 || n!=4096 || mask || flags!=VM_FLAGS_ANYWHERE || o || off || copy || cur!=3 || max!=7 || inh!=VM_INHERIT_COPY)abort();
- *a=0x10000;target_cur=cur;target_max=max;return fail_at==1?2:0;}
+ if(m!=&map || *a!=4096 || n!=4096 || mask || flags!=VM_FLAGS_ANYWHERE || o || off || copy || cur!=3 || (max!=7 && max!=3) || inh!=VM_INHERIT_COPY)abort();
+ *a=max==7?0x10000:0x20000;if(max==7){target_cur=cur;target_max=max;}return fail_at==1?2:0;}
 static int vm_map_protect(vm_map_t m,unsigned a,unsigned e,unsigned prot,unsigned max){
  (void)m;(void)e;protects++;if(fail_at==protects+1)return 2;
  unsigned*cur=a==0x10000?&target_cur:&site_cur;unsigned*cap=a==0x10000?&target_max:&site_max;
@@ -71,7 +71,8 @@ int main(void){struct task t={1};struct proc p={"mediaserverd",33,&t};arm_saved_
  check(i9100_audio_property_lock_diag[8] && !i9100_audio_property_lock_diag[9] && protects==5,"RX restoration succeeded");
  check(target_cur==5 && target_max==5 && site_cur==5 && site_max==5,"both pages execute with maximum RX under actual protection intersection semantics");
  check(!memcmp(site,"\xdf\xf8\x00\xf0",4) && *(uint32_t*)(site+4)==0x10001,"literal branch points to private target");
- check(*(uint32_t*)(target+144)==0x39317ec1 && *(uint32_t*)(target+148)==0x39315fa1 && *(uint32_t*)(target+152)==0x3179e85d,"all cache literals use actual slide");
+ check(*(uint32_t*)(target+240)==0x39317ec1 && *(uint32_t*)(target+244)==0x39315fa1 && *(uint32_t*)(target+248)==0x3179e85d,"all cache literals use actual slide");
+ check(*(uint32_t*)(target+252)==0x20000 && i9100_audio_property_runtime[1]==33 && !memcmp(runtime_data,(unsigned char[64]){0},64),"data-only runtime starts zero and belongs to installed PID");
  unsigned saved=writes;i9100_audio_property_lock_prepare(&p,372,&s);check(writes==saved,"no second installation");
  memcpy(site,i9100_audio_property_original,24);site_cur=site_max=5;p.p_pid=78;
  i9100_audio_property_lock_prepare(&p,372,&s);
@@ -86,7 +87,7 @@ int main(void){struct task t={1};struct proc p={"mediaserverd",33,&t};arm_saved_
  reset();s.pc+=2;i9100_audio_property_lock_prepare(&p,372,&s);check(!writes,"unrelated syscall point rejected");s.pc-=2;
  reset();site[0]^=1;i9100_audio_property_lock_prepare(&p,372,&s);check(!writes,"unknown original image rejected");
  reset();fail_at=1;i9100_audio_property_lock_prepare(&p,372,&s);check(i9100_audio_property_lock_diag[0]==3&&!writes,"VM allocation failure preserved");
- reset();fail_write=2;i9100_audio_property_lock_prepare(&p,372,&s);check(!memcmp(site,i9100_audio_property_original,8)&&protects==5&&site_cur==5&&site_max==5&&i9100_audio_property_lock_diag[0]==3,"failed site write restores bytes and RX");
+ reset();fail_write=3;i9100_audio_property_lock_prepare(&p,372,&s);check(!memcmp(site,i9100_audio_property_original,8)&&protects==5&&site_cur==5&&site_max==5&&i9100_audio_property_lock_diag[0]==3,"failed site write restores bytes and RX");
  printf("%u production install gate/failure checks passed; VM and copy modeled\n",checks);}
 '''
 (out/'check.c').write_text(prefix+body+suffix)
@@ -95,7 +96,7 @@ subprocess.run([str(out/'check')],check=True)
 subprocess.run(['clang','--target=armv7-none-eabi','-c',str(repo/'port-tests/audio-property-lock-trampoline.s'),'-o',str(out/'trampoline.o')],check=True)
 b=(out/'trampoline.o').read_bytes();off=struct.unpack_from('<I',b,32)[0];n,num,strings=struct.unpack_from('<3H',b,46);sh=[struct.unpack_from('<10I',b,off+i*n) for i in range(num)];st=b[sh[strings][4]:sh[strings][4]+sh[strings][5]]
 code=next(b[h[4]:h[4]+h[5]] for h in sh if st[h[0]:st.find(b'\0',h[0])]==b'.text')
-numbers=bytes(int(x,16) for x in re.search(r'i9100_audio_property_code\[156\]=\{(.*?)\};',header,re.S)[1].replace('\n','').split(',') if x.strip())
+numbers=bytes(int(x,16) for x in re.search(r'i9100_audio_property_code\[256\]=\{(.*?)\};',header,re.S)[1].replace('\n','').split(',') if x.strip())
 assert code==numbers
 sys.path.insert(0,str(root/'assets/py-native-hid'))
 from unicorn import Uc,UC_ARCH_ARM,UC_MODE_THUMB,UC_HOOK_CODE
@@ -103,7 +104,7 @@ from unicorn.arm_const import *
 results=[]
 for depth in (1,2,3,8,16):
  cpu=Uc(UC_ARCH_ARM,UC_MODE_THUMB);cpu.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_A9)
- cpu.mem_map(0x10000000,0x20000);cpu.mem_write(0x10000000,code)
+ cpu.mem_map(0x10000000,0x20000);cpu.mem_write(0x10000000,code[:-4]+struct.pack("<I",0x10003000))
  for page in [0x39217000,0x39215000,0x3169e000,0x10020000]:cpu.mem_map(page,4096)
  SP=0x1001f000;OWNER=0x10001000;QUERY=0x10020000;MUTEX=0x10002000
  cpu.mem_write(OWNER+12,struct.pack('<I',MUTEX));cpu.mem_write(OWNER+208,struct.pack('<I',77))
@@ -133,7 +134,9 @@ for depth in (1,2,3,8,16):
  assert cpu.reg_read(UC_ARM_REG_R0)==0x1234 and held[0]==depth
  assert cpu.reg_read(UC_ARM_REG_R8)==0x8888 and cpu.reg_read(UC_ARM_REG_R9)==0x9999
  assert events==['unlock']*depth+['real-query']+['lock']*depth
- results.append(dict(depth=depth,events=events,held_after=held[0],original_result_preserved=True))
+ runtime=struct.unpack('<16I',cpu.mem_read(0x10003000,64))
+ assert runtime[:9]==(1,4,MUTEX,0x4d555458,(depth<<16)|0x2068,depth,0,depth,0x1234)
+ results.append(dict(depth=depth,events=events,held_after=held[0],original_result_preserved=True,runtime=list(runtime)))
 native_counts=[]
 with (root/'assets/ios6-extract/dyld_cache6_armv7').open('rb') as f:
  with mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ) as cache:
