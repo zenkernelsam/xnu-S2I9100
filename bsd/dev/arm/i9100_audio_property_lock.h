@@ -27,7 +27,7 @@ static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
 {
     int abi=0,enabled=0,requested=0;
     if(code!=372U || !p || strcmp(p->p_comm,"mediaserverd") ||
-       p->task->thread_count!=1 ||
+       !p->task || ((task_t)p->task)->thread_count!=1 ||
        (state->cpsr&0x1fU)!=0x10U || ml_at_interrupt_context() ||
        !ml_get_interrupts_enabled() || get_preemption_level()!=0 ||
        !PE_parse_boot_argn("i9100hidabi",&abi,sizeof(abi)) || abi!=6 ||

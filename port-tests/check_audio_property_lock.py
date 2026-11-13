@@ -21,7 +21,7 @@ prefix=r'''
 #include <string.h>
 typedef uint32_t UInt32,user_addr_t,vm_map_offset_t,vm_offset_t;typedef int kern_return_t;
 struct map {unsigned min_offset;};typedef struct map*vm_map_t;
-struct task {unsigned thread_count;};struct proc {const char*p_comm;unsigned p_pid;struct task*task;};typedef struct proc*proc_t;
+struct task {unsigned thread_count;};typedef struct task*task_t;struct proc {const char*p_comm;unsigned p_pid;void*task;};typedef struct proc*proc_t;
 typedef struct {uint32_t cpsr,pc;} arm_saved_state_t;
 static unsigned abi=6,enabled=1,irq,preemption,interrupts=1,checks,protects,writes,fail_at,fail_write,reads;
 static struct map map={4096};static unsigned char site[24],target[68];
