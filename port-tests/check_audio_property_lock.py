@@ -82,7 +82,7 @@ int main(void){struct task t={1};struct proc p={"mediaserverd",33,&t};arm_saved_
  printf("%u production install gate/failure checks passed; VM and copy modeled\n",checks);}
 '''
 (out/'check.c').write_text(prefix+body+suffix)
-subprocess.run(['clang','-O1','-g','-fsanitize=address,undefined','-fno-sanitize-recover=all',str(out/'check.c'),'-o',str(out/'check')],check=True)
+subprocess.run(['clang','-O1','-g','-fno-pie','-no-pie','-fsanitize=address,undefined','-fno-sanitize-recover=all',str(out/'check.c'),'-o',str(out/'check')],check=True)
 subprocess.run([str(out/'check')],check=True)
 subprocess.run(['clang','--target=armv7-none-eabi','-c',str(repo/'port-tests/audio-property-lock-trampoline.s'),'-o',str(out/'trampoline.o')],check=True)
 b=(out/'trampoline.o').read_bytes();off=struct.unpack_from('<I',b,32)[0];n,num,strings=struct.unpack_from('<3H',b,46);sh=[struct.unpack_from('<10I',b,off+i*n) for i in range(num)];st=b[sh[strings][4]:sh[strings][4]+sh[strings][5]]
