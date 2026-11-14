@@ -557,6 +557,28 @@ static int arm_syscall_store_args(uint32_t *arguments, unsigned capacity,
 }
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
+/* fleh_swi saves LR_svc as the next user PC. ERESTART is an internal BSD
+ * request to repeat that instruction with the original argument registers;
+ * it is neither a user error nor a reason to panic. ARM SVC is four bytes,
+ * Thumb SVC two. The normal signal delivery path still runs on return. */
+volatile uint32_t i9100_syscall_restart_diag[1+16*10];
+static void i9100_arm_syscall_restart(arm_saved_state_t *state,unsigned code)
+{
+    unsigned before=state->pc,width=(state->cpsr&(1U<<5))?2U:4U;
+    state->pc-=width;
+    state->cpsr&=~(1U<<29);
+    int enabled=0;
+    if(!PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
+    unsigned count=i9100_syscall_restart_diag[0];
+    if(count>=16 || !OSCompareAndSwap(count,count+1,&i9100_syscall_restart_diag[0]))return;
+    volatile uint32_t *r=&i9100_syscall_restart_diag[1+count*10];
+    r[1]=current_proc()->p_pid;r[2]=code;r[3]=before;r[4]=state->pc;
+    r[5]=width;r[6]=state->cpsr;r[7]=state->r[0];r[8]=state->r[1];r[9]=state->r[12];
+    OSMemoryBarrier();r[0]=count+1;
+}
+#endif
+
+#if BOARD_CONFIG_EXYNOS4210_I9100
 /* iOS6 also calls the descriptor-guard extensions above this kernel's
  * sysent table. Preserve descriptor operations; this bring-up port does
  * not enforce userland guard tokens (same policy as guarded_kqueue). */
@@ -848,7 +870,11 @@ void unix_syscall(arm_saved_state_t * state)
 #endif
 
     if (error == ERESTART) {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        i9100_arm_syscall_restart(state,code);
+#else
         panic("unix_syscall: restarting syscall\n");
+#endif
     } else if(error != EJUSTRETURN) {
         if(error) {
             state->r[0] = error;
@@ -932,7 +958,11 @@ void unix_syscall_return(int error)
     AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
 
     if (error == ERESTART) {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        i9100_arm_syscall_restart(state,code);
+#else
         panic("unix_syscall: restarting syscall\n");
+#endif
     } else if(error != EJUSTRETURN) {
         if(error) {
             state->r[0] = error;
