@@ -156,6 +156,7 @@ extern unsigned i9ctl_task_ports(task_t task, char *buf, unsigned cap);
 #if BOARD_CONFIG_ARMPBA8
 #include <pexpert/pexpert.h>
 #include <libkern/OSAtomic.h>
+#include <arm/thread.h>
 static volatile UInt32 ios7lab_preferences_lifecycle_records;
 /* Exact normal process-name metadata only; no object/context payload dump. */
 int ios7lab_preferences_lifecycle_target(proc_t p)
@@ -187,6 +188,7 @@ extern unsigned int vm_page_free_count;
 #include <pexpert/pexpert.h>
 #include <libkern/OSAtomic.h>
 #include "../../pexpert/arm/i9100_mdns_observation.h"
+#include "i9100_early_exit_diag.h"
 /* count +8 {pid,role,raw-wait-status,task,own-context,exception,code,subcode,stage}.
  * Scalar lifecycle only; no copyin or VM faults during process termination. */
 volatile uint32_t i9100_mdns_lifecycle_diag[1 + 8 * 9];
@@ -200,6 +202,7 @@ extern void ios7i9100_process_exit(unsigned, unsigned, unsigned, unsigned,
 static void i9100_springboard_exit_note(proc_t p, int rv, thread_t self,
                                       struct uthread *ut)
 {
+    i9100_early_exit_note(p,rv,self,ut);
     int media_enabled=0;
     if(!strcmp(p->p_comm,"mediaserverd") &&
        PE_parse_boot_argn("i9100xpcdiag",&media_enabled,sizeof(media_enabled)) && media_enabled==1){
