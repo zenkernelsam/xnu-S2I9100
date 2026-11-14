@@ -204,6 +204,10 @@ extern struct savearea *get_user_regs(thread_t);
 
 #include <sys/sdt.h>
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+#include "../dev/arm/i9100_launchd_listener_guard.h"
+#endif
+
 
 /*
  * EAI_ITERLIMIT	The maximum number of times to iterate an image
@@ -1096,6 +1100,10 @@ grade:
 	pal_dbg_set_task_name( p->task );
 
 	memcpy(&p->p_uuid[0], &load_result.uuid[0], sizeof(p->p_uuid));
+
+#if BOARD_CONFIG_EXYNOS4210_I9100
+	i9100_launchd_listener_prepare(p,load_result.mach_header);
+#endif
 
 #if !CONFIG_EMBEDDED
 	unsigned int i;
