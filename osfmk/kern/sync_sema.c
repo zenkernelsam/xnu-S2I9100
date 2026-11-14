@@ -60,6 +60,20 @@
 #include <kern/mach_param.h>
 
 #include <libkern/OSAtomic.h>
+#if defined(__arm__)
+#include <platforms.h>
+#endif
+
+#if BOARD_CONFIG_EXYNOS4210_I9100
+#include <arm/thread.h>
+#include <arm/machine_routines.h>
+extern int proc_selfpid(void);
+#include "../../pexpert/arm/i9100_media_semaphore_diag.h"
+#define I9100_SEMA_NOTE(stage,sema,count,known,result,flags,aux) \
+    i9100_media_semaphore_record(stage,(unsigned)(uintptr_t)(sema),count,known,result,flags,aux)
+#else
+#define I9100_SEMA_NOTE(stage,sema,count,known,result,flags,aux) do {} while(0)
+#endif
 
 #if BOARD_CONFIG_ARMPBA8
 #include <pexpert/pexpert.h>
@@ -286,6 +300,7 @@ semaphore_destroy(
 	 *  Deactivate semaphore
 	 */
 	assert(semaphore->active);
+	I9100_SEMA_NOTE(8,semaphore,semaphore->count,1,KERN_TERMINATED,0,0);
 	semaphore->active = FALSE;
 
 	/*
@@ -332,8 +347,10 @@ semaphore_signal_internal(
 
 	spl_level = splsched();
 	semaphore_lock(semaphore);
+	I9100_SEMA_NOTE(3,semaphore,semaphore->count,1,0,options,0);
 
 	if (!semaphore->active) {
+		I9100_SEMA_NOTE(4,semaphore,semaphore->count,1,KERN_TERMINATED,options,0);
 		semaphore_unlock(semaphore);
 		splx(spl_level);
 		return KERN_TERMINATED;
@@ -351,6 +368,7 @@ semaphore_signal_internal(
 			semaphore_unlock(semaphore);
 			kr = KERN_NOT_WAITING;
 		}
+		I9100_SEMA_NOTE(4,semaphore,0,0,kr,options,1);
 		splx(spl_level);
 		return kr;
 	} 
@@ -371,16 +389,19 @@ semaphore_signal_internal(
 			semaphore_unlock(semaphore);
 			kr = KERN_SUCCESS;
 		}
+		I9100_SEMA_NOTE(4,semaphore,0,0,kr,options,2);
 		splx(spl_level);
 		return kr;
 	}
 	
 	if (semaphore->count < 0) {
-		if (wait_queue_wakeup64_one_locked(
+		kr = wait_queue_wakeup64_one_locked(
 					&semaphore->wait_queue,
 					SEMAPHORE_EVENT,
 					THREAD_AWAKENED,
-					FALSE) == KERN_SUCCESS) {
+					FALSE);
+		I9100_SEMA_NOTE(4,semaphore,semaphore->count,1,kr,options,0);
+		if (kr == KERN_SUCCESS) {
 			semaphore_unlock(semaphore);
 			splx(spl_level);
 			return KERN_SUCCESS;
@@ -391,6 +412,7 @@ semaphore_signal_internal(
 	if (options & SEMAPHORE_SIGNAL_PREPOST) {
 		semaphore->count++;
 	}
+	I9100_SEMA_NOTE(4,semaphore,semaphore->count,1,KERN_NOT_WAITING,options,0);
 
 	semaphore_unlock(semaphore);
 	splx(spl_level);
@@ -626,6 +648,7 @@ semaphore_wait_continue(void)
 	void (*caller_cont)(kern_return_t) = self->sth_continuation;
 
 	assert(self->sth_waitsemaphore != SEMAPHORE_NULL);
+	I9100_SEMA_NOTE(5,self->sth_waitsemaphore,0,0,semaphore_convert_wait_result(wait_result),0,wait_result);
 	semaphore_dereference(self->sth_waitsemaphore);
 	if (self->sth_signalsemaphore != SEMAPHORE_NULL)
 		semaphore_dereference(self->sth_signalsemaphore);
@@ -687,6 +710,7 @@ semaphore_wait_internal(
 					self);
 		thread_unlock(self);
 	}
+	I9100_SEMA_NOTE(2,wait_semaphore,wait_semaphore->count,1,kr,option,current_thread()->wait_result);
 	semaphore_unlock(wait_semaphore);
 	splx(spl_level);
 
@@ -839,10 +863,14 @@ semaphore_wait_trap_internal(
 #endif
 	kr = port_name_to_semaphore(name, &semaphore);
 	if (kr == KERN_SUCCESS) {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        i9100_media_semaphore_begin((unsigned)(uintptr_t)semaphore,name);
+#endif
 		kr = semaphore_wait_internal(semaphore,
 				SEMAPHORE_NULL,
 				0ULL, SEMAPHORE_OPTION_NONE,
 				caller_cont);
+		I9100_SEMA_NOTE(6,semaphore,0,0,kr,0,0);
 		semaphore_dereference(semaphore);
 	}
 #if BOARD_CONFIG_ARMPBA8
