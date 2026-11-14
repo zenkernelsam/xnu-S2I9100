@@ -1885,14 +1885,30 @@ retry:
 
     pmap_flush_tlbs(map,va,va+PAGE_SIZE);PMAP_UNLOCK(map);leo_node_free(spare);return KERN_SUCCESS;
 }
+#if BOARD_CONFIG_EXYNOS4210_I9100
+/* Under the pmap lock: completed empty-kernel unwires and the last VA. */
+volatile unsigned i9100_pmap_empty_unwire[2];
+#endif
 static void leo_change_wiring(pmap_t map,vm_map_offset_t va,boolean_t wired)
 {
     pt_entry_t *pte,value;ppnum_t pn;pv_rooted_entry_t entry;pv_hashed_entry_t spare=PV_HASHED_ENTRY_NULL;boolean_t managed;
 retry:
     PMAP_LOCK(map);pte=(pt_entry_t *)pmap_pte(map,va);
-    if(!pte||!(*pte&2U))panic("pmap_change_wiring valid small PTE missing map=%p va=0x%08x wired=%u pte=%p value=0x%08x caller=%p",
-        map,(unsigned)va,(unsigned)wired,pte,pte?(unsigned)*pte:0,__builtin_return_address(0));
-    value=*pte;pn=(value&L2_ADDR_MASK)>>PAGE_SHIFT;
+    value=pte?*pte:0;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    /* pmap_page_protect/removal can retire a kernel alias before VM unwires
+     * its object. Its PV and wire ledger were debited when it was removed;
+     * like the x86 path, unwiring the empty slot must not debit them again.
+     * Do not accept a missing table, a new wire request, malformed nonzero
+     * descriptors, user-map holes or bootstrap provenance failures. */
+    if(pmap_initialized&&map==kernel_pmap&&!wired&&pte&&value==0){
+        ++i9100_pmap_empty_unwire[0];i9100_pmap_empty_unwire[1]=(unsigned)va;
+        PMAP_UNLOCK(map);return;
+    }
+#endif
+    if(!pte||!(value&2U))panic("pmap_change_wiring valid small PTE missing map=%p va=0x%08x wired=%u pte=%p value=0x%08x caller=%p",
+        map,(unsigned)va,(unsigned)wired,pte,(unsigned)value,__builtin_return_address(0));
+    pn=(value&L2_ADDR_MASK)>>PAGE_SHIFT;
     if(!pmap_initialized){if(map!=kernel_pmap||!leo_boot_match(va,pn))panic("pmap preinit wiring provenance missing");PMAP_UNLOCK(map);return;}
     managed=pmap_valid_page(pn);if(managed)LOCK_PVH(pn);entry=leo_mapping_find(map,va,pn);
     if(!entry){

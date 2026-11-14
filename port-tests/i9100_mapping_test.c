@@ -25,6 +25,7 @@ typedef uint32_t ppnum_t,pt_entry_t,vm_map_offset_t,vm_offset_t,vm_size_t;typede
 #define pte_offset(x) ((((x)>>12)&255U)*4U)
 #define _COMM_PAGE_BASE_ADDRESS 0x40000000U
 #define IOS7LAB_COMMPAGE_ALIAS 0xffff4000U
+#define IOS7LAB_COMMPAGE_ALIAS6 0xffff1000U
 #define PMAP_NULL ((pmap_t)0)
 #define KERN_SUCCESS 0
 #define KERN_INVALID_ARGUMENT 4
@@ -49,7 +50,8 @@ static void insque(queue_head_t *n,queue_head_t *p){n->next=p->next;n->prev=p;p-
 static void remque(queue_head_t *p){p->next->prev=p->prev;p->prev->next=p->next;}
 struct map{struct{int resident_count,wired_count;}pm_stats;int ledger[2];uint32_t pm_l1_size,pm_l1_virt;uint32_t ptes[16];};typedef struct map *pmap_t;
 static struct map kernel,user,other;static pmap_t kernel_pmap=&kernel;
-static int pmap_initialized=1,depth,pvdepth[4],hashdepth,fail_alloc,allocated,freed,syncs,execs;
+static int pmap_initialized=1,depth,pvdepth[4],hashdepth,fail_alloc,allocated,freed,syncs,execs,null_pte;
+volatile unsigned i9100_pmap_empty_unwire[2];
 static uint32_t npvhash=15,pmap_pv_hashlist_walks,pmap_pv_hashlist_cnts,pmap_pv_hashlist_max;
 static uint32_t identityBaseVA=0x80000000,managedBaseVA=0xc0000000,sectionOffset,gPhysBase=0x42000000,gVirtBase=0x80000000;
 static void semihost(uint32_t op,const void*p){register uint32_t r0 __asm__("r0")=op;register const void*r1 __asm__("r1")=p;__asm__ volatile("svc 0x123456":"+r"(r0):"r"(r1):"memory");}
@@ -59,9 +61,15 @@ static void __attribute__((noreturn)) finish(uint32_t c){uint32_t v[2]={0x20026,
 #define STR(x) STR_(x)
 #define assert CHECK
 #define panic(...) do{semihost(4,"unexpected panic: " __VA_ARGS__);finish(1);}while(0)
-/* printf-like panic args ignored for this mock. */
+/* Only the selected negative control may turn a matching panic into success. */
+static const char *expected_panic;
+static void panic_failure(const char *fmt){
+ const char *a=fmt,*b=expected_panic;
+ if(b){while(*a&&*a==*b){a++;b++;}if(!*a&&!*b){semihost(4,"EXPECTED PANIC: ");semihost(4,fmt);semihost(4,"\n");finish(23);}}
+ semihost(4,"unexpected panic: ");semihost(4,fmt);semihost(4,"\n");finish(1);
+}
 #undef panic
-#define panic(fmt,...) do{semihost(4,"unexpected panic: " fmt "\n");finish(1);}while(0)
+#define panic(fmt,...) panic_failure(fmt)
 #define kprintf(...) ((void)0)
 #define __improbable(x) (x)
 #define CHK_NPVHASH() ((void)0)
@@ -87,7 +95,7 @@ static void pmap_ledger_credit(pmap_t m,int w,int n){CHECK(n==4096);m->ledger[w]
 static void pmap_ledger_debit(pmap_t m,int w,int n){CHECK(n==4096);m->ledger[w]--;}
 static int pmap_valid_page(uint32_t p){return p>=0x42000&&p<0x42004;}
 static uint32_t managed_ptes[16];
-static uint32_t pmap_pte(pmap_t m,uint32_t v){if(m==kernel_pmap&&v>=0xc0000000U)return (uint32_t)&managed_ptes[(v>>12)&15U];return (uint32_t)&m->ptes[(v>>12)&15U];}
+static uint32_t pmap_pte(pmap_t m,uint32_t v){if(null_pte)return 0;if(m==kernel_pmap&&v>=0xc0000000U)return (uint32_t)&managed_ptes[(v>>12)&15U];return (uint32_t)&m->ptes[(v>>12)&15U];}
 static void pmap_expand(pmap_t m,uint32_t v){(void)m;(void)v;CHECK(0);}
 static uint32_t pmap_vm_prot_to_page_flags(pmap_t m,int prot,int wired,int f){(void)m;(void)wired;(void)f;return (prot&2)?0x10:0x210;}
 static uint32_t pmap_get_cache_attributes(uint32_t p){return pmap_valid_page(p)?0x4c:0;}
@@ -120,6 +128,29 @@ static void balances(pmap_t m,int resident,int wired){CHECK(m->pm_stats.resident
 static uint32_t l1a[4096] __attribute__((aligned(16384))),l1b[4096] __attribute__((aligned(16384)));
 static uint32_t l2a[256] __attribute__((aligned(1024))),l2b[256] __attribute__((aligned(1024)));
 void run(void){
+#ifdef UNWIRE_REJECT_CASE
+ // Missing wire target, user-map hole, absent table, malformed nonzero PTE,
+ // valid mapping without PV, preinit hole and broken ledger stay fatal.
+ expected_panic="pmap_change_wiring valid small PTE missing map=%p va=0x%08x wired=%u pte=%p value=0x%08x caller=%p";
+#if UNWIRE_REJECT_CASE == 1
+ pmap_change_wiring(&kernel,0xe7545000,TRUE);
+#elif UNWIRE_REJECT_CASE == 2
+ pmap_change_wiring(&user,0x5000,FALSE);
+#elif UNWIRE_REJECT_CASE == 3
+ null_pte=1;pmap_change_wiring(&kernel,0xe7545000,FALSE);
+#elif UNWIRE_REJECT_CASE == 4
+ managed_ptes[5]=1;pmap_change_wiring(&kernel,0xe7545000,FALSE);
+#elif UNWIRE_REJECT_CASE == 5
+ expected_panic="pmap_change_wiring tracked PV missing";
+ managed_ptes[5]=0x4200004e;pmap_change_wiring(&kernel,0xe7545000,FALSE);
+#elif UNWIRE_REJECT_CASE == 6
+ pmap_initialized=0;pmap_change_wiring(&kernel,0xe7545000,FALSE);
+#else
+ enter(&kernel,0xe7545000,0x42000,1);kernel.pm_stats.wired_count=0;
+ expected_panic="pmap mapping wired_count";pmap_change_wiring(&kernel,0xe7545000,FALSE);
+#endif
+ CHECK(0);
+#endif
  // First/repeated wire and two aliases: removing root promotes the wired alias.
  enter(&user,0x1000,0x42000,0);balances(&user,1,0);
  pmap_change_wiring(&user,0x1000,1);pmap_change_wiring(&user,0x1000,1);balances(&user,1,1);
@@ -144,6 +175,18 @@ void run(void){
  // Read protection of user mapping retains wire state, kernel removal debits it.
  enter(&kernel,0x6000,0x42003,1);enter(&user,0x6000,0x42003,1);
  pmap_page_protect(0x42003,VM_PROT_READ);balances(&kernel,0,0);balances(&user,1,1);CHECK(roots[3].mapping_wired);
+#ifdef UNWIRE_OLD_CONTROL
+ expected_panic="pmap_change_wiring valid small PTE missing map=%p va=0x%08x wired=%u pte=%p value=0x%08x caller=%p";
+#endif
+ // The kernel mapping has already gone, but VM still unwires its object.
+ // The surviving user's rooted PV and wired ledger must remain untouched.
+ int old_allocated=allocated,old_freed=freed,old_syncs=syncs;
+ pmap_change_wiring(&kernel,0x6000,FALSE);pmap_change_wiring(&kernel,0x6000,FALSE);
+#ifdef UNWIRE_OLD_CONTROL
+ CHECK(0); // A control using already-fixed source must not pass.
+#endif
+ CHECK(allocated==old_allocated&&freed==old_freed&&syncs==old_syncs);
+ balances(&kernel,0,0);balances(&user,1,1);CHECK(roots[3].mapping_wired&&roots[3].pmap==&user);
  CHECK(user.ptes[6]&L2_ACCESS_APX);remove_one(&user,0x6000);balances(&user,0,0);
  // Unlocked allocation retry for a user alias and hash-only unmanaged mapping.
  enter(&kernel,0x7000,0x42000,0);fail_alloc=1;enter(&user,0x7000,0x42000,1);remove_one(&user,0x7000);remove_one(&kernel,0x7000);
@@ -156,6 +199,20 @@ void run(void){
  enter(&user,0xc000,0x11c00,1);enter(&user,0xd000,0x11c00,1);balances(&user,2,2);
  remove_one(&user,0xc000);balances(&user,1,1);pmap_change_wiring(&user,0xd000,0);
  balances(&user,1,0);remove_one(&user,0xd000);balances(&user,0,0);
+ // Exact panic VA: full kernel removal then late/repeated unwire, including
+ // a promoted surviving alias, MMIO and reuse of the same virtual address.
+ for(unsigned n=0;n<20;n++){
+  enter(&kernel,0xe7545000,0x42002,1);enter(&user,0x5000,0x42002,1);
+  remove_one(&kernel,0xe7545000);CHECK(managed_ptes[5]==0);
+  pmap_change_wiring(&kernel,0xe7545000,FALSE);pmap_change_wiring(&kernel,0xe7545000,FALSE);
+  balances(&kernel,0,0);balances(&user,1,1);CHECK(roots[2].pmap==&user&&roots[2].mapping_wired);
+  remove_one(&user,0x5000);CHECK(!roots[2].pmap&&!(roots[2].flags&1));
+ }
+ enter(&kernel,0xe7545000,0x11c00,1);remove_one(&kernel,0xe7545000);
+ pmap_change_wiring(&kernel,0xe7545000,FALSE);balances(&kernel,0,0);
+ CHECK(i9100_pmap_empty_unwire[0]==43&&i9100_pmap_empty_unwire[1]==0xe7545000);
+ CHECK(!depth&&!hashdepth&&allocated==freed);for(unsigned n=0;n<4;n++)CHECK(!pvdepth[n]);
+ semihost(4,"ARM late kernel unwire: removed/protected mapping, surviving PV alias, MMIO and20 VA reuse cycles PASS\n");
  // Bootstrap mappings have explicit provenance, no invented wire status/ledger.
  pmap_initialized=0;enter(&kernel,0x9000,0x11c00,1);balances(&kernel,0,0);
  pmap_initialized=1;pmap_change_wiring(&kernel,0x9000,1);balances(&kernel,1,1);remove_one(&kernel,0x9000);balances(&kernel,0,0);
