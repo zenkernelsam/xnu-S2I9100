@@ -125,6 +125,38 @@ extern int proc_selfpid(void);
 extern void proc_name(int,char *,int);
 #include "../../pexpert/arm/i9100_ls_delivery.h"
 #include "../../pexpert/arm/i9100_ls_query_diag.h"
+#include "../../pexpert/arm/i9100_fig_rpc_diag.h"
+static unsigned i9100_fig_rpc_put_begin(ipc_kmsg_t kmsg,mach_vm_address_t address,mach_msg_size_t size)
+{
+    int enabled=0;
+    if(!kmsg || !kmsg->ikm_header || size<24 || size>I9100_FIG_RPC_BYTES ||
+       (kmsg->ikm_header->msgh_id!=9393 && kmsg->ikm_header->msgh_id!=9493) ||
+       address<4096 || address>=0x40000000ULL || size>0x40000000ULL-address ||
+       current_task()==kernel_task || ml_at_interrupt_context() ||
+       !ml_get_interrupts_enabled() || get_preemption_level()!=0 ||
+       !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return 0;
+    uintptr_t begin=(uintptr_t)(kmsg+1),at=(uintptr_t)kmsg->ikm_header;
+    if(at<begin || at-begin>kmsg->ikm_size)return 0;
+    unsigned available=kmsg->ikm_size-(at-begin);
+    if(size>available)return 0;
+    char name[16]={0};proc_name(proc_selfpid(),name,sizeof(name));
+    return i9100_fig_rpc_record(5,(const void *)at,available,size,proc_selfpid(),
+        (unsigned)(uintptr_t)current_thread(),(unsigned)(uintptr_t)current_task(),name,
+        1,0,0,(unsigned)address,(unsigned)(uintptr_t)kmsg->ikm_header->msgh_remote_port,UINT32_MAX,UINT32_MAX,0);
+}
+static void i9100_fig_rpc_put_end(unsigned token,ipc_kmsg_t kmsg,mach_vm_address_t address,
+    mach_msg_size_t size,mach_msg_return_t result)
+{
+    if(!token)return;
+    unsigned pid=proc_selfpid(),thread=(unsigned)(uintptr_t)current_thread();
+    i9100_fig_rpc_finish(token,pid,thread,result);
+    if(result || ml_at_interrupt_context() || !ml_get_interrupts_enabled() || get_preemption_level()!=0)return;
+    unsigned char actual[I9100_FIG_RPC_BYTES];unsigned error=copyin(address,actual,size);
+    char name[16]={0};proc_name(pid,name,sizeof(name));
+    (void)i9100_fig_rpc_record(6,error?(const void *)kmsg->ikm_header:actual,size,size,
+        pid,thread,(unsigned)(uintptr_t)current_task(),name,1,0,error,(unsigned)address,0,
+        UINT32_MAX,UINT32_MAX,kmsg->ikm_header->msgh_id);
+}
 #define I9100_LS_CALLBACK_IMPLEMENTATION 1
 #include "../../pexpert/arm/i9100_ls_callback_diag.h"
 static unsigned i9100_ls_query_put_begin(ipc_kmsg_t kmsg,mach_vm_address_t address,mach_msg_size_t size)
@@ -1591,6 +1623,7 @@ ipc_kmsg_put(
 #if BOARD_CONFIG_EXYNOS4210_I9100
     unsigned delivery=i9100_ls_put_capture(kmsg,msg_addr,size);
     unsigned query_delivery=i9100_ls_query_put_begin(kmsg,msg_addr,size);
+    unsigned fig_delivery=i9100_fig_rpc_put_begin(kmsg,msg_addr,size);
 #endif
 	if (copyoutmsg((const char *) kmsg->ikm_header, msg_addr, size))
 		mr = MACH_RCV_INVALID_DATA;
@@ -1609,6 +1642,7 @@ ipc_kmsg_put(
         (unsigned)(uintptr_t)current_task(),mr,!ml_at_interrupt_context() &&
         ml_get_interrupts_enabled() && get_preemption_level()==0);
     i9100_ls_query_put_end(query_delivery,kmsg,msg_addr,size,mr);
+    i9100_fig_rpc_put_end(fig_delivery,kmsg,msg_addr,size,mr);
 #endif
 	ipc_kmsg_free(kmsg);
 	return mr;

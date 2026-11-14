@@ -4,25 +4,29 @@
  * syscall context. Preserve raw CFString storage and its native frame chain;
  * do not infer a string layout or change the signal/exception policy. */
 volatile uint32_t i9100_media_kill_payload[64+128];
+volatile uint32_t i9100_springboard_kill_payload[64+128];
 extern volatile uint32_t i9100_audio_property_runtime[4];
 extern volatile uint32_t i9100_audio_property_lock_diag[12];
 volatile uint32_t i9100_media_audio_runtime[8+16];
 static volatile UInt32 i9100_media_kill_guard;
+static volatile UInt32 i9100_springboard_kill_guard;
 static void i9100_media_kill_note(proc_t p,const arm_saved_state_t *state,int signum,unsigned flavor)
 {
     int enabled=0;
     if(!p || !state || signum!=SIGKILL || flavor ||
-       strcmp(p->p_comm,"mediaserverd") || (state->cpsr&0x1fU)!=0x10U ||
+       (strcmp(p->p_comm,"mediaserverd") && strcmp(p->p_comm,"SpringBoard")) || (state->cpsr&0x1fU)!=0x10U ||
        ml_at_interrupt_context() || !ml_get_interrupts_enabled() || get_preemption_level()!=0 ||
        !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
     uint32_t slide=(state->lr&~1U)-0x316a426eU;
+    unsigned springboard=!strcmp(p->p_comm,"SpringBoard");
+    volatile UInt32 *guard=springboard?&i9100_springboard_kill_guard:&i9100_media_kill_guard;
     if((slide&4095U) || slide>=0x40000000U-0x392cc840U ||
        state->pc!=0x392cc838U+slide || state->r[1]!=SIGKILL ||
-       !OSCompareAndSwap(0U,1U,&i9100_media_kill_guard))return;
-    volatile uint32_t *out=i9100_media_kill_payload;
+       !OSCompareAndSwap(0U,1U,guard))return;
+    volatile uint32_t *out=springboard?i9100_springboard_kill_payload:i9100_media_kill_payload;
     /* Preserve the first actual callback stage before this owner exits.
      * Installation alone cannot prove the new code ever executed. */
-    if(i9100_audio_property_runtime[0]==1 &&
+    if(!springboard && i9100_audio_property_runtime[0]==1 &&
        i9100_audio_property_runtime[1]==(uint32_t)p->p_pid &&
        i9100_audio_property_runtime[2]==(uint32_t)(uintptr_t)p->task){
         volatile uint32_t *audio=i9100_media_audio_runtime;
@@ -41,6 +45,7 @@ static void i9100_media_kill_note(proc_t p,const arm_saved_state_t *state,int si
     }
     out[1]=p->p_pid;out[2]=(uint32_t)(uintptr_t)p->task;out[3]=state->pc;
     out[4]=state->lr;out[5]=state->sp;out[6]=state->r[7];out[12]=slide;out[13]=1;
+    out[14]=signum;out[15]=springboard?2U:1U;
     uint32_t frame=state->r[7];
     for(unsigned n=0;n<16;n++){
         uint32_t pair[2];

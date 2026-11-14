@@ -153,6 +153,30 @@ volatile uint32_t i9100_ls_wire_diag[1+64*48];
 static volatile UInt32 i9100_service_wire_guard[2];
 #define I9100_LS_QUERY_IMPLEMENTATION 1
 #include "../../pexpert/arm/i9100_ls_query_diag.h"
+#define I9100_FIG_RPC_IMPLEMENTATION 1
+#include "../../pexpert/arm/i9100_fig_rpc_diag.h"
+static unsigned i9100_fig_rpc_kmsg(unsigned stage,ipc_kmsg_t kmsg,
+    mach_msg_option_t option,mach_msg_return_t result)
+{
+    if(!kmsg || !kmsg->ikm_header || !i9100_xpc_boundary_enabled())return 0;
+    uintptr_t begin=(uintptr_t)(kmsg+1),at=(uintptr_t)kmsg->ikm_header;
+    if(at<begin || at-begin>kmsg->ikm_size)return 0;
+    unsigned available=kmsg->ikm_size-(at-begin),size=kmsg->ikm_header->msgh_size;
+    if(size<24 || size>available || size>I9100_FIG_RPC_BYTES ||
+       (kmsg->ikm_header->msgh_id!=9393 && kmsg->ikm_header->msgh_id!=9493))return 0;
+    char name[16]={0};proc_name(proc_selfpid(),name,sizeof(name));
+    unsigned sender=UINT32_MAX,euid=UINT32_MAX,offset=round_msg(size);
+    if((stage==3 || stage==4) && offset<=available &&
+       available-offset>=sizeof(mach_msg_audit_trailer_t)){
+        const mach_msg_audit_trailer_t *t=(const void *)(at+offset);
+        if(t->msgh_trailer_type==MACH_MSG_TRAILER_FORMAT_0 &&
+           t->msgh_trailer_size>=sizeof(*t) && t->msgh_trailer_size<=MAX_TRAILER_SIZE &&
+           t->msgh_trailer_size<=available-offset){sender=t->msgh_audit.val[5];euid=t->msgh_audit.val[1];}
+    }
+    return i9100_fig_rpc_record(stage,(const void *)at,available,size,proc_selfpid(),
+        (unsigned)(uintptr_t)current_thread(),(unsigned)(uintptr_t)current_task(),name,
+        1,option,result,0,(unsigned)(uintptr_t)kmsg->ikm_header->msgh_remote_port,sender,euid,0);
+}
 static unsigned i9100_ls_query_kmsg(unsigned stage,ipc_kmsg_t kmsg,
     mach_msg_option_t option,mach_msg_return_t result)
 {
@@ -231,6 +255,7 @@ static void i9100_ls_publish_finish(unsigned sequence, unsigned sending, mach_ms
 static void i9100_service_wire_record(unsigned stage, ipc_kmsg_t kmsg,
     mach_msg_option_t option, mach_msg_return_t status)
 {
+    if(stage==3 || stage==4)(void)i9100_fig_rpc_kmsg(stage,kmsg,option,status);
     if(stage==3 || stage==4)(void)i9100_ls_query_kmsg(stage,kmsg,option,status);
     if(stage==3 || stage==4)(void)i9100_ls_publish_record(stage,kmsg,option,status);
     if (!kmsg || !kmsg->ikm_header || !i9100_xpc_boundary_enabled()) return;
@@ -1144,6 +1169,7 @@ mach_msg_receive_results(void)
         row[6] = mr; OSMemoryBarrier(); row[7] = 1;
     }
     i9100_mach_failure_record(2, msg_addr, self->ith_msize, option, mr);
+    i9100_fig_rpc_receive_done(proc_selfpid(),(unsigned)(uintptr_t)self,mr);
     i9100_ls_bootstrap_receive_done(self, mr, i9100_store_reply);
     i9100_ls_ui_done(proc_selfpid(),(uint32_t)(uintptr_t)self,mr,option);
 #endif
@@ -1252,6 +1278,7 @@ mach_msg_overwrite_trap(
         unsigned int i9100_tcc_lookup = 0;
         unsigned int i9100_ls_publish_sequence = 0;
         unsigned int i9100_ls_query_sequence = 0;
+        unsigned int i9100_fig_rpc_sequence = 0;
 #endif
 
 		mr = ipc_kmsg_get(msg_addr, send_size, &kmsg);
@@ -1268,6 +1295,7 @@ mach_msg_overwrite_trap(
         i9100_service_wire_record(1, kmsg, option, mr);
         i9100_ls_publish_sequence=i9100_ls_publish_record(1,kmsg,option,mr);
         i9100_ls_query_sequence=i9100_ls_query_kmsg(1,kmsg,option,mr);
+        i9100_fig_rpc_sequence=i9100_fig_rpc_kmsg(1,kmsg,option,mr);
         i9100_tcc_lookup=i9100_tcc_bootstrap_send(kmsg);
         i9100_ls_budget = i9100_ls_bootstrap_send_budget(kmsg->ikm_header,
             option, send_size, rcv_size, msg_timeout);
@@ -1302,6 +1330,7 @@ mach_msg_overwrite_trap(
 #if BOARD_CONFIG_EXYNOS4210_I9100
         i9100_ls_publish_finish(i9100_ls_publish_sequence,0,mr);
         i9100_ls_query_finish(i9100_ls_query_sequence,proc_selfpid(),(unsigned)(uintptr_t)current_thread(),mr);
+        i9100_fig_rpc_finish(i9100_fig_rpc_sequence,proc_selfpid(),(unsigned)(uintptr_t)current_thread(),mr);
 #endif
 #if BOARD_CONFIG_QSD8250_LEO
         leo_rpc060_note(leo_rpc060_seq,mr==MACH_MSG_SUCCESS?LEO_RPC060_COPYIN:LEO_RPC060_DONE,(uint32_t)mr,0);
@@ -1381,11 +1410,14 @@ mach_msg_overwrite_trap(
         }
         i9100_ls_publish_sequence=i9100_ls_publish_record(2,kmsg,option,MACH_MSG_SUCCESS);
         i9100_ls_query_sequence=i9100_ls_query_kmsg(2,kmsg,option,MACH_MSG_SUCCESS);
+        i9100_fig_rpc_sequence=i9100_fig_rpc_kmsg(2,kmsg,option,MACH_MSG_SUCCESS);
 #endif
 		mr = ipc_kmsg_send(kmsg, option & MACH_SEND_TIMEOUT, msg_timeout);
 #if BOARD_CONFIG_EXYNOS4210_I9100
         i9100_ls_publish_finish(i9100_ls_publish_sequence,1,mr);
         i9100_ls_query_finish(i9100_ls_query_sequence,proc_selfpid(),(unsigned)(uintptr_t)current_thread(),mr);
+        i9100_fig_rpc_finish(i9100_fig_rpc_sequence,proc_selfpid(),(unsigned)(uintptr_t)current_thread(),mr);
+        if(mr!=MACH_MSG_SUCCESS)i9100_fig_rpc_receive_done(proc_selfpid(),(unsigned)(uintptr_t)current_thread(),mr);
         if(i9100_ls_ui_budget){
             i9100_ls_ui_note(proc_selfpid(),(uint32_t)(uintptr_t)current_thread(),2,mr,option);
             if(mr==MACH_MSG_SUCCESS)i9100_ls_ui_begin(proc_selfpid(),(uint32_t)(uintptr_t)current_thread());
@@ -1431,6 +1463,7 @@ mach_msg_overwrite_trap(
 		if (mr != MACH_MSG_SUCCESS) {
 #if BOARD_CONFIG_EXYNOS4210_I9100
             i9100_ls_ui_done(proc_selfpid(),(uint32_t)(uintptr_t)self,mr,option);
+            i9100_fig_rpc_receive_done(proc_selfpid(),(unsigned)(uintptr_t)self,mr);
 #endif
 #if BOARD_CONFIG_QSD8250_LEO
             leo_rpc060_note(leo_rpc060_seq,LEO_RPC060_DONE,(uint32_t)mr,0);

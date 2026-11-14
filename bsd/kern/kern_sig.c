@@ -156,7 +156,8 @@ static void i9100_springboard_signal_note(proc_t p, int signum,
             if (context != PROC_NULL && state != NULL &&
                 (state->cpsr & 0x1fU) == 0x10U) {
                 pc = state->pc; lr = state->lr;
-                if(media && context==p)i9100_media_kill_note(p,state,signum,flavor);
+                if(context==p && (media || !strcmp(p->p_comm,"SpringBoard")))
+                    i9100_media_kill_note(p,state,signum,flavor);
             }
         }
     }
