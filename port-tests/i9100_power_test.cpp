@@ -18,7 +18,7 @@ struct BatteryModel {
  bool operation(){return ++ops!=failAt;}
  static int read(void *c,unsigned reg,uint8_t *v){auto m=(BatteryModel *)c;if(!m->operation())return 0;*v=m->pmic[reg];return 1;}
  static int write(void *c,unsigned reg,uint8_t v){
-  auto m=(BatteryModel *)c;assert(reg>=0x50 && reg<=0x55);
+  auto m=(BatteryModel *)c;assert((reg>=0x50 && reg<=0x55) || reg==0x5a);
   if(!m->operation())return 0;m->pmic[reg]=v;return 1;
  }
  static int gauge(void *c,unsigned reg,uint16_t *v){auto m=(BatteryModel *)c;if(!m->operation())return 0;*v=m->fuel[reg];return 1;}
@@ -32,7 +32,8 @@ struct BatteryModel {
  }
  static int enable(void *c,unsigned en){auto m=(BatteryModel *)c;assert(en<2);m->sub=en;m->subWrites++;return m->operation();}
  static uint64_t now(void *c){return ((BatteryModel *)c)->time;}
- i9100_power_io io(){i9100_power_io io={this,read,write,gauge,adc,status,enable,now};return io;}
+ i9100_power_io io(){i9100_power_io io={};io.cookie=this;io.pmic_read=read;io.pmic_write=write;
+  io.fuel_read=gauge;io.adc_read=adc;io.sub_read=status;io.sub_enable=enable;io.now_ns=now;return io;}
 };
 static void policy_checks()
 {
@@ -42,7 +43,7 @@ static void policy_checks()
   assert((m.pmic[0x51]&0xc0)==0 && !m.sub);
   if(rev<8){
    assert(m.pmic[0x52]==0xb0 && m.pmic[0x53]==0xa5 && m.pmic[0x54]==0xd5);
-   assert(m.pmic[0x50]==0xaf && m.pmic[0x55]==0xb1);
+   assert(m.pmic[0x50]==0xaf && m.pmic[0x55]==0x91 && (m.pmic[0x5a]&0x40));
   }else assert(m.pmic[0x52]==0xb3 && m.pmic[0x53]==0xa9); // Do not tune unused charger.
   int rc=i9100_power_poll(&s);
   if(rc || !s.valid || !s.present || !s.connected || !s.charging || !s.enabled)
@@ -63,7 +64,22 @@ static void policy_checks()
   (rev<8?m.adc6:m.adc7)=rev<8?937:989;
   assert(!i9100_power_poll(&s) && s.enabled);
   m.fuel[9]=53760;assert(!i9100_power_poll(&s) && s.full && !s.enabled && s.reason==I9100_POWER_FULL);
-  m.fuel[9]=48000;assert(!i9100_power_poll(&s) && !s.enabled); // Full latch until detach.
+  m.fuel[9]=52992;m.fuel[0xff]=94*256; // 4.14V is above the conservative recharge threshold.
+  assert(!i9100_power_poll(&s) && !s.enabled && !s.recharge_low_count);
+  m.fuel[9]=48000;(rev<8?m.adc6:m.adc7)=rev<8?570:630;
+  assert(!i9100_power_poll(&s) && !s.enabled && !s.recharge_low_count); // 43C cannot start a new cycle.
+  (rev<8?m.adc6:m.adc7)=rev<8?937:989;
+  m.fuel[9]=48000;assert(!i9100_power_poll(&s) && !s.enabled && s.recharge_low_count==1);
+  (rev<8?m.adc6:m.adc7)=rev<8?544:603;
+  assert(!i9100_power_poll(&s) && !s.enabled && !s.recharge_low_count); // Hot sample breaks the consecutive count.
+  (rev<8?m.adc6:m.adc7)=rev<8?937:989;
+  assert(!i9100_power_poll(&s) && !s.enabled && s.recharge_low_count==1);
+  assert(!i9100_power_poll(&s) && s.enabled && !s.full && s.recharging); // Recharge without USB detach.
+  uint64_t started=s.charge_start;m.time+=600ULL*1000000000ULL;
+  assert(!i9100_power_poll(&s) && s.enabled && s.charge_start==started && s.charge_refresh==m.time);
+  m.time=started+5400ULL*1000000000ULL;
+  assert(!i9100_power_poll(&s) && s.timeout && !s.enabled);
+  assert(!i9100_power_poll(&s) && s.timeout && !s.enabled); // Never auto-clear timeout.
   m.plugged=false;m.pmic[0x10]=0;assert(!i9100_power_poll(&s) && !s.full && !s.connected);
   m.plugged=true;m.pmic[0x10]=0x1a;assert(!i9100_power_poll(&s) && s.enabled);
   m.time+=18000ULL*1000000000ULL;
@@ -100,7 +116,7 @@ static void policy_checks()
  int temp;assert(!i9100_power_temperature(6,0,&temp) && !i9100_power_temperature(7,4095,&temp));
  assert(i9100_power_temperature(6,937,&temp) && temp==250);
  assert(i9100_power_temperature(7,989,&temp) && temp==250);
- printf("Charging policy: 16 revisions, both controllers, register masks, voltage/thermal limits, hysteresis, full/timeout latches and %u injected I/O failures passed\n",faultChecks);
+ printf("Charging policy: 16 revisions, full-stop recharge, 90min maintenance bound, refresh preserving deadline, timeout latch, voltage/thermal guards and %u injected I/O failures passed\n",faultChecks);
 }
 
 /* Byte-level I2C peripheral driven by GPIO edges. Each instance models only

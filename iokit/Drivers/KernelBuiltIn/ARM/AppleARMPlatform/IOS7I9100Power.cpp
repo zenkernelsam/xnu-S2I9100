@@ -19,6 +19,7 @@ volatile uint32_t i9100_power_connected,i9100_power_charging;
 volatile uint32_t i9100_power_revision_value=0xffffffffU;
 volatile int32_t i9100_power_temp;
 volatile int32_t i9100_power_reason=I9100_POWER_IO;
+volatile uint32_t i9100_power_policy[10];
 }
 
 class IOS7I9100Power : public IOPMPowerSource {
@@ -111,6 +112,11 @@ void IOS7I9100Power::sample(void)
  i9100_power_mv=battery.millivolts;i9100_power_connected=battery.connected;
  i9100_power_charging=battery.charging;i9100_power_temp=battery.temperature_deci_c;
  i9100_power_reason=battery.reason;
+ i9100_power_policy[0]=1;i9100_power_policy[1]=battery.enabled;
+ i9100_power_policy[2]=battery.full;i9100_power_policy[3]=battery.timeout;
+ i9100_power_policy[4]=battery.recharging;i9100_power_policy[5]=battery.recharge_low_count;
+ i9100_power_policy[6]=(uint32_t)battery.charge_start;i9100_power_policy[7]=(uint32_t)(battery.charge_start>>32);
+ i9100_power_policy[8]=(uint32_t)battery.charge_refresh;i9100_power_policy[9]=(uint32_t)(battery.charge_refresh>>32);
  setExternalChargeCapable(battery.valid && battery.connected && battery.present);
  setIsCharging(battery.valid && battery.charging);
  if(battery.valid){

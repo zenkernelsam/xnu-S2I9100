@@ -24,8 +24,10 @@ struct i9100_power_state {
  unsigned ready,revision,use_sub,enabled,valid,connected,present,charging;
  unsigned cable_type; /* last MUIC STATUS2 CHGTYP read; 0x7 = unknown */
  unsigned millivolts,percent,adc,full,timeout,thermal_block,errors;
+ unsigned recharging,recharge_low_count;
  int temperature_deci_c,reason;
  uint64_t charge_start;
+ uint64_t charge_refresh;
 };
 int i9100_power_init(struct i9100_power_state *,const struct i9100_power_io *,unsigned);
 int i9100_power_poll(struct i9100_power_state *);

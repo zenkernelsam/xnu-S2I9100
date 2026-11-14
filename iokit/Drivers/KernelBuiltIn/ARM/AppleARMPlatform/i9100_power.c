@@ -40,6 +40,7 @@ int i9100_power_init(struct i9100_power_state *s,const struct i9100_power_io *io
  s->io=*io;s->revision=revision;s->use_sub=revision>=8 && revision<=15;
  s->ready=s->enabled=s->valid=s->connected=s->present=s->charging=0;
  s->millivolts=s->percent=s->adc=s->full=s->timeout=s->thermal_block=s->errors=0;
+ s->recharging=s->recharge_low_count=s->cable_type=0;s->charge_refresh=0;
  s->temperature_deci_c=0;s->charge_start=0;s->reason=I9100_POWER_REVISION;
  if(revision>15)return s->reason;
  uint8_t id,again;
@@ -92,20 +93,41 @@ int i9100_power_poll(struct i9100_power_state *s)
   !i9100_power_temperature(s->use_sub?7:6,adc,&temp))goto failure;
  s->adc=adc;s->temperature_deci_c=temp;s->valid=1;
  if(!connected){
-  s->full=s->timeout=s->thermal_block=0;s->charge_start=0;s->reason=I9100_POWER_OFFLINE;
+  s->full=s->timeout=s->thermal_block=0;s->recharging=s->recharge_low_count=0;
+  s->charge_start=s->charge_refresh=0;s->reason=I9100_POWER_OFFLINE;
   if(!i9100_power_stop(s))goto failure;return 0;
  }
  if(!s->present){s->reason=I9100_POWER_NO_BATTERY;goto stop;}
  if(temp<=0 || temp>=450)s->thermal_block=1;
  else if(temp>=50 && temp<=400)s->thermal_block=0;
  if(s->thermal_block){s->reason=I9100_POWER_TEMPERATURE;goto stop;}
- if(s->millivolts>=4200 || (s->percent>=100 && s->millivolts>=4150) ||
-  (!s->use_sub && (status&1) && s->millivolts>=4100))s->full=1;
+ /* U1 vendor resumes after a full stop when voltage falls below its
+  * 4.13/4.15V recharge threshold. Use the stricter 4.13V plus SOC<=95
+  * and two valid cool samples; do not clear an expired safety timeout. */
+ unsigned resume_full=0;
+ if(s->full && !s->timeout && s->millivolts<4130 && s->percent<=95 && temp>=50 && temp<=400){
+  if(++s->recharge_low_count>=2){
+   s->full=0;s->recharging=1;s->recharge_low_count=0;
+   s->charge_start=s->charge_refresh=0;resume_full=1;
+  }
+ }else s->recharge_low_count=0;
+ /* A stale main-charger topoff bit must not immediately cancel the
+  * validated restart before its enable transition can clear the bit. */
+ if(!resume_full && (s->millivolts>=4200 || (s->percent>=100 && s->millivolts>=4150) ||
+  (!s->use_sub && (status&1) && s->millivolts>=4100))){
+  s->full=1;s->recharging=0;s->charge_start=s->charge_refresh=0;
+ }
  if(s->full){s->reason=I9100_POWER_FULL;goto stop;}
  uint64_t now=s->io.now_ns(s->io.cookie);
  if(!now)goto failure;
- if(s->charge_start && now-s->charge_start>=18000ULL*1000000000ULL)s->timeout=1;
+ uint64_t limit=(s->recharging?5400ULL:18000ULL)*1000000000ULL;
+ if(s->charge_start && now-s->charge_start>=limit)s->timeout=1;
  if(s->timeout){s->reason=I9100_POWER_TIMEOUT;goto stop;}
+ /* Vendor refreshes the charger every ten minutes. The software cycle
+  * start remains unchanged: refresh never postpones the safety deadline. */
+ if(s->enabled && s->charge_refresh && now-s->charge_refresh>=600ULL*1000000000ULL){
+  if(!i9100_power_stop(s))goto failure;
+ }
  if(!s->enabled){
   if(s->use_sub){
    if(!update(s,0x51,0xc0,0) || !s->io.sub_enable(s->io.cookie,1))goto failure;
@@ -122,7 +144,7 @@ int i9100_power_poll(struct i9100_power_state *s)
    }
    if(!update(s,0x53,0x0f,cur) || !update(s,0x51,0xc0,0xc0))goto failure;
   }
-  s->enabled=1;if(!s->charge_start)s->charge_start=now;
+  s->enabled=1;if(!s->charge_start)s->charge_start=now;s->charge_refresh=now;
  }
  /* Status comes from the chip/pin, not just from the enable command. */
  if(s->use_sub){if(!s->io.sub_read(s->io.cookie,&connected,&charging))goto failure;s->charging=connected && charging;}
@@ -132,7 +154,9 @@ int i9100_power_poll(struct i9100_power_state *s)
  }
  s->reason=I9100_POWER_OK;return 0;
 stop:
+ if(s->reason!=I9100_POWER_FULL)s->recharge_low_count=0;
  if(!i9100_power_stop(s))goto failure;return 0;
 failure:
+ s->recharge_low_count=0;
  (void)i9100_power_stop(s);s->valid=0;s->errors++;s->reason=I9100_POWER_IO;return s->reason;
 }
