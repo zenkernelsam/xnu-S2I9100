@@ -1,4 +1,5 @@
-/* Observe the native iOS6 Fig sandbox rendezvous (9393/9493) unchanged.
+/* Observe the native iOS6 Fig sandbox rendezvous (9393/9493) and player
+ * creation (2020/2120) unchanged.
  * Callers provide a validated live kernel-message extent. No VM/port walk,
  * blocking lock, user copy, reply fabrication or timeout change occurs here.
  * The first 64 rows survive later process restarts and ordinary media traffic. */
@@ -30,9 +31,10 @@ unsigned i9100_fig_rpc_record(unsigned stage,const unsigned char *source,
     unsigned role=!strcmp(name,"mediaserverd")?1U:!strcmp(name,"SpringBoard")?2U:0U;
     if(!role)return 0;
     uint32_t id,bits;memcpy(&id,source+20,4);memcpy(&bits,source,4);
-    if(stage==6 && (expected_id==9393U || expected_id==9493U))id=expected_id;
+    if(stage==6 && (expected_id==9393U || expected_id==9493U ||
+       expected_id==2020U || expected_id==2120U))id=expected_id;
     else if(expected_id)return 0;
-    if(id!=9393U && id!=9493U)return 0;
+    if(id!=9393U && id!=9493U && id!=2020U && id!=2120U)return 0;
     if(!OSCompareAndSwap(0U,1U,&i9100_fig_rpc_guard))return 0;
     unsigned count=i9100_fig_rpc_diag[0];
     if(count>=I9100_FIG_RPC_CAPACITY){i9100_fig_rpc_guard=0;return 0;}
@@ -43,7 +45,7 @@ unsigned i9100_fig_rpc_record(unsigned stage,const unsigned char *source,
     r[8]=size;r[9]=size;r[10]=bits;r[11]=option;r[12]=result;r[13]=address;
     r[14]=peer;r[20]=sender;r[21]=euid;
     memcpy((void *)&r[24],source,size);
-    if(stage==2 && id==9393U && (option&2U)){
+    if(stage==2 && (id==9393U || id==2020U) && (option&2U)){
         unsigned slot=16;
         for(unsigned n=0;n<16;n++)
             if(i9100_fig_rpc_pending[n][0]==pid && i9100_fig_rpc_pending[n][1]==thread){slot=n;break;}

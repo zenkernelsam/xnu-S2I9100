@@ -130,7 +130,8 @@ static unsigned i9100_fig_rpc_put_begin(ipc_kmsg_t kmsg,mach_vm_address_t addres
 {
     int enabled=0;
     if(!kmsg || !kmsg->ikm_header || size<24 || size>I9100_FIG_RPC_BYTES ||
-       (kmsg->ikm_header->msgh_id!=9393 && kmsg->ikm_header->msgh_id!=9493) ||
+       (kmsg->ikm_header->msgh_id!=9393 && kmsg->ikm_header->msgh_id!=9493 &&
+        kmsg->ikm_header->msgh_id!=2020 && kmsg->ikm_header->msgh_id!=2120) ||
        address<4096 || address>=0x40000000ULL || size>0x40000000ULL-address ||
        current_task()==kernel_task || ml_at_interrupt_context() ||
        !ml_get_interrupts_enabled() || get_preemption_level()!=0 ||

@@ -113,6 +113,7 @@ extern const char *syscallnames[];
 #include "../../../pexpert/arm/i9100_mdns_observation.h"
 #include "../../../pexpert/arm/i9100_ls_files.h"
 #include "i9100_audio_property_lock.h"
+#include "i9100_audio_wait_diag.h"
 static void i9100_ls_file_note(struct proc *p,unsigned code,void *arguments,
     unsigned argument_error,int error,uint32_t result,const arm_saved_state_t *state)
 {
@@ -772,6 +773,9 @@ void unix_syscall(arm_saved_state_t * state)
                 printf("IOS7LAB pid=%d syscall %u PATH %s\n", p->p_pid, lab_trace_index, lab_path);
         }
     }
+#endif
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    i9100_audio_wait_note(p,code,arm_argument_error,state);
 #endif
     if (arm_argument_error) {
         error = arm_argument_error;

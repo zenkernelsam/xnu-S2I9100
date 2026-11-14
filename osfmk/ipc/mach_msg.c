@@ -163,7 +163,8 @@ static unsigned i9100_fig_rpc_kmsg(unsigned stage,ipc_kmsg_t kmsg,
     if(at<begin || at-begin>kmsg->ikm_size)return 0;
     unsigned available=kmsg->ikm_size-(at-begin),size=kmsg->ikm_header->msgh_size;
     if(size<24 || size>available || size>I9100_FIG_RPC_BYTES ||
-       (kmsg->ikm_header->msgh_id!=9393 && kmsg->ikm_header->msgh_id!=9493))return 0;
+       (kmsg->ikm_header->msgh_id!=9393 && kmsg->ikm_header->msgh_id!=9493 &&
+        kmsg->ikm_header->msgh_id!=2020 && kmsg->ikm_header->msgh_id!=2120))return 0;
     char name[16]={0};proc_name(proc_selfpid(),name,sizeof(name));
     unsigned sender=UINT32_MAX,euid=UINT32_MAX,offset=round_msg(size);
     if((stage==3 || stage==4) && offset<=available &&
