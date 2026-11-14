@@ -935,6 +935,17 @@ void unix_syscall(arm_saved_state_t * state)
     thread_exception_return();
 }
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+/* A blocked syscall returns through unix_syscall_return, bypassing the
+ * synchronous dispatcher tail that normally sets Carry. libsystem_kernel's
+ * ARM SVC stub branches to its errno veneer only when Carry is set. */
+static void i9100_arm_syscall_error(arm_saved_state_t *state,int error)
+{
+    state->r[0]=(uint32_t)error;
+    state->cpsr|=1U<<29;
+}
+#endif
+
 void unix_syscall_return(int error)
 {
     thread_t thread_act;
@@ -965,7 +976,11 @@ void unix_syscall_return(int error)
 #endif
     } else if(error != EJUSTRETURN) {
         if(error) {
+#if BOARD_CONFIG_EXYNOS4210_I9100
+            i9100_arm_syscall_error(state,error);
+#else
             state->r[0] = error;
+#endif
         } else { /* Not error. */
             switch(callp->sy_return_type) {
                 case _SYSCALL_RET_INT_T:
