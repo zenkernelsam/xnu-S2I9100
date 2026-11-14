@@ -13,6 +13,7 @@ extern unsigned int real_ncpus;
 extern volatile uint32_t i9100_audio_property_runtime[4];
 extern volatile uint32_t i9100_audio_property_lock_history[1+8*12];
 volatile uint32_t i9100_media_threads[16+16*72];
+volatile uint32_t i9100_audio_owner_diag[4+8*64];
 static volatile UInt32 i9100_media_threads_once;
 void i9100_media_threads_note(unsigned pid,unsigned slide)
 {
@@ -82,5 +83,64 @@ void i9100_media_threads_note(unsigned pid,unsigned slide)
         if(!out[9]){out[10]=words[0];out[11]=words[1];out[12]=words[7];}
     }else out[9]=UINT32_MAX;
     OSMemoryBarrier();out[0]=1;
+}
+
+/* Resolve the mutex owner at the wait itself, rather than at a later kill.
+ * The first-kill peer list and the first wait may describe different times.
+ * Only copied scalars survive the raw exclusion; all own-task user reads
+ * follow mask restoration. Never retain/dereference a sampled thread later. */
+void i9100_audio_owner_note(unsigned sequence,unsigned pid,unsigned code,
+    unsigned mutex,unsigned owner_low,unsigned owner_high)
+{
+    task_t task=current_task();
+    if(sequence<1 || sequence>I9100_AUDIO_OWNER_CAP || !pid || !task || task==kernel_task ||
+       real_ncpus!=1 || ml_at_interrupt_context() || !ml_get_interrupts_enabled() ||
+       get_preemption_level()!=0 || !owner_low || (owner_low==UINT32_MAX && owner_high==UINT32_MAX) ||
+       i9100_audio_property_lock_history[2]!=pid ||
+       i9100_audio_property_lock_history[3]!=(unsigned)(uintptr_t)task)return;
+    volatile uint32_t *r=&i9100_audio_owner_diag[4+(sequence-1)*I9100_AUDIO_OWNER_STRIDE];
+    r[1]=pid;r[2]=(unsigned)(uintptr_t)task;r[3]=mutex;r[4]=code;
+    r[5]=owner_low;r[6]=owner_high;r[9]=2;r[12]=UINT32_MAX;r[13]=1;
+    unsigned mask;I9100_SNAPSHOT_MASK_GET(mask);r[14]=mask;
+    queue_entry_t entry=NULL;
+    if(!i9100_irq_snapshot_read(&task->threads.next,&entry,sizeof(entry)))r[9]=3;
+    for(unsigned n=0;entry && !queue_end(&task->threads,entry) && n<64;n++){
+        thread_t thread=(thread_t)entry;queue_entry_t next=NULL;task_t owner=NULL;
+        uint64_t tid=0;arm_saved_state_t *uss=NULL,registers;unsigned state=0;
+        r[15]=n+1;
+        if(!i9100_irq_snapshot_read(&thread->task_threads.next,&next,sizeof(next)) ||
+           !i9100_irq_snapshot_read(&thread->task,&owner,sizeof(owner)) || owner!=task ||
+           !i9100_irq_snapshot_read(&thread->thread_id,&tid,sizeof(tid))){r[9]=3;break;}
+        if((uint32_t)tid==owner_low && (uint32_t)(tid>>32)==owner_high){
+            r[7]=(unsigned)(uintptr_t)thread;
+            if(i9100_irq_snapshot_read(&thread->state,&state,sizeof(state)) &&
+               i9100_irq_snapshot_read(&thread->machine.uss,&uss,sizeof(uss)) && uss &&
+               i9100_irq_snapshot_read(uss,&registers,sizeof(registers))){
+                r[8]=state;r[9]=0;memcpy((void *)&r[16],registers.r,13*4);
+                r[29]=registers.sp;r[30]=registers.lr;r[31]=registers.pc;r[32]=registers.cpsr;
+            }else r[9]=3;
+            break;
+        }
+        if(!next || next==entry){r[9]=3;break;}entry=next;
+    }
+    I9100_SNAPSHOT_MASK_SET(mask);
+    if(!r[9] && (r[32]&31U)==16U){
+        if((r[28]==301U || r[28]==302U) && r[16]>=4096U && r[16]<=0x3fffffd0U)
+            r[12]=copyin((user_addr_t)r[16],(void *)&r[34],48);
+        uint32_t frame=r[23];unsigned sp=r[29];
+        for(unsigned n=0;n<6;n++){
+            uint32_t pair[2];
+            if((frame&3U) || frame<sp || frame>0x3ffffff8U || frame-sp>131072U){r[11]=1;break;}
+            if(copyin((user_addr_t)frame,pair,8)){r[11]=2;break;}
+            r[46+n*3]=frame;r[47+n*3]=pair[0];r[48+n*3]=pair[1];r[10]=n+1;
+            if(pair[0]<=frame)break;frame=pair[0];
+        }
+    }
+    I9100_SNAPSHOT_MASK_GET(mask);
+    i9100_audio_owner_diag[1]=1;i9100_audio_owner_diag[2]=I9100_AUDIO_OWNER_CAP;
+    i9100_audio_owner_diag[3]=I9100_AUDIO_OWNER_STRIDE;
+    OSMemoryBarrier();r[0]=sequence;
+    if(i9100_audio_owner_diag[0]<sequence)i9100_audio_owner_diag[0]=sequence;
+    I9100_SNAPSHOT_MASK_SET(mask);
 }
 #endif

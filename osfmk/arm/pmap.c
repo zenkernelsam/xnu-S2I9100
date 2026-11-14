@@ -1890,7 +1890,8 @@ static void leo_change_wiring(pmap_t map,vm_map_offset_t va,boolean_t wired)
     pt_entry_t *pte,value;ppnum_t pn;pv_rooted_entry_t entry;pv_hashed_entry_t spare=PV_HASHED_ENTRY_NULL;boolean_t managed;
 retry:
     PMAP_LOCK(map);pte=(pt_entry_t *)pmap_pte(map,va);
-    if(!pte||!(*pte&2U))panic("pmap_change_wiring valid small PTE missing");
+    if(!pte||!(*pte&2U))panic("pmap_change_wiring valid small PTE missing map=%p va=0x%08x wired=%u pte=%p value=0x%08x caller=%p",
+        map,(unsigned)va,(unsigned)wired,pte,pte?(unsigned)*pte:0,__builtin_return_address(0));
     value=*pte;pn=(value&L2_ADDR_MASK)>>PAGE_SHIFT;
     if(!pmap_initialized){if(map!=kernel_pmap||!leo_boot_match(va,pn))panic("pmap preinit wiring provenance missing");PMAP_UNLOCK(map);return;}
     managed=pmap_valid_page(pn);if(managed)LOCK_PVH(pn);entry=leo_mapping_find(map,va,pn);

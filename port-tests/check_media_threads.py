@@ -37,6 +37,8 @@ static int OSCompareAndSwap(unsigned old,unsigned val,volatile unsigned*p){if(*p
 #define queue_end(head,item) ((queue_entry_t)(head)==(item))
 #define I9100_MEDIA_THREADS_CAP 16U
 #define I9100_MEDIA_THREADS_STRIDE 72U
+#define I9100_AUDIO_OWNER_CAP 8U
+#define I9100_AUDIO_OWNER_STRIDE 64U
 static int i9100_irq_snapshot_read(const void*in,void*out,unsigned n){assert(masks==0xc0&&n<=256);reads++;if(reads==failread)return 0;memcpy(out,in,n);return 1;}
 static int copyin(user_addr_t at,void*out,unsigned n){
  assert(!masks);userreads++;
@@ -61,12 +63,18 @@ static void reset(unsigned count){
  i9100_audio_property_runtime[1]=33;i9100_audio_property_runtime[2]=(uint32_t)(uintptr_t)&task;i9100_audio_property_runtime[3]=0x20000;
 }
 int main(int argc,char**argv){
- assert(argc==2);reset(3);i9100_media_threads_note(33,0x100000);
+ assert(argc==3);reset(3);i9100_media_threads_note(33,0x100000);
  assert(i9100_media_threads[0]==1&&i9100_media_threads[1]==2&&i9100_media_threads[4]==3&&!i9100_media_threads[5]);
  volatile uint32_t*r=&i9100_media_threads[16];assert(r[2]==578&&!r[5]&&r[23]==1&&r[28]==0x4d555458&&r[36]==578&&r[42]==0x310fdd65&&r[60]==0x5500&&r[66]==1);
  assert(!r[67]&&r[68]==0xe1a00000&&r[71]==0x55667788);
  assert(i9100_media_threads[11]==2&&i9100_media_threads[12]==1&&!masks);
  FILE*f=fopen(argv[1],"wb");assert(f);fwrite((const void*)i9100_media_threads,1,sizeof(i9100_media_threads),f);fclose(f);
+ i9100_audio_owner_note(1,33,301,0x12000,579,0);
+ volatile uint32_t*owner=&i9100_audio_owner_diag[4];
+ assert(i9100_audio_owner_diag[0]==1&&owner[0]==1&&owner[5]==579&&!owner[9]&&owner[16]==0x12040&&owner[31]==0x392cd0fc&&owner[10]==1&&owner[48]==0x310fdd65&&!masks);
+ i9100_audio_owner_note(2,33,301,0x12000,999,0);assert(i9100_audio_owner_diag[0]==2&&i9100_audio_owner_diag[4+64+9]==2&&!masks);
+ i9100_audio_owner_note(3,33,302,0x12000,UINT32_MAX,UINT32_MAX);assert(i9100_audio_owner_diag[0]==2);
+ f=fopen(argv[2],"wb");assert(f);fwrite((const void*)i9100_audio_owner_diag,1,sizeof(i9100_audio_owner_diag),f);fclose(f);
  unsigned seen=reads;i9100_media_threads_note(33,0x100000);assert(reads==seen);
  for(unsigned n=0;n<5;n++){reset(3);if(n==0)real_ncpus=2;if(n==1)irq=1;if(n==2)preemption=1;if(n==3)enable=0;if(n==4)i9100_audio_property_lock_history[2]=34;i9100_media_threads_note(33,0);assert(!reads&&!userreads&&!i9100_media_threads[0]);}
  reset(20);i9100_media_threads_note(33,0);assert(i9100_media_threads[4]==16&&i9100_media_threads[5]==3);
@@ -78,4 +86,4 @@ int main(int argc,char**argv){
 '''
 (out/'check.c').write_text(source)
 subprocess.run(['clang','-O1','-g','-fno-pie','-no-pie','-fsanitize=address,undefined','-fno-sanitize-recover=all',str(out/'check.c'),'-o',str(out/'check')],check=True)
-subprocess.run([str(out/'check'),str(out/'media-first-threads.bin')],check=True);print('EVIDENCE',out)
+subprocess.run([str(out/'check'),str(out/'media-first-threads.bin'),str(out/'audio-owner.bin')],check=True);print('EVIDENCE',out)

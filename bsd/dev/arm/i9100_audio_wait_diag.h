@@ -4,6 +4,7 @@
  * stage; never alter locks, return values or thread/signal policy. */
 #ifndef I9100_AUDIO_WAIT_DIAG_H
 #define I9100_AUDIO_WAIT_DIAG_H
+#include "../../../pexpert/arm/i9100_media_threads.h"
 volatile uint32_t i9100_audio_wait_diag[1+8*100];
 static volatile UInt32 i9100_audio_wait_guard;
 static void i9100_audio_wait_note(proc_t p,unsigned code,unsigned argument_error,
@@ -54,5 +55,7 @@ static void i9100_audio_wait_note(proc_t p,unsigned code,unsigned argument_error
         if(pair[0]<=frame)break;frame=pair[0];
     }
     OSMemoryBarrier();out[0]=count+1;
+    if(!out[12] && out[28]==0x4d555458U)
+        i9100_audio_owner_note(count+1,p->p_pid,code,state->r[0],out[36],out[37]);
 }
 #endif

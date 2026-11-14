@@ -27,6 +27,12 @@ static int PE_parse_boot_argn(const char*n,void*out,unsigned size){assert(!strcm
 static int OSCompareAndSwap(unsigned old,unsigned value,volatile unsigned*p){if(*p!=old)return 0;*p=value;return 1;}
 #define OSMemoryBarrier() __sync_synchronize()
 static int copyin(user_addr_t,void*,unsigned);
+static unsigned owner_notes;
+void i9100_audio_owner_note(unsigned sequence,unsigned pid,unsigned code,unsigned mutex,unsigned low,unsigned high)
+{
+ assert(sequence>=1&&sequence<=8&&pid==33&&code==301&&mutex==0x12000&&low==112&&!high);
+ owner_notes++;
+}
 '''+f'#include "{repo}/bsd/dev/arm/i9100_audio_wait_diag.h"\n'+r'''
 static int copyin(user_addr_t at,void*out,unsigned n){
  calls++;assert(!i9100_audio_wait_guard);
@@ -41,6 +47,7 @@ int main(int argc,char**argv){
  i9100_audio_wait_note(&p,301,0,&s);assert(i9100_audio_wait_diag[0]==1);
  volatile uint32_t*r=&i9100_audio_wait_diag[1];assert(r[0]==1&&r[4]==301&&r[10]==2&&!r[11]&&!r[12]);
  assert(r[28]==0x4d555458&&r[36]==112&&r[45]==2&&r[50]==0&&r[62]==0x3169e85d);
+ assert(owner_notes==1);
  unsigned saved=calls;i9100_audio_wait_note(&p,301,0,&s);assert(i9100_audio_wait_diag[0]==1&&calls==saved+1);
  for(unsigned n=0;n<7;n++){
   unsigned before=calls;irq=0;interrupts=1;preemption=0;enabled=1;p.p_pid=33;runtime[1]=2;
@@ -50,6 +57,7 @@ int main(int argc,char**argv){
  p.p_comm="mediaserverd";p.p_pid=33;runtime[1]=2;enabled=1;
  for(unsigned n=0;n<20;n++){thread=0x6000+n;i9100_audio_wait_note(&p,301,0,&s);}
  assert(i9100_audio_wait_diag[0]==8);
+ assert(owner_notes==8);
  FILE*f=fopen(argv[1],"wb");assert(f);fwrite((const void*)i9100_audio_wait_diag,1,sizeof(i9100_audio_wait_diag),f);fclose(f);
  puts("PASS production audio wait identity/stage/scope/capacity and no copyin under observer guard; transport/atomics modeled");
 }
