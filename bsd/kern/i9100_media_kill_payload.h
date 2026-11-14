@@ -8,6 +8,7 @@ volatile uint32_t i9100_springboard_kill_payload[64+128];
 extern volatile uint32_t i9100_audio_property_runtime[4];
 extern volatile uint32_t i9100_audio_property_lock_diag[12];
 volatile uint32_t i9100_media_audio_runtime[8+16];
+#include "../../pexpert/arm/i9100_media_threads.h"
 static volatile UInt32 i9100_media_kill_guard;
 static volatile UInt32 i9100_springboard_kill_guard;
 static void i9100_media_kill_note(proc_t p,const arm_saved_state_t *state,int signum,unsigned flavor)
@@ -24,6 +25,7 @@ static void i9100_media_kill_note(proc_t p,const arm_saved_state_t *state,int si
        state->pc!=0x392cc838U+slide || state->r[1]!=SIGKILL ||
        !OSCompareAndSwap(0U,1U,guard))return;
     volatile uint32_t *out=springboard?i9100_springboard_kill_payload:i9100_media_kill_payload;
+    if(!springboard)i9100_media_threads_note((unsigned)p->p_pid,slide);
     /* Preserve the first actual callback stage before this owner exits.
      * Installation alone cannot prove the new code ever executed. */
     if(!springboard && i9100_audio_property_runtime[0]==1 &&

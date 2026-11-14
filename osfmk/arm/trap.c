@@ -1255,6 +1255,7 @@ void sleh_undef(arm_saved_state_t * state)
 #include <ipc/ipc_port.h>
 #include <mach/port.h>
 #include "../../pexpert/arm/i9100_irq_snapshot.h"
+#include "i9100_media_threads_snapshot.h"
 #include "../../pexpert/arm/i9100_panic_context.h"
 typedef char i9100_panic_context_layout_verified[
     sizeof(struct I9100PanicContext) == sizeof(abort_information_context_t) &&
