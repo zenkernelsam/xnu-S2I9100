@@ -24,7 +24,7 @@ void i9100_media_threads_note(unsigned pid,unsigned slide)
        i9100_audio_property_lock_history[3]!=(unsigned)(uintptr_t)task ||
        !OSCompareAndSwap(0U,1U,&i9100_media_threads_once))return;
     volatile uint32_t *out=i9100_media_threads;
-    out[1]=1;out[2]=pid;out[3]=(unsigned)(uintptr_t)task;out[6]=slide;
+    out[1]=2;out[2]=pid;out[3]=(unsigned)(uintptr_t)task;out[6]=slide;
     unsigned count=0,mask;I9100_SNAPSHOT_MASK_GET(mask);out[7]=mask;
     /* No referenced object pointer escapes the raw exclusion. Saved scalar
      * values are evidence only; copyin later uses this still-current task. */
@@ -57,6 +57,12 @@ void i9100_media_threads_note(unsigned pid,unsigned slide)
     for(unsigned n=0;n<count;n++){
         volatile uint32_t *r=&out[16+n*I9100_MEDIA_THREADS_STRIDE];
         if(r[5] || (r[22]&0x1fU)!=0x10U)continue;
+        /* Preserve the exact saved PC's original bytes while this task is
+         * alive. A low address without its own image map must not be named
+         * from another generation's ASLR layout. No user read under masks. */
+        uint32_t pc=r[21]&~1U;
+        r[67]=(pc>=4096U && pc<=0x3ffffff0U)?
+            copyin((user_addr_t)pc,(void *)&r[68],16):UINT32_MAX;
         if((r[18]==301U || r[18]==302U) && r[6]>=4096 && r[6]<=0x3fffffd0U)
             r[24]=copyin((user_addr_t)r[6],(void *)&r[28],48);
         else r[24]=UINT32_MAX;

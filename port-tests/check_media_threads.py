@@ -19,7 +19,9 @@ typedef struct entry {struct entry*next,*prev;} *queue_entry_t,queue_head_t;
 struct task;typedef struct task*task_t;
 typedef struct {uint32_t r[13],sp,lr,pc,cpsr;} arm_saved_state_t;
 struct uthread {uint32_t words[12];};
-struct thread {queue_head_t task_threads;task_t task;uint64_t thread_id;unsigned state;struct {arm_saved_state_t*uss;} machine;struct uthread*uthread;};typedef struct thread*thread_t;
+/* Mach queue_enter links point to the object, not its embedded chain.
+ * Keep the chain away from offset zero, as in the real struct thread. */
+struct thread {uint32_t prefix[17];queue_head_t task_threads;task_t task;uint64_t thread_id;unsigned state;struct {arm_saved_state_t*uss;} machine;struct uthread*uthread;};typedef struct thread*thread_t;
 struct task {queue_head_t threads;};
 static struct task task;static struct thread threads[20];static struct uthread uthreads[20];static arm_saved_state_t registers[20];
 static task_t current_task(void){return &task;}static task_t kernel_task;
@@ -41,6 +43,7 @@ static int copyin(user_addr_t at,void*out,unsigned n){
  if(at==0x20000&&n==64){uint32_t w[16]={1,2,0x12000,0x4d555458,0x12068,1,0,1};memcpy(out,w,n);return 0;}
  if(at>=0x12000&&at<0x13000&&n==48){uint32_t w[12]={0x4d555458,0,0x12068,0,0x303,0x100,0,0,578,0};memcpy(out,w,n);return 0;}
  if(at>=0x30020&&at<0x32000&&n==8){uint32_t pair[2]={0,0x310fdd65};memcpy(out,pair,n);return 0;}
+ if(at==0x392cd0fc&&n==16){uint32_t code[4]={0xe1a00000,0xe12fff1e,0x11223344,0x55667788};memcpy(out,code,n);return 0;}
  return 14;
 }
 #define BOARD_CONFIG_EXYNOS4210_I9100 1
@@ -59,14 +62,17 @@ static void reset(unsigned count){
 }
 int main(int argc,char**argv){
  assert(argc==2);reset(3);i9100_media_threads_note(33,0x100000);
- assert(i9100_media_threads[0]==1&&i9100_media_threads[4]==3&&!i9100_media_threads[5]);
+ assert(i9100_media_threads[0]==1&&i9100_media_threads[1]==2&&i9100_media_threads[4]==3&&!i9100_media_threads[5]);
  volatile uint32_t*r=&i9100_media_threads[16];assert(r[2]==578&&!r[5]&&r[23]==1&&r[28]==0x4d555458&&r[36]==578&&r[42]==0x310fdd65&&r[60]==0x5500&&r[66]==1);
+ assert(!r[67]&&r[68]==0xe1a00000&&r[71]==0x55667788);
  assert(i9100_media_threads[11]==2&&i9100_media_threads[12]==1&&!masks);
  FILE*f=fopen(argv[1],"wb");assert(f);fwrite((const void*)i9100_media_threads,1,sizeof(i9100_media_threads),f);fclose(f);
  unsigned seen=reads;i9100_media_threads_note(33,0x100000);assert(reads==seen);
  for(unsigned n=0;n<5;n++){reset(3);if(n==0)real_ncpus=2;if(n==1)irq=1;if(n==2)preemption=1;if(n==3)enable=0;if(n==4)i9100_audio_property_lock_history[2]=34;i9100_media_threads_note(33,0);assert(!reads&&!userreads&&!i9100_media_threads[0]);}
  reset(20);i9100_media_threads_note(33,0);assert(i9100_media_threads[4]==16&&i9100_media_threads[5]==3);
  reset(3);failread=1;i9100_media_threads_note(33,0);assert(i9100_media_threads[5]==1&&!i9100_media_threads[4]&&!masks);
+ reset(3);registers[0].pc=0x39300000;i9100_media_threads_note(33,0);assert(i9100_media_threads[16+67]==14&&!i9100_media_threads[16+5]&&!masks);
+ reset(3);registers[0].pc=0x3ffffff4;i9100_media_threads_note(33,0);assert(i9100_media_threads[16+67]==UINT32_MAX&&!masks);
  puts("PASS production first-media scope, UP/raw-read masks, unlock-before-copyin, first retention, handler words, cap/failure; objects and paging modeled");
 }
 '''
