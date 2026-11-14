@@ -14,7 +14,25 @@ extern volatile uint32_t i9100_audio_property_runtime[4];
 extern volatile uint32_t i9100_audio_property_lock_history[1+8*12];
 volatile uint32_t i9100_media_threads[16+16*72];
 volatile uint32_t i9100_audio_owner_diag[4+8*64];
+volatile uint32_t i9100_media_dispatch_diag[16+64];
 static volatile UInt32 i9100_media_threads_once;
+static void i9100_media_dispatch_note(unsigned pid,unsigned slide)
+{
+    /* CMSessionCreate loads its dispatch queue from this exact original
+     * iOS6 PC-relative slot before dispatch_sync. Preserve the dying task's
+     * own bytes, not the queue pointer from a later generation. */
+    volatile uint32_t *d=i9100_media_dispatch_diag;
+    d[1]=1;d[2]=pid;d[3]=(unsigned)(uintptr_t)current_task();d[4]=slide;
+    d[5]=0x39494dd0U+slide;d[6]=UINT32_MAX;d[8]=UINT32_MAX;
+    if(slide<0x40000000U-0x39494dd4U){
+        uint32_t queue=0;d[6]=copyin((user_addr_t)d[5],&queue,4);d[7]=queue;
+        if(!d[6] && queue>=4096U && queue<=0x3fffff00U){
+            d[8]=copyin((user_addr_t)queue,(void *)&d[16],256);
+            if(!d[8])d[9]=256;
+        }
+    }
+    OSMemoryBarrier();d[0]=1;
+}
 void i9100_media_threads_note(unsigned pid,unsigned slide)
 {
     task_t task=current_task();int enabled=0;
@@ -82,6 +100,7 @@ void i9100_media_threads_note(unsigned pid,unsigned slide)
         uint32_t words[16];out[9]=copyin((user_addr_t)runtime,words,sizeof(words));
         if(!out[9]){out[10]=words[0];out[11]=words[1];out[12]=words[7];}
     }else out[9]=UINT32_MAX;
+    i9100_media_dispatch_note(pid,slide);
     OSMemoryBarrier();out[0]=1;
 }
 

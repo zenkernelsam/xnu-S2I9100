@@ -2,20 +2,22 @@
  * creation (2020/2120) unchanged.
  * Callers provide a validated live kernel-message extent. No VM/port walk,
  * blocking lock, user copy, reply fabrication or timeout change occurs here.
- * The first 64 rows survive later process restarts and ordinary media traffic. */
+ * The first 128 rows survive later process restarts and ordinary media traffic. */
 #ifndef I9100_FIG_RPC_DIAG_H
 #define I9100_FIG_RPC_DIAG_H
-#define I9100_FIG_RPC_CAPACITY 64U
+#define I9100_FIG_RPC_CAPACITY 128U
 #define I9100_FIG_RPC_BYTES 128U
 #define I9100_FIG_RPC_STRIDE 56U
-extern volatile uint32_t i9100_fig_rpc_diag[1+64*56];
+extern volatile uint32_t i9100_fig_rpc_diag[1+128*56];
+extern volatile uint32_t i9100_fig_rpc_capacity;
 unsigned i9100_fig_rpc_record(unsigned,const unsigned char *,unsigned,unsigned,
     unsigned,unsigned,unsigned,const char *,unsigned,unsigned,unsigned,unsigned,
     unsigned,unsigned,unsigned,unsigned);
 void i9100_fig_rpc_finish(unsigned,unsigned,unsigned,unsigned);
 void i9100_fig_rpc_receive_done(unsigned,unsigned,unsigned);
 #ifdef I9100_FIG_RPC_IMPLEMENTATION
-volatile uint32_t i9100_fig_rpc_diag[1+64*56];
+volatile uint32_t i9100_fig_rpc_diag[1+128*56];
+volatile uint32_t i9100_fig_rpc_capacity=I9100_FIG_RPC_CAPACITY;
 static volatile UInt32 i9100_fig_rpc_guard;
 /* Each outstanding native request is associated only with its current
  * process/thread. A different delivery cannot inherit an old RPC identity. */

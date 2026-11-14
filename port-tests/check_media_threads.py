@@ -46,12 +46,15 @@ static int copyin(user_addr_t at,void*out,unsigned n){
  if(at>=0x12000&&at<0x13000&&n==48){uint32_t w[12]={0x4d555458,0,0x12068,0,0x303,0x100,0,0,578,0};memcpy(out,w,n);return 0;}
  if(at>=0x30020&&at<0x32000&&n==8){uint32_t pair[2]={0,0x310fdd65};memcpy(out,pair,n);return 0;}
  if(at==0x392cd0fc&&n==16){uint32_t code[4]={0xe1a00000,0xe12fff1e,0x11223344,0x55667788};memcpy(out,code,n);return 0;}
+ if(at==0x39594dd0&&n==4){uint32_t q=0x25000;memcpy(out,&q,n);return 0;}
+ if(at==0x25000&&n==256){memset(out,0,n);strcpy((char*)out+64,"com.apple.coremedia.fixture");return 0;}
  return 14;
 }
 #define BOARD_CONFIG_EXYNOS4210_I9100 1
 '''+body+r'''
 static void reset(unsigned count){
  memset((void*)i9100_media_threads,0,sizeof(i9100_media_threads));i9100_media_threads_once=0;reads=userreads=failread=0;masks=irq=preemption=0;interrupts=enable=real_ncpus=1;
+ memset((void*)i9100_media_dispatch_diag,0,sizeof(i9100_media_dispatch_diag));
  task.threads.next=count?(queue_entry_t)&threads[0]:(queue_entry_t)&task.threads;
  for(unsigned n=0;n<count;n++){
   threads[n].task_threads.next=n+1<count?(queue_entry_t)&threads[n+1]:(queue_entry_t)&task.threads;
@@ -63,12 +66,15 @@ static void reset(unsigned count){
  i9100_audio_property_runtime[1]=33;i9100_audio_property_runtime[2]=(uint32_t)(uintptr_t)&task;i9100_audio_property_runtime[3]=0x20000;
 }
 int main(int argc,char**argv){
- assert(argc==3);reset(3);i9100_media_threads_note(33,0x100000);
+ assert(argc==4);reset(3);i9100_media_threads_note(33,0x100000);
  assert(i9100_media_threads[0]==1&&i9100_media_threads[1]==2&&i9100_media_threads[4]==3&&!i9100_media_threads[5]);
  volatile uint32_t*r=&i9100_media_threads[16];assert(r[2]==578&&!r[5]&&r[23]==1&&r[28]==0x4d555458&&r[36]==578&&r[42]==0x310fdd65&&r[60]==0x5500&&r[66]==1);
  assert(!r[67]&&r[68]==0xe1a00000&&r[71]==0x55667788);
  assert(i9100_media_threads[11]==2&&i9100_media_threads[12]==1&&!masks);
+ assert(i9100_media_dispatch_diag[0]==1&&i9100_media_dispatch_diag[5]==0x39594dd0&&i9100_media_dispatch_diag[7]==0x25000&&!i9100_media_dispatch_diag[8]&&i9100_media_dispatch_diag[9]==256);
+ assert(!strcmp((const char*)&i9100_media_dispatch_diag[16+16],"com.apple.coremedia.fixture"));
  FILE*f=fopen(argv[1],"wb");assert(f);fwrite((const void*)i9100_media_threads,1,sizeof(i9100_media_threads),f);fclose(f);
+ f=fopen(argv[3],"wb");assert(f);fwrite((const void*)i9100_media_dispatch_diag,1,sizeof(i9100_media_dispatch_diag),f);fclose(f);
  i9100_audio_owner_note(1,33,301,0x12000,579,0);
  volatile uint32_t*owner=&i9100_audio_owner_diag[4];
  assert(i9100_audio_owner_diag[0]==1&&owner[0]==1&&owner[5]==579&&!owner[9]&&owner[16]==0x12040&&owner[31]==0x392cd0fc&&owner[10]==1&&owner[48]==0x310fdd65&&!masks);
@@ -86,4 +92,4 @@ int main(int argc,char**argv){
 '''
 (out/'check.c').write_text(source)
 subprocess.run(['clang','-O1','-g','-fno-pie','-no-pie','-fsanitize=address,undefined','-fno-sanitize-recover=all',str(out/'check.c'),'-o',str(out/'check')],check=True)
-subprocess.run([str(out/'check'),str(out/'media-first-threads.bin'),str(out/'audio-owner.bin')],check=True);print('EVIDENCE',out)
+subprocess.run([str(out/'check'),str(out/'media-first-threads.bin'),str(out/'audio-owner.bin'),str(out/'media-dispatch.bin')],check=True);print('EVIDENCE',out)

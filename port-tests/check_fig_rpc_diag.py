@@ -82,9 +82,9 @@ int main(int argc,char**argv){
  h->msgh_id=9493;
  q=i9100_fig_rpc_record(1,raw,128,48,58,0x4567,3,"SpringBoard",1,3,0,0,0,0,0,0);assert(q==8&&row(q)[6]==2);
  FILE*f=fopen(argv[1],"wb");assert(f);fwrite((const void*)i9100_fig_rpc_diag,1,sizeof(i9100_fig_rpc_diag),f);fclose(f);
- for(unsigned n=0;n<80;n++)i9100_fig_rpc_record(1,raw,128,48,pid,thread,task,process,1,3,0,0,0,0,0,0);
- assert(i9100_fig_rpc_diag[0]==64&&row(1)[7]==9393&&row(2)[18]==0x10004003);
- puts("PASS production Fig RPC scope, owner/timeout, complete copy/read-error, first64 retention; IPC/atomics modeled");
+ for(unsigned n=0;n<160;n++)i9100_fig_rpc_record(1,raw,128,48,pid,thread,task,process,1,3,0,0,0,0,0,0);
+ assert(i9100_fig_rpc_diag[0]==128&&i9100_fig_rpc_capacity==128&&row(1)[7]==9393&&row(2)[18]==0x10004003);
+ puts("PASS production Fig RPC scope, owner/timeout, complete copy/read-error, first128 retention; IPC/atomics modeled");
 }
 '''
 (out/'check.c').write_text(source)
