@@ -41,6 +41,7 @@ extern int proc_selfpid(void);
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 extern void _disable_preemption(void);
 extern void _enable_preemption(void);
+volatile uint32_t i9100_touch_sender_identity[4]={1};
 #endif
 }
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
@@ -290,6 +291,12 @@ void IOHIDEventService::publishSnapshot(void)
  i9100_touch_observation.tail=queue?queue->writerTail():0;
  i9100_touch_observation.errors=touchState.errors;
  i9100_input_test[12]=opened && !previousDown && !pending && touchState.ready;
+ if(ios6Wire){
+  UInt64 sender=getRegistryEntryID();
+  i9100_touch_sender_identity[2]=(uint32_t)sender;
+  i9100_touch_sender_identity[3]=(uint32_t)(sender>>32);
+  OSMemoryBarrier();i9100_touch_sender_identity[1]=1;
+ }
 #endif
  if(!OSCompareAndSwap(0,1,&leo_touch_observer_guard)){leo_touch_observer_lost();return;}
  serviceSender=getRegistryEntryID();

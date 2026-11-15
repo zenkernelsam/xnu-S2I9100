@@ -26,6 +26,8 @@ struct proc {const char*p_comm;unsigned p_pid;task_t task;unsigned char p_uuid[1
 struct map {int dummy;};typedef struct map*vm_map_t;
 static struct task child={1},parent={1};static task_t current=&child;static struct map map;static struct proc p;
 static unsigned enabled=1,abi=6,irq,interrupts=1,preempt,ops,fail_at,fail_again,reads,allocated,removed,copy_fail_addr,dyld_error;
+volatile uint32_t i9100_touch_sender_identity[4]={1,1,0x120,1};
+static unsigned cadence;static uint32_t service[20];
 static uint8_t shared[0x60000],image[0x60000],codebuf[4096],event[136],gs[116];static uint32_t saved[16],dyld[21];
 static uint8_t io_shared[0x18000],io_image[0x18000],plugin_shared[0x10000],plugin_image[0x10000];
 #define FALSE 0
@@ -52,7 +54,7 @@ static unsigned get_task_numacts(task_t t){return t->acts;}
 static unsigned ml_at_interrupt_context(void){return irq;}
 static unsigned ml_get_interrupts_enabled(void){return interrupts;}
 static unsigned get_preemption_level(void){return preempt;}
-static int PE_parse_boot_argn(const char*n,int*out,unsigned bytes){assert(bytes==4);*out=!strcmp(n,"i9100hidtrace")?enabled:abi;return 1;}
+static int PE_parse_boot_argn(const char*n,int*out,unsigned bytes){assert(bytes==4);*out=!strcmp(n,"i9100hidtrace")?enabled:!strcmp(n,"i9100hidcadence")?cadence:abi;return 1;}
 static int OSCompareAndSwap(unsigned a,unsigned b,volatile unsigned*out){if(*out!=a)return 0;*out=b;return 1;}
 #define OSMemoryBarrier() __sync_synchronize()
 static int failing(void){ops++;return ops==fail_at||ops==fail_again;}
@@ -65,6 +67,7 @@ static int copyin(user_addr_t a,void*out,unsigned n){
  else if(a==0x30000&&n==64)memcpy(out,saved,n);
  else if(a==0x20000&&n<=136)memcpy(out,event,n);
  else if(a==0x40000&&n<=116)memcpy(out,gs,n);
+ else if(a==0x50000&&n==80)memcpy(out,service,n);
  else return 14;return 0;
 }
 static int vm_map_enter(vm_map_t m,vm_map_offset_t*a,unsigned n,unsigned mask,int flags,void*object,uint64_t offset,int copy,int cur,int max,int inherit){
@@ -75,6 +78,7 @@ static int vm_map_protect(vm_map_t m,unsigned a,unsigned end,unsigned prot,int m
 static int copyout(const void*in,user_addr_t a,unsigned n){
  if(failing())return 14;
  if(a==0x1000&&n==512){assert(allocated);memcpy(codebuf,in,n);}
+ else if(a==0x5004c&&n==4)memcpy((uint8_t*)service+0x4c,in,n);
  else if(a>=0x31d0e000&&a+n<=0x31d26000&&n==8)memcpy(io_image+(a-0x31d0e000),in,n);
  else if(a>=0x30242000&&a+n<=0x30252000&&n==8)memcpy(plugin_image+(a-0x30242000),in,n);
  else {assert(a>=0x65000&&a+n<=0xc5000&&n==8);memcpy(image+(a-0x65000),in,n);}return 0;
@@ -93,6 +97,7 @@ static void reset(void){
  memset((void*)i9100_hid_execution_rows,0,sizeof(i9100_hid_execution_rows));memset(i9100_hid_execution_pending,0,16);i9100_hid_execution_guard=0;
  i9100_hid_execution_resume_pending=dyld_error=0;
  current=&child;child.acts=1;enabled=interrupts=1;abi=6;irq=preempt=ops=fail_at=fail_again=reads=allocated=removed=copy_fail_addr=0;
+ cadence=0;memset(service,0,sizeof(service));
  child.all_image_info_addr=0x25000;child.all_image_info_size=84;memset(dyld,0,sizeof(dyld));dyld[0]=12;
  p.p_comm="backboardd";p.p_pid=8;p.task=&child;p.p_idversion=8;memcpy(p.p_uuid,i9100_hid_execution_uuid,16);
  memset(shared,0,sizeof(shared));uint32_t h[7]={0xfeedface,12,9,2};memcpy(shared,h,28);
@@ -154,6 +159,26 @@ int main(int argc,char**argv){
  char path[1024];snprintf(path,sizeof(path),"%s.diag",argv[1]);f=fopen(path,"wb");assert(f);fwrite((const void*)i9100_hid_execution_diag,1,sizeof(i9100_hid_execution_diag),f);fclose(f);
  snprintf(path,sizeof(path),"%s.rows",argv[1]);f=fopen(path,"wb");assert(f);fwrite((const void*)i9100_hid_execution_rows,1,sizeof(i9100_hid_execution_rows),f);fclose(f);
  puts("PASS production seven-site private COW, cache UUID refusal, complete instructions, one-shot self-test resume, five-argument event capture, SVC rejection evidence, all24 install failure rollbacks, unsafe stop, ring/faults/wrap");
+ reset();install();cadence=1;uint32_t isa=0x3b51700c,opts=0x80013,sender[2]={0x120,1},transducer=35;
+ memcpy(event,&isa,4);memcpy(event+48,&opts,4);memcpy(event+56,sender,8);memcpy(event+80,&transducer,4);
+ service[0]=isa;service[1]=0x7010980;service[3]=0x3703;service[18]=402000;service[19]=1;
+ saved[3]=0x50000;saved[4]=0x20000;i9100_hid_execution_note(&p,0x1156,0x30000,6);
+ assert(!service[19]&&service[18]==402000&&i9100_hid_fixed_cadence_diag[3]==1);
+ unsigned reads_before=reads;cadence=0;service[19]=1;i9100_hid_fixed_cadence(&p,0x50000,event,136);assert(service[19]==1&&reads==reads_before);
+ cadence=1;sender[0]=0x121;memcpy(event+56,sender,8);i9100_hid_fixed_cadence(&p,0x50000,event,136);assert(service[19]==1);sender[0]=0x120;memcpy(event+56,sender,8);
+ for(unsigned n=0;n<5;n++){
+  unsigned before=reads;uint32_t old_type;memcpy(&old_type,event+36,4);
+  if(n==0)p.p_uuid[0]^=1;if(n==1){uint32_t keyboard=3;memcpy(event+36,&keyboard,4);}
+  if(n==2){uint32_t other=2;memcpy(event+80,&other,4);}if(n==3){uint32_t other=0x13;memcpy(event+48,&other,4);}if(n==4)i9100_touch_sender_identity[1]=0;
+  i9100_hid_fixed_cadence(&p,0x50000,event,136);assert(service[19]==1&&reads==before);
+  if(n==0)p.p_uuid[0]^=1;memcpy(event+36,&old_type,4);memcpy(event+80,&transducer,4);memcpy(event+48,&opts,4);i9100_touch_sender_identity[1]=1;
+ }
+ copy_fail_addr=0x50000;i9100_hid_fixed_cadence(&p,0x50000,event,136);assert(service[19]==1&&i9100_hid_fixed_cadence_diag[5]==1);copy_fail_addr=0;
+ service[19]=2;i9100_hid_fixed_cadence(&p,0x50000,event,136);assert(service[19]==2&&i9100_hid_fixed_cadence_diag[6]==1);
+ service[19]=1;fail_at=ops+1;i9100_hid_fixed_cadence(&p,0x50000,event,136);assert(service[19]==1&&i9100_hid_fixed_cadence_diag[5]==2);fail_at=0;
+ i9100_hid_fixed_cadence(&p,0x50000,event,136);assert(!service[19]);
+ uint8_t copy[136];memcpy(copy,event,136);i9100_hid_fixed_cadence(&p,0x50000,event,136);assert(!memcmp(copy,event,136)&&i9100_hid_fixed_cadence_diag[4]==1);
+ puts("PASS fixed-cadence scope, exact kernel sender, read/write refusal, unknown capability refusal; packets and requested interval unchanged");
 }
 '''
 (out/'check.c').write_text(source)

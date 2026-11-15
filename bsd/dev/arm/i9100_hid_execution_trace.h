@@ -13,6 +13,8 @@
  * SVC admission, 30 is its original return PC, 31 the verified cache slide. */
 volatile uint32_t i9100_hid_execution_diag[32]={2};
 volatile uint32_t i9100_hid_execution_rows[4+32*64];
+volatile uint32_t i9100_hid_fixed_cadence_diag[16]={1};
+extern volatile uint32_t i9100_touch_sender_identity[4];
 static volatile UInt32 i9100_hid_execution_guard;
 static uint32_t i9100_hid_execution_pending[4];
 static uint32_t i9100_hid_execution_resume_pending;
@@ -38,6 +40,45 @@ static const uint8_t i9100_hid_execution_prefix[36]={
     0x2d,0xe9,0xff,0x5f,0xef,0xf3,0x00,0x8c,0x82,0xb0,0xcd,0xf8,0x00,0xc0,
     0x01,0x20,0x4f,0xf0,0x14,0x0c,0x80,0xdf,0xdd,0xf8,0x00,0xc0,0x02,0xb0,
     0x8c,0xf3,0x00,0x8c,0xbd,0xe8,0xff,0x5f};
+
+/* iOS6 can set ContainsReportInterval again when a client registers a
+ * request, even after the fixed-cadence kernel provider removed the property.
+ * Restore that one capability bit before the original filter executes. Its
+ * native no-rate-control branch delivers the original retained event; no
+ * callback, packet, client deadline or filter return value is fabricated. */
+static void i9100_hid_fixed_cadence(proc_t p,unsigned service,const uint8_t *event,unsigned bytes)
+{
+    int enabled=0;uint32_t type,options,transducer,sender[2],identity[4],fields[20];
+    if(!PE_parse_boot_argn("i9100hidcadence",&enabled,sizeof(enabled)) || enabled!=1 ||
+       !p || p->task!=current_task() || current_map()!=get_task_map(p->task) ||
+       strcmp(p->p_comm,"backboardd") || memcmp(p->p_uuid,i9100_hid_execution_uuid,16) ||
+       ml_at_interrupt_context() || !ml_get_interrupts_enabled() || get_preemption_level()!=0 || bytes!=136)return;
+    memcpy(&type,event+36,4);memcpy(&options,event+48,4);memcpy(sender,event+56,8);memcpy(&transducer,event+80,4);
+    if(type!=11 || transducer!=35 || (options&0x80011U)!=0x80011U ||
+       service<4096 || service>0x3fffffb0U || (service&3U))return;
+    memcpy(identity,(const void*)i9100_touch_sender_identity,16);
+    if(identity[0]!=1 || identity[1]!=1 || (!identity[2]&&!identity[3]) ||
+       sender[0]!=identity[2] || sender[1]!=identity[3])return;
+    volatile uint32_t *d=i9100_hid_fixed_cadence_diag;
+    d[1]=1;d[7]=p->p_pid;d[8]=(uint32_t)(uintptr_t)p->task;d[9]=p->p_idversion;
+    d[10]=service;d[12]=sender[0];d[13]=sender[1];if(d[2]!=UINT32_MAX)d[2]++;
+    unsigned error=copyin(service,fields,sizeof(fields));d[15]=error;
+    if(error){if(d[5]!=UINT32_MAX)d[5]++;return;}
+    uint32_t isa;memcpy(&isa,event,4);
+    /* Both are CF objects supplied by this exact native call. Refuse an
+     * invalid runtime prefix, a missing registry handle or an unknown bit. */
+    if(!isa || fields[0]!=isa || !(fields[1]&0x80U) || !fields[3] || fields[19]>1){
+        if(d[6]!=UINT32_MAX)d[6]++;return;
+    }
+    d[11]=fields[19];
+    if(!fields[19]){if(d[4]!=UINT32_MAX)d[4]++;return;}
+    if(i9100_touch_sender_identity[1]!=1 || i9100_touch_sender_identity[2]!=sender[0] ||
+       i9100_touch_sender_identity[3]!=sender[1] || p->task!=current_task() ||
+       current_map()!=get_task_map(p->task) || memcmp(p->p_uuid,i9100_hid_execution_uuid,16))return;
+    uint32_t zero=0;error=copyout(&zero,service+0x4cU,4);d[15]=error;
+    if(error){if(d[5]!=UINT32_MAX)d[5]++;return;}
+    if(d[3]!=UINT32_MAX)d[3]++;OSMemoryBarrier();
+}
 
 static void i9100_hid_execution_record(proc_t p,user_addr_t header)
 {
@@ -212,5 +253,7 @@ void i9100_hid_execution_note(proc_t p,unsigned pc,unsigned sp,unsigned phase)
     i9100_hid_execution_rows[1]=2;i9100_hid_execution_rows[2]=32;i9100_hid_execution_rows[3]=64;
     OSMemoryBarrier();r[0]=seq;i9100_hid_execution_rows[0]=seq;d[19]=seq;
     i9100_hid_execution_guard=0;
+    if(phase==6 && !stack_error && !data_error)
+        i9100_hid_fixed_cadence(p,saved[3],bytes,length);
 }
 #endif
