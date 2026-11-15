@@ -102,6 +102,27 @@ class Evidence:
         (self.out / "compile-commands.json").write_text(json.dumps(self.commands, indent=2) + "\n")
         self.result["cross_compiled"] = True
 
+    def model_cpp(self, test_file, c_sources, cpp_sources):
+        """Run native bridge logic with a host-only IOKit facade, not an ARM SDK."""
+        sdk = REPO / "port-tests/offline-native-sdk"
+        common = ["-O1", "-Wall", "-Wextra", "-Werror", "-fno-pie",
+                  "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
+                  "-I" + str(sdk), "-I" + str(PLATFORM)]
+        objects = []
+        for source in c_sources + cpp_sources:
+            cpp = source.endswith(".cpp")
+            destination = self.out / ("host-model-" + source + ".o")
+            self.run(["clang++" if cpp else "clang", "-std=c++11" if cpp else "-std=c99",
+                      *common, "-c", str(PLATFORM / source), "-o", str(destination)], "host-" + source)
+            objects.append(str(destination))
+        self.run(["clang++", "-std=c++11", *common, "-no-pie",
+                  str(REPO / "port-tests" / test_file), *objects, "-o", str(self.out / "models")], "compile-native-models")
+        self.run([str(self.out / "models")], "native-model-tests")
+        self.result.update(native_model=test_file, native_iokit_facade=True,
+                           native_model_sha256=hashlib.sha256((REPO / "port-tests" / test_file).read_bytes()).hexdigest(),
+                           facade_headers={str(path.relative_to(sdk)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                           for path in sorted(sdk.rglob("*.h"))})
+
     def finish(self, sources, scope):
         for name in sources:
             self.result["sources"][name] = hashlib.sha256((PLATFORM / name).read_bytes()).hexdigest()

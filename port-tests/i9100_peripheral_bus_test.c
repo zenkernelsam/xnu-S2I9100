@@ -11,7 +11,7 @@
 #include "i9100_dma_guard.h"
 enum {IDLE,RX,ACK,TX,MASTER_ACK,WAIT_STOP};
 struct model {
- uint32_t regs[2][1024];unsigned locked,reads,writes,failed_lock;
+ uint32_t regs[2][1024];unsigned locked,reads,writes,failed_lock,fail_write,sticky_write;
  unsigned slave,sda,scl,base,region,state,bits,byte,address_phase,read_mode,need_register;
  unsigned out_low,ack_low,ack_seen,master_ack,starts,stops,received[32],received_count,read_acks[32],read_ack_count;
  unsigned force_clock,force_bus,arbitrate,nack_address,nack_data,recovery_rises;
@@ -69,6 +69,7 @@ static uint32_t read32(void *cookie,unsigned region,unsigned off)
 static void write32(void *cookie,unsigned region,unsigned off,uint32_t value)
 {
  struct model *m=cookie;assert(m->locked&&region<2&&off<4096&&!(off&3));m->writes++;
+ if(m->fail_write==m->writes||m->sticky_write)return;
  unsigned clock=scl(m),data=sda(m);m->regs[region][off/4]=value;
  if(!m->slave&&!m->force_bus)return;
  /* No push-pull high may be generated on either I2C line. */
@@ -108,7 +109,18 @@ static void gpio_tests(void)
  for(unsigned n=0;n<4;n++)assert(m.regs[0][m.base/4+n]==((foreign[n]&~masks[n])|(original[n]&masks[n])));
  assert(!i9100_gpio_claim(&r,1,24,&b));unsigned writes=m.writes;assert(i9100_gpio_output(&stale,3,0)==I9100_GPIO_OWNER&&m.writes==writes);
  assert(!i9100_gpio_release(&b,I9100_GPIO_HIGH_Z));assert(!i9100_gpio_broker_enable(&r,0));
- puts("PASS GPIO disabled/reserved/exclusive leases,stale-token refusal,foreign-field preservation and safe release");
+ setup(&m,&r);memset(&a,0,sizeof(a));assert(!i9100_gpio_broker_enable(&r,1));assert(!i9100_gpio_claim(&r,1,8,&a));
+ m.fail_write=m.writes+1;assert(i9100_gpio_function(&a,3,2)==I9100_GPIO_IO&&a.active);
+ assert(!i9100_gpio_function(&a,3,2));assert(!i9100_gpio_pull(&a,3,3));
+ m.sticky_write=1;assert(i9100_gpio_release(&a,I9100_GPIO_RESTORE)==I9100_GPIO_IO&&a.active&&r.banks[1].owners[3]);
+ assert(i9100_gpio_broker_enable(&r,0)==I9100_GPIO_BUSY);m.sticky_write=0;assert(!i9100_gpio_release(&a,I9100_GPIO_RESTORE));
+ assert(!i9100_gpio_claim(&r,1,8,&a));assert(!i9100_gpio_output(&a,3,0));m.sticky_write=1;
+ assert(i9100_gpio_input(&a,3)==I9100_GPIO_IO&&a.active);assert(i9100_gpio_release(&a,I9100_GPIO_HIGH_Z)==I9100_GPIO_IO&&a.active);
+ m.sticky_write=0;assert(!i9100_gpio_release(&a,I9100_GPIO_HIGH_Z));
+ /* Saved input DAT may change electrically. Restore must not invent a
+  * hidden latch or reject a valid mux/pull/drive restoration for that. */
+ assert(!i9100_gpio_claim(&r,1,8,&a));m.force_bus=1;assert(!i9100_gpio_release(&a,I9100_GPIO_RESTORE));
+ puts("PASS GPIO disabled/reserved/exclusive/stale leases,foreign fields,readback/sticky restore ownership/input DAT semantics");
 }
 static void bus_setup(struct model *m,struct i9100_gpio_broker *r,struct i9100_i2c_gpio *b)
 {

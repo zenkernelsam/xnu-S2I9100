@@ -18,7 +18,7 @@ struct model {
  uint32_t i2s[4],dma_busy,dma_stop_fail,stopped_requests,reset_missing;
  uint8_t codec[5][256],bank_address[5],wire_register;
  unsigned bus_locked,transactions,fail_transaction,partial,busy_codec;
- unsigned stall_ready,sticky_codec_error,unsafe_amplifier_writes,codec_delays;
+ unsigned stall_ready,sticky_codec_error,unsafe_amplifier_writes,codec_delays,drop_dac_mute;
  uint64_t vref_started;
  unsigned stream_locked,i2s_locked,i2s_writes,i2s_fail_write,reject_quiesce,sticky_event;
  unsigned require_quiesce,kills,mute_calls,mute_fail;
@@ -169,6 +169,7 @@ static void codec_write(unsigned wire,uint8_t value)
  if(index)m.bank_address[index]=value;
  else if((index=bank(reg-1U))){
   unsigned address=m.bank_address[index];uint8_t old=m.codec[index][address];
+  if(index==3U&&address==78U&&(value&2U)&&m.drop_dac_mute)return;
   if(index==2U&&address==2U&&(old&1U)&&!(value&1U))m.vref_started=m.ns;
   if(index==2U&&address==3U&&(value&0x3fU)!=0x3fU)m.unsafe_amplifier_writes++;
   m.codec[index][address]=value;
@@ -225,6 +226,9 @@ static void codec(void)
  codec_init(&c);m.codec[0][8]=0x80;assert(i9100_mc1n2_enable(&c,1)==I9100_MC_ID&&m.transactions==1&&!c.enabled);
  codec_init(&c);m.busy_codec=1;m.freeze_time=1;assert(i9100_mc1n2_enable(&c,1)==I9100_MC_TIMEOUT&&c.fault);
  m.busy_codec=0;assert(!i9100_mc1n2_mute(&c));
+ codec_init(&c);m.codec[3][78]=1;m.drop_dac_mute=1;
+ assert(i9100_mc1n2_enable(&c,1)==I9100_MC_IO&&c.fault&&!c.muted);
+ m.drop_dac_mute=0;assert(!i9100_mc1n2_mute(&c)&&c.muted&&(m.codec[3][78]&2U));
 }
 static void codec_cold(void)
 {

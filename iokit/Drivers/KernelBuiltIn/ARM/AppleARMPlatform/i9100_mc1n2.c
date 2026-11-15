@@ -58,6 +58,7 @@ static int mute_locked(struct i9100_mc1n2 *c)
  }
  uint8_t verify=0;
  r=read_bank(c,I9100_MC_ANALOG,3,&verify);if(r||(verify&0x3fU)!=0x3fU)e=I9100_MC_IO;
+ r=read_bank(c,I9100_MC_CODEC,78,&verify);if(r||!(verify&2U))e=I9100_MC_IO;
  c->muted=e?0U:1U;c->fault=e?1U:0U;c->gain_armed=0;c->analog_gain=0;c->actual_gain_mdb=INT32_MIN;
  return e;
 }

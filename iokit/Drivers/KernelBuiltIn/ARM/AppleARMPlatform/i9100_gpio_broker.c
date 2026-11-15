@@ -51,7 +51,9 @@ static int setfield(struct i9100_gpio_lease *l,unsigned pin,unsigned off,unsigne
  if(!l||!l->broker||value>=(1U<<width))return I9100_GPIO_ARGUMENT;
  struct i9100_gpio_broker *b=l->broker;int e=enter(b);if(e)return e;
  e=owner(l,pin);
- if(!e)update(b,l->bank,off,((1U<<width)-1U)<<(pin*width),value<<(pin*width));
+ if(!e){unsigned mask=((1U<<width)-1U)<<(pin*width);
+  update(b,l->bank,off,mask,value<<(pin*width));
+  if((readreg(b,l->bank,off)&mask)!=(value<<(pin*width)))e=I9100_GPIO_IO;}
  leave(b);return e;
 }
 int i9100_gpio_input(struct i9100_gpio_lease *l,unsigned pin){return setfield(l,pin,0,4,0);}
@@ -64,7 +66,9 @@ int i9100_gpio_output(struct i9100_gpio_lease *l,unsigned pin,unsigned value)
  if(!l||!l->broker||value>1)return I9100_GPIO_ARGUMENT;
  struct i9100_gpio_broker *b=l->broker;int e=enter(b);if(e)return e;
  e=owner(l,pin);
- if(!e){update(b,l->bank,4,1U<<pin,value<<pin);update(b,l->bank,0,15U<<(pin*4),1U<<(pin*4));}
+ if(!e){update(b,l->bank,4,1U<<pin,value<<pin);update(b,l->bank,0,15U<<(pin*4),1U<<(pin*4));
+  if(((readreg(b,l->bank,0)>>(pin*4))&15U)!=1U||
+     ((readreg(b,l->bank,4)>>pin)&1U)!=value)e=I9100_GPIO_IO;}
  leave(b);return e;
 }
 int i9100_gpio_level(struct i9100_gpio_lease *l,unsigned pin,unsigned *value)
@@ -87,6 +91,15 @@ int i9100_gpio_release(struct i9100_gpio_lease *l,enum i9100_gpio_release_policy
    update(b,l->bank,4,l->mask,l->saved[1]);update(b,l->bank,8,pull,l->saved[2]);
    update(b,l->bank,12,pull,l->saved[3]);update(b,l->bank,0,mux,l->saved[0]);
   }else update(b,l->bank,8,pull,0);
+  if(policy==I9100_GPIO_RESTORE){
+   unsigned outputs=0;for(unsigned p=0;p<8;p++)
+    if((l->mask&(1U<<p))&&((l->saved[0]>>(p*4))&15U)==1U)outputs|=1U<<p;
+   if((readreg(b,l->bank,0)&mux)!=(l->saved[0]&mux)||
+      (readreg(b,l->bank,8)&pull)!=(l->saved[2]&pull)||
+      (readreg(b,l->bank,12)&pull)!=(l->saved[3]&pull)||
+      (outputs&&(readreg(b,l->bank,4)&outputs)!=(l->saved[1]&outputs)))e=I9100_GPIO_IO;
+  }else if((readreg(b,l->bank,0)&mux)||(readreg(b,l->bank,8)&pull))e=I9100_GPIO_IO;
+  if(e){leave(b);return e;}
  }
  for(unsigned p=0;p<8;p++)if(l->mask&(1U<<p))b->banks[l->bank].owners[p]=0;
  l->active=0;leave(b);return 0;

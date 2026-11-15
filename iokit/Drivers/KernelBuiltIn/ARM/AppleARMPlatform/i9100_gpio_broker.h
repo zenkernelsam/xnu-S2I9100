@@ -8,7 +8,7 @@ extern "C" {
 #define I9100_GPIO_BANKS_MAX 40U
 enum i9100_gpio_error { I9100_GPIO_OK=0,I9100_GPIO_ARGUMENT=-200,
  I9100_GPIO_DISABLED=-201,I9100_GPIO_BUSY=-202,I9100_GPIO_OWNER=-203,
- I9100_GPIO_RESERVED=-204,I9100_GPIO_EXHAUSTED=-205 };
+ I9100_GPIO_RESERVED=-204,I9100_GPIO_EXHAUSTED=-205,I9100_GPIO_IO=-206 };
 enum i9100_gpio_release_policy { I9100_GPIO_RESTORE=0,I9100_GPIO_KEEP=1,I9100_GPIO_HIGH_Z=2 };
 struct i9100_gpio_io {
  void *cookie;
@@ -44,7 +44,10 @@ int i9100_gpio_level(struct i9100_gpio_lease *,unsigned pin,unsigned *);
 int i9100_gpio_release(struct i9100_gpio_lease *,enum i9100_gpio_release_policy);
 /* Broker/lease objects must initially be zeroed. Initialization is disabled
  * and does not read/write GPIO. Claims are masks,
- * not arbitrary MMIO requests. A board profile reserves active mainline pins. */
+ * not arbitrary MMIO requests. A board profile reserves active mainline pins.
+ * Mux/pull/drive writes and restore are read back before releasing ownership.
+ * DAT input levels are not an output latch; restore verifies DAT only for
+ * saved GPIO-output pins, never for an input or peripheral-function pad. */
 #ifdef __cplusplus
 }
 #endif
