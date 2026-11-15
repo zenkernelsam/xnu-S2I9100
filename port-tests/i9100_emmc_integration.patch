@@ -1,0 +1,32 @@
+--- a/iokit/conf/files.arm
++++ b/iokit/conf/files.arm
+@@ -58,6 +58,11 @@
+ # i9100 Exynos4210 SDMMC (SDHCI PIO) block device
+ iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100SDMMC.cpp optional iokitcpp
+ iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_sdmmc.c standard
++# Explicit read-only eMMC/GPT/PIT inspection
++iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100EMMC.cpp optional iokitcpp
++iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100GPT.cpp optional iokitcpp
++iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_emmc.c standard
++iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_emmc_layout.c standard
+ 
+ # GT-I9100 Atmel mXT224/mXT224E physical touch
+ iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_touch.c standard
+--- a/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp
++++ b/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp
+@@ -37,6 +37,7 @@
+ #endif
+ #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+ extern void ios7i9100_register_sd(IOService *platform);
++extern void ios7i9100_register_emmc_ro(IOService *platform);
+ extern void ios7i9100_register_power(IOService *platform);
+ extern void ios7i9100_register_mali(IOService *platform);
+ #endif
+@@ -100,6 +101,7 @@
+ #elif defined(BOARD_CONFIG_EXYNOS4210_I9100)
+     ios7i9100_register_sd(this);
+     ios7i9100_register_power(this);
++    ios7i9100_register_emmc_ro(this);
+ #else
+     ios7leo_prepare_log_reader(); /* optional owned logger before rawmedia publication */
+     ios7leo_register_sd(this);
