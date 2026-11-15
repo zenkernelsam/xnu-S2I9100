@@ -192,6 +192,7 @@ static void i9100_springboard_signal_note(proc_t p, int signum,
  * No map walk/port lock: use only the already validated self-task copyin. */
 volatile uint32_t i9100_ios6_slab_payload[2][12+1024];
 static volatile UInt32 i9100_ios6_slab_payload_guard[2];
+extern void i9100_slab_publication_failure(proc_t,unsigned);
 static void i9100_ios6_slab_bytes(const struct I9100AbortTrace *record, unsigned backboard)
 {
     unsigned slot=backboard?1U:0U;
@@ -209,6 +210,8 @@ static void i9100_ios6_slab_bytes(const struct I9100AbortTrace *record, unsigned
         row[8]=copyin((user_addr_t)record->slab,(void *)&row[12],bytes);
         if (!row[8]) row[7]=bytes;
     } else row[8]=1;
+    if(backboard && record->pid==(unsigned)current_proc()->p_pid)
+        i9100_slab_publication_failure(current_proc(),record->slab);
     OSMemoryBarrier();row[0]=1;
     if (backboard && i9100_backboard_vm_diag[1]==record->pid) {
         i9100_backboard_vm_diag[3]=1;

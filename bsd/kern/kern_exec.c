@@ -209,6 +209,7 @@ extern struct savearea *get_user_regs(thread_t);
 #include "../dev/arm/i9100_quiet_charge_feedback.h"
 #include "../dev/arm/i9100_hid_execution_trace.h"
 #include "../dev/arm/i9100_ui_sounds_unavailable.h"
+#include "../dev/arm/i9100_slab_publication_trace.h"
 #endif
 
 
@@ -1109,6 +1110,7 @@ grade:
 	i9100_quiet_charge_record(p,load_result.mach_header);
 	i9100_hid_execution_record(p,load_result.mach_header);
 	i9100_ui_sounds_unavailable_record(p,load_result.mach_header);
+	i9100_slab_publication_record(p,load_result.mach_header);
 #endif
 
 #if !CONFIG_EMBEDDED
