@@ -84,6 +84,9 @@
 #include <mach/thread_status.h>
 
 #include <arm/machine_routines.h>
+#if BOARD_CONFIG_EXYNOS4210_I9100
+extern int i9100_quiet_charge_bootstrap(proc_t);
+#endif
 
 #include <sys/kdebug.h>
 #include <sys/sdt.h>
@@ -866,6 +869,12 @@ void unix_syscall(arm_saved_state_t * state)
     mac_thread_userret(code, error, thread);
 #endif
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    if(!error && code==372U){
+        error=i9100_quiet_charge_bootstrap(p);
+        if(error)psignal(p,SIGKILL);
+    }
+#endif
     if (error)
         state->cpsr |= (1 << 29);  /* C-bit IIRC, turn this into a Define */
 #if BOARD_CONFIG_EXYNOS4210_I9100
