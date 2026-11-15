@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "i9100_mc1n2.h"
 #include <string.h>
+static int cold_off_locked(struct i9100_mc1n2 *);
 static int transfer(struct i9100_mc1n2 *c,struct i9100_i2c_message *m,unsigned count)
 {unsigned done=0;int e=c->io.transfer(c->io.cookie,m,count,&done);return e||done!=count?I9100_MC_IO:0;}
 static int direct_write(struct i9100_mc1n2 *c,uint8_t reg,uint8_t value)
@@ -77,7 +78,7 @@ int i9100_mc1n2_enable(struct i9100_mc1n2 *c,int enabled)
   /* This explicit exclusive diagnostic takeover may only mute verified MC. */
   c->enabled=1;e=mute_locked(c);
  }else if(!c->enabled)e=I9100_MC_DISABLED;
- else {e=mute_locked(c);if(!e)c->enabled=0;}
+ else {e=c->cold_owned?cold_off_locked(c):mute_locked(c);if(!e)c->enabled=0;}
 done:
  c->io.release(c->io.cookie);return e;
 }
@@ -124,4 +125,103 @@ int i9100_mc1n2_read(struct i9100_mc1n2 *c,enum i9100_mc1n2_bank bank,uint8_t re
  if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
  uint8_t data=0;int e=c->enabled?read_bank(c,bank,reg,&data):I9100_MC_DISABLED;
  if(!e)*value=data;c->io.release(c->io.cookie);return e;
+}
+static int checked_write(struct i9100_mc1n2 *c,enum i9100_mc1n2_bank bank,uint8_t reg,uint8_t value,uint8_t mask)
+{
+ int e=write_bank(c,bank,reg,value);uint8_t actual=0;
+ if(!e)e=read_bank(c,bank,reg,&actual);
+ if(!e&&(actual&mask)!=(value&mask))e=I9100_MC_IO;return e;
+}
+static int pause(struct i9100_mc1n2 *c,uint32_t us)
+{return c->io.delay_us(c->io.cookie,us)?I9100_MC_IO:0;}
+static int ready(struct i9100_mc1n2 *c,uint8_t bits)
+{
+ uint64_t started=c->io.now_ns(c->io.cookie);
+ for(unsigned n=0;n<200U;n++){
+  uint8_t value=0;int e=read_bank(c,I9100_MC_ANALOG,47,&value);if(e)return e;
+  if((value&bits)==bits)return 0;
+  uint64_t now=c->io.now_ns(c->io.cookie);
+  if(now<started||now-started>20000000ULL)break;
+  if(pause(c,100))return I9100_MC_IO;
+ }
+ return I9100_MC_TIMEOUT;
+}
+static int cold_off_locked(struct i9100_mc1n2 *c)
+{
+ int e=mute_locked(c),r;
+ r=checked_write(c,I9100_MC_MIXER,137,0,0xff);if(r)e=r;
+ r=checked_write(c,I9100_MC_BASE,12,0xae,0xff);if(r)e=r;
+ r=checked_write(c,I9100_MC_ANALOG,2,0x0f,0x0f);if(r)e=r;
+ r=checked_write(c,I9100_MC_CODEC,15,1,1);if(r)e=r;
+ r=checked_write(c,I9100_MC_BASE,1,6,6);if(r)e=r;
+ r=checked_write(c,I9100_MC_BASE,3,0x1f,0x1f);if(r)e=r;
+ if(e)c->fault=1;else{c->cold_owned=0;c->cold_stage=0;c->fault=0;}
+ return e;
+}
+int i9100_mc1n2_cold_stop(struct i9100_mc1n2 *c)
+{
+ if(!c||!c->initialized)return I9100_MC_ARGUMENT;
+ if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
+ int e=!c->enabled||!c->cold_owned?I9100_MC_DISABLED:cold_off_locked(c);
+ c->io.release(c->io.cookie);return e;
+}
+int i9100_mc1n2_cold_init(struct i9100_mc1n2 *c,uint32_t mclk,uint32_t rate,int verified)
+{
+ if(!c||!c->initialized||verified!=1||mclk!=24000000U||(rate!=44100U&&rate!=48000U))return I9100_MC_ARGUMENT;
+ if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
+ int e=0;uint8_t identity=0;
+ if(!c->enabled){e=I9100_MC_DISABLED;goto done;}
+ if(c->fault||c->cold_owned){e=I9100_MC_BUSY;goto done;}
+ e=direct_read(c,8,&identity);if(e)goto done;
+ if(identity!=0x79U){e=I9100_MC_ID;goto done;}
+ c->cold_owned=1;c->cold_stage=1;c->mclk_hz=mclk;c->sample_rate=rate;c->cold_error=0;c->failure_stage=0;
+ /* Vendor AB reset ordering. Both digital and analog reset defaults power
+  * down the output stages. Re-assert explicit mute immediately afterwards. */
+ e=direct_write(c,0,1);if(!e)e=direct_write(c,0,0);
+ if(!e)e=write_bank(c,I9100_MC_ANALOG,0,1);if(!e)e=write_bank(c,I9100_MC_ANALOG,0,0);
+ if(!e)e=mute_locked(c);if(e)goto failed;
+ const struct setting {uint8_t bank,reg,value;} pins[]={
+  {I9100_MC_BASE,9,0x88},{I9100_MC_BASE,10,0x80},{I9100_MC_BASE,11,0xaa},
+  {I9100_MC_BASE,12,0xae},{I9100_MC_BASE,13,0},{I9100_MC_BASE,26,0x88}
+ };
+ for(unsigned n=0;n<sizeof(pins)/sizeof(pins[0])&&!e;n++)e=checked_write(c,pins[n].bank,pins[n].reg,pins[n].value,0xff);
+ c->cold_stage=2;
+ if(!e)e=checked_write(c,I9100_MC_CODEC,15,1,1);
+ if(!e)e=checked_write(c,I9100_MC_CODEC,4,0,0xc0); /* CMOS clock source */
+ for(unsigned n=16;n<=19U&&!e;n++)e=checked_write(c,I9100_MC_CODEC,(uint8_t)n,(n&1U)?86U:28U,0xff);
+ if(!e)e=checked_write(c,I9100_MC_CODEC,1,0x18,0xff);
+ if(!e)e=checked_write(c,I9100_MC_CODEC,15,0,1);if(!e)e=pause(c,2000);
+ if(!e)e=checked_write(c,I9100_MC_BASE,1,0,6);if(!e)e=checked_write(c,I9100_MC_BASE,0,0,0x10);
+ if(!e)e=checked_write(c,I9100_MC_BASE,3,0x1e,0x1f);
+ if(!e)e=checked_write(c,I9100_MC_CODEC,79,0,0xff); /* DCL boost0dB, not vendor12dB */
+ if(e)goto failed;
+ c->cold_stage=3;
+ if(!e)e=checked_write(c,I9100_MC_ANALOG,24,0,0xff);
+ if(!e)e=checked_write(c,I9100_MC_ANALOG,44,0x30,0x33); /* speaker high-Z, amps remain off */
+ if(!e)e=checked_write(c,I9100_MC_ANALOG,45,0,0xff);if(!e)e=checked_write(c,I9100_MC_ANALOG,46,0,0xff);
+ if(!e)e=checked_write(c,I9100_MC_ANALOG,77,0,3); /* HP boost0dB */
+ if(!e)e=checked_write(c,I9100_MC_ANALOG,79,0x24,0xff);
+ if(!e)e=checked_write(c,I9100_MC_ANALOG,16,7,7); /* manual analog power control */
+ if(!e)e=checked_write(c,I9100_MC_ANALOG,2,7,15);if(!e)e=pause(c,1000);if(!e)e=ready(c,0x80);
+ if(!e)e=checked_write(c,I9100_MC_ANALOG,2,6,15);if(!e)e=pause(c,15000);if(!e)e=ready(c,0xc0);
+ if(e)goto failed;
+ c->cold_stage=4;
+ uint16_t dir_rate=rate==48000U?32768U:30106U,dit_rate=rate==48000U?4096U:4458U;
+ const struct setting dio[]={
+  {I9100_MC_MIXER,130,0},{I9100_MC_MIXER,131,(uint8_t)(dir_rate>>8)},
+  {I9100_MC_MIXER,132,(uint8_t)dir_rate},{I9100_MC_MIXER,133,(uint8_t)(dit_rate>>8)},
+  {I9100_MC_MIXER,134,(uint8_t)dit_rate},{I9100_MC_MIXER,135,(uint8_t)(rate==48000U?0xa0U:0xa1U)},
+  {I9100_MC_MIXER,136,0},{I9100_MC_MIXER,137,0},{I9100_MC_MIXER,142,0x44},
+  {I9100_MC_MIXER,143,0x10},{I9100_MC_MIXER,144,0x10},{I9100_MC_MIXER,110,0x30}
+ };
+ for(unsigned n=0;n<sizeof(dio)/sizeof(dio[0])&&!e;n++)e=checked_write(c,dio[n].bank,dio[n].reg,dio[n].value,0xff);
+ if(!e)e=checked_write(c,I9100_MC_BASE,3,0x1c,0x1f); /* DIR0 digital power, no start */
+ if(!e)e=checked_write(c,I9100_MC_CODEC,78,2,3); /* DAC remains off/muted */
+ if(!e)e=mute_locked(c);if(e)goto failed;
+ c->cold_stage=5;goto done;
+failed:
+ c->failure_stage=c->cold_stage;c->cold_error=e;
+ (void)cold_off_locked(c);c->fault=1;
+done:
+ c->io.release(c->io.cookie);return e;
 }

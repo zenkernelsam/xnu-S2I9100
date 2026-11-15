@@ -16,6 +16,8 @@ struct model {
  uint32_t i2s[4],dma_busy,dma_stop_fail,stopped_requests,reset_missing;
  uint8_t codec[5][256],bank_address[5],wire_register;
  unsigned bus_locked,transactions,fail_transaction,partial,busy_codec;
+ unsigned stall_ready,sticky_codec_error,unsafe_amplifier_writes,codec_delays;
+ uint64_t vref_started;
 };
 static struct model m;
 struct buffer_cookie {struct i9100_dma_buffer b;unsigned locked,fail_sync,sync_count,released;};
@@ -149,14 +151,31 @@ static unsigned bank(unsigned port){switch(port){case 1:return 1;case 12:return 
 static void codec_write(unsigned wire,uint8_t value)
 {
  assert(!(wire&1U));unsigned reg=wire>>1,index=bank(reg);
+ if(reg==0U&&value==1U){
+  uint8_t id=m.codec[0][8];memset(m.codec,0,sizeof(m.codec));m.codec[0][8]=id;
+  m.codec[1][0]=0x10;m.codec[1][1]=6;m.codec[1][3]=0x1f;m.codec[3][15]=1;
+  m.codec[2][2]=15;m.codec[2][3]=0xff;m.codec[2][4]=0xff;m.codec[3][78]=2;
+ }
  if(index)m.bank_address[index]=value;
- else if((index=bank(reg-1U)))m.codec[index][m.bank_address[index]]=value;
+ else if((index=bank(reg-1U))){
+  unsigned address=m.bank_address[index];uint8_t old=m.codec[index][address];
+  if(index==2U&&address==2U&&(old&1U)&&!(value&1U))m.vref_started=m.ns;
+  if(index==2U&&address==3U&&(value&0x3fU)!=0x3fU)m.unsafe_amplifier_writes++;
+  m.codec[index][address]=value;
+ }
  else m.codec[0][reg]=value;
 }
 static uint8_t codec_read(unsigned wire)
 {
  assert(!(wire&1U));unsigned reg=wire>>1,index=bank(reg-1U);
  if(index){if(index==2U&&(m.bank_address[index]==12||m.bank_address[index]==13)&&m.busy_codec)return 0x18;
+  if(index==2U&&m.bank_address[index]==47U){
+   if(m.stall_ready)return 0;
+   uint8_t ready=0,power=m.codec[2][2];
+   if(!(power&8U))ready|=0x80U;
+   if(!(power&1U)&&m.ns>=m.vref_started+15000000ULL)ready|=0x40U;
+   return ready;
+  }
   return m.codec[index][m.bank_address[index]];}
  return m.codec[0][reg];
 }
@@ -165,7 +184,7 @@ static int codec_transfer(void *c,const struct i9100_i2c_message *msgs,unsigned 
  struct model *p=c;assert(p->bus_locked&&msgs[0].address==0x3a);*done=0;p->transactions++;
  if(count==1){assert(!msgs[0].read&&!(msgs[0].length&1U));for(unsigned n=0;n<msgs[0].length;n+=2)codec_write(msgs[0].bytes[n],msgs[0].bytes[n+1]);}
  else{assert(count==2&&msgs[0].length==1&&msgs[1].read&&msgs[1].length==1);msgs[1].bytes[0]=codec_read(msgs[0].bytes[0]);}
- if(p->transactions==p->fail_transaction)return -1;
+ if(p->transactions==p->fail_transaction||p->sticky_codec_error)return -1;
  *done=p->partial?count-1:count;return 0;
 }
 static struct i9100_peripheral_i2c codec_io={&m,codec_transfer,bus_claim,bus_release,now,delay};
@@ -197,6 +216,38 @@ static void codec(void)
  codec_init(&c);m.busy_codec=1;m.freeze_time=1;assert(i9100_mc1n2_enable(&c,1)==I9100_MC_TIMEOUT&&c.fault);
  m.busy_codec=0;assert(!i9100_mc1n2_mute(&c));
 }
+static void codec_cold(void)
+{
+ struct i9100_mc1n2 c;
+ for(unsigned rate=44100;rate<=48000;rate+=3900){
+  codec_init(&c);assert(!i9100_mc1n2_enable(&c,1));unsigned before=m.transactions;
+  assert(i9100_mc1n2_cold_init(&c,20000000,rate,1)==I9100_MC_ARGUMENT&&m.transactions==before);
+  assert(i9100_mc1n2_cold_init(&c,24000000,rate,0)==I9100_MC_ARGUMENT&&m.transactions==before);
+  assert(!i9100_mc1n2_cold_init(&c,24000000,rate,1));
+  assert(c.cold_stage==5&&c.cold_owned&&c.muted&&c.sample_rate==rate&&!c.fault);
+  assert(m.ns>=18000000ULL&&m.codec[3][16]==28&&m.codec[3][17]==86&&m.codec[3][18]==28&&m.codec[3][19]==86);
+  assert(m.codec[3][15]==0&&m.codec[3][79]==0&&m.codec[2][77]==0&&m.codec[2][2]==6);
+  assert(m.codec[4][130]==0&&m.codec[4][135]==(rate==48000?0xa0:0xa1)&&m.codec[4][142]==0x44&&m.codec[4][143]==0x10);
+  assert(m.codec[4][137]==0&&m.codec[1][12]==0xae&&m.codec[3][78]==2&&!m.unsafe_amplifier_writes);
+  assert((m.codec[2][3]&0x3f)==0x3f&&m.codec[2][44]==0x30);
+  assert(!i9100_mc1n2_cold_stop(&c)&&!c.cold_owned&&!c.cold_stage&&m.codec[2][2]==15&&m.codec[3][15]==1);
+ }
+ codec_init(&c);m.codec[0][8]=0x78;assert(!i9100_mc1n2_enable(&c,1));unsigned before=m.transactions;
+ assert(i9100_mc1n2_cold_init(&c,24000000,48000,1)==I9100_MC_ID&&m.transactions==before+1&&!c.cold_owned);
+ codec_init(&c);assert(!i9100_mc1n2_enable(&c,1));before=m.transactions;
+ assert(!i9100_mc1n2_cold_init(&c,24000000,48000,1));unsigned count=m.transactions-before;
+ for(unsigned point=1;point<=count;point++){
+  codec_init(&c);assert(!i9100_mc1n2_enable(&c,1));m.fail_transaction=m.transactions+point;
+  int e=i9100_mc1n2_cold_init(&c,24000000,48000,1);
+  assert(e&&c.cold_stage!=5&&!c.cold_owned&&!m.unsafe_amplifier_writes);
+  if(c.failure_stage){assert(c.fault&&(m.codec[2][2]&15)==15&&(m.codec[3][15]&1)==1&&(m.codec[2][3]&0x3f)==0x3f);}
+ }
+ codec_init(&c);assert(!i9100_mc1n2_enable(&c,1));m.stall_ready=m.freeze_time=1;
+ assert(i9100_mc1n2_cold_init(&c,24000000,48000,1)==I9100_MC_TIMEOUT&&c.fault&&!c.cold_owned);
+ codec_init(&c);assert(!i9100_mc1n2_enable(&c,1));assert(!i9100_mc1n2_cold_init(&c,24000000,48000,1));
+ m.sticky_codec_error=1;assert(i9100_mc1n2_cold_stop(&c)&&c.cold_owned&&c.fault);
+ m.sticky_codec_error=0;assert(!i9100_mc1n2_cold_stop(&c)&&!c.cold_owned);
+}
 static int16_t pcm_in[65536],pcm_out[65536];
 static void pcm(void)
 {
@@ -205,4 +256,4 @@ static void pcm(void)
  for(unsigned n=0;n<65536;n++){assert(pcm_out[n]>=-1036&&pcm_out[n]<=1036);assert(pcm_out[n]==(int32_t)pcm_in[n]*1036/32768);}
 }
 int main(void)
-{pl330();i2s();codec();pcm();puts("PASS PL330 finite VM/bounds/handshake/stop/debug fault/quarantine; I2S reset/clock/mute/stop ordering; MC1N2 bank address/identity/mute/<=-36dB/64 fault points; PCM <=-30dB");return 0;}
+{pl330();i2s();codec();codec_cold();pcm();puts("PASS finite DMA/I2S; MC1N2 AB24MHz reset/PLL/LDO/VREF/DIO/muted-ready/all transaction faults/stalled ready/power-off ownership; PCM <=-30dB");return 0;}
