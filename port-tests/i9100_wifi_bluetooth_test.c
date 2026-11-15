@@ -13,6 +13,7 @@ struct model {
  uint64_t ns;
  uint8_t window[3],clock,bp_data[4],frame[2048],hci[259];
  unsigned transactions,fail_transaction,tx_bytes,tx_fail,partial,quiesce_fail;
+ unsigned register_writes,fail_register_write;
 };
 static struct model m;
 static uint16_t le16(const uint8_t *b){return (uint16_t)(b[0]|((uint16_t)b[1]<<8));}
@@ -64,6 +65,7 @@ static void w16(void *c,unsigned off,uint16_t value){struct model *p=c;assert(p-
 static void w32(void *c,unsigned off,uint32_t value)
 {
  struct model *p=c;assert(p->locked&&off<253);
+ if(++p->register_writes==p->fail_register_write)return;
  if(off==48){put32(p->regs+48,le32(p->regs+48)&~value);return;}
  if(off==32){assert(p->write&&p->blocks);unsigned amount=p->unit-p->block_progress<4U?p->unit-p->block_progress:4U;
   for(unsigned n=0;n<amount;n++)p->functions[p->fn][p->address+(p->increment?p->cursor+n:0)]=(uint8_t)(value>>(n*8));advance(p,amount);return;}
@@ -80,7 +82,9 @@ static void card(struct i9100_sdio *s)
 static void sdio(void)
 {
  struct i9100_sdio s;card(&s);assert(i9100_sdio_enable(&s,1,0)==I9100_SDIO_ARGUMENT&&!m.commands);
+ put32(m.regs+128,0x12345a03U);put32(m.regs+132,0x01020304U);
  assert(!i9100_sdio_enable(&s,1,1));assert(s.vendor==0x02d0&&s.device==0x4330&&s.clock_hz<=400000&&s.rca==0x1234);
+ assert((le32(m.regs+128)&(3U<<4))==(2U<<4)&&le32(m.regs+132)==0x80808080U&&s.host_owned);
  assert(!i9100_sdio_function(&s,1,1)&&s.block_size[1]==64);assert(!i9100_sdio_function(&s,2,1)&&s.block_size[2]==512);
  assert(!i9100_sdio_set_bus(&s,1,25000000)&&s.clock_hz==24000000&&(m.functions[0][7]&3U)==2U&&(m.regs[40]&2U));
  uint8_t data[1024],out[1024];for(unsigned n=0;n<1024;n++)data[n]=(uint8_t)(n*13U);
@@ -90,11 +94,18 @@ static void sdio(void)
  assert(i9100_sdio_cmd53(&s,0,1,0x1ffff,1,out,2)==I9100_SDIO_ARGUMENT);
  unsigned before=m.commands;m.crc=1;assert(i9100_sdio_cmd53(&s,0,1,0x200,1,out,64)==I9100_SDIO_CRC&&s.fault&&m.commands==before+1);
  m.crc=0;assert(!i9100_sdio_enable(&s,0,1)&&!s.active&&!m.regs[41]);
+ assert(!s.host_owned&&le32(m.regs+128)==0x12345a03U&&le32(m.regs+132)==0x01020304U);
  card(&s);m.r5_error=0x100;assert(i9100_sdio_enable(&s,1,1)==I9100_SDIO_CARD&&s.fault&&!s.active);
  card(&s);m.clock_stall=m.freeze=1;s.poll_limit=9;assert(i9100_sdio_enable(&s,1,1)==I9100_SDIO_TIMEOUT);
  card(&s);m.functions[0][0x109]=255;m.functions[0][0x10a]=255;m.functions[0][0x10b]=1;m.functions[0][0x1ffff]=0x20;
  assert(i9100_sdio_enable(&s,1,1)==I9100_SDIO_CARD);
  card(&s);assert(!i9100_sdio_enable(&s,1,1));m.no_ready=1;assert(i9100_sdio_function(&s,2,1)==I9100_SDIO_TIMEOUT&&s.fault);
+ card(&s);m.fail_register_write=4;assert(i9100_sdio_enable(&s,1,1)==I9100_SDIO_IO&&!s.active);
+ m.fail_register_write=0;assert(!i9100_sdio_release_host(&s)&&!s.host_owned);
+ card(&s);assert(!i9100_sdio_enable(&s,1,1));assert(i9100_sdio_release_host(&s)==I9100_SDIO_BUSY&&s.host_owned);
+ m.register_writes=0;m.fail_register_write=6;
+ assert(i9100_sdio_enable(&s,0,1)==I9100_SDIO_IO&&s.host_owned&&!s.active);
+ m.fail_register_write=0;assert(!i9100_sdio_release_host(&s)&&!s.host_owned);
 }
 static int transact(struct model *p){return ++p->transactions==p->fail_transaction?-1:0;}
 static int cmd52(void *c,int write,unsigned fn,uint32_t addr,uint8_t *v)

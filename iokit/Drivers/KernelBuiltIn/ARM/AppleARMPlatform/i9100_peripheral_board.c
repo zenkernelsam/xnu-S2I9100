@@ -22,7 +22,8 @@ const struct i9100_gpio_bank_config i9100_u1_banks[I9100_BANK_COUNT] = {
 };
 const struct i9100_clock_gate_config i9100_u1_gates[I9100_GATE_COUNT] = {
  {0xc950,1U<<7}, {0xc950,1U<<12}, {0xc950,1U<<13},
- {0xc940,1U<<0}, {0xc940,1U<<1}, {0xc950,1U<<0}, {0xc950,1U<<24}
+ {0xc940,1U<<0}, {0xc940,1U<<1}, {0xc950,1U<<0}, {0xc950,1U<<24},
+ {0xc940,1U<<8}, {0xc340,1U<<12}
 };
 const struct i9100_i2c_board_bus i9100_u1_i2c[3] = {
  {0x13870000U,I9100_GPD1,2,3,2,91,I9100_GATE_I2C1},

@@ -20,11 +20,13 @@ struct i9100_sdio {
  uint64_t started,timeout_ns;
  uint32_t initialized,active,fault,input_clock_hz,clock_hz,ocr,rca,functions,last_status,last_response;
  uint32_t poll_limit,saved_inten,saved_signal;
+ uint32_t saved_feedback[2],host_owned;
  uint16_t block_size[3],vendor,device;
  uint8_t revision,saved_io_enable,capabilities,bus_control,last_function;
 };
 int i9100_sdio_init(struct i9100_sdio *,const struct i9100_sdio_io *,uint32_t verified_input_clock_hz);
 int i9100_sdio_enable(struct i9100_sdio *,int enabled,int board_lease_verified);
+int i9100_sdio_release_host(struct i9100_sdio *); /* cleanup even after a failed initial probe */
 int i9100_sdio_function(struct i9100_sdio *,unsigned function,int enabled);
 int i9100_sdio_set_bus(struct i9100_sdio *,int four_bit,uint32_t target_clock_hz);
 int i9100_sdio_cmd52(struct i9100_sdio *,int write,unsigned function,uint32_t address,uint8_t *value);

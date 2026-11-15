@@ -10,7 +10,8 @@ int i9100_clock_init(struct i9100_clock_gates *m,const struct i9100_clock_io *io
 {
  if(!m||!io||!c||m->count||!count||count>I9100_CLOCK_MAX_GATES||!io->read32||!io->write32||!io->lock||!io->unlock)return I9100_CLOCK_ARGUMENT;
  for(unsigned n=0;n<count;n++){
-  if(c[n].offset<0xc900U||c[n].offset>0xc970U||(c[n].offset&3U)||!c[n].mask||(c[n].mask&(c[n].mask-1U)))return I9100_CLOCK_ARGUMENT;
+  if((c[n].offset<0xc900U||c[n].offset>0xc970U)&&!(c[n].offset==0xc340U&&c[n].mask==(1U<<12)))return I9100_CLOCK_ARGUMENT;
+  if((c[n].offset&3U)||!c[n].mask||(c[n].mask&(c[n].mask-1U)))return I9100_CLOCK_ARGUMENT;
   for(unsigned j=0;j<n;j++)if(c[n].offset==c[j].offset&&(c[n].mask&c[j].mask))return I9100_CLOCK_ARGUMENT;
  }
  memset(m,0,sizeof(*m));m->io=*io;m->count=count;for(unsigned n=0;n<count;n++)m->gates[n].config=c[n];return 0;

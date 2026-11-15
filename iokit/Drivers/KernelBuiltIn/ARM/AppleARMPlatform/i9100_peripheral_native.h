@@ -6,6 +6,7 @@
 #include "i9100_irq_registry.h"
 #include "i9100_uart_bluetooth.h"
 #include "i9100_bluetooth_h4.h"
+#include "i9100_bcm_f2.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -20,6 +21,11 @@ int i9100_peripheral_native_i2c_close(struct i9100_peripheral_native *,unsigned 
 int i9100_peripheral_native_uart_open(struct i9100_peripheral_native *,uint32_t verified_clock_hz,uint32_t baud,enum i9100_uart_fraction,int fresh_peer_gpio_clock_verified,struct i9100_bt_io *);
 int i9100_peripheral_native_uart_read(struct i9100_peripheral_native *,uint8_t *,unsigned capacity,unsigned *received);
 int i9100_peripheral_native_uart_close(struct i9100_peripheral_native *);
+int i9100_peripheral_native_sdio_open(struct i9100_peripheral_native *,uint32_t verified_sclk_mmc3_hz,int exclusive_board_power_verified,struct i9100_sdio **,struct i9100_f2_io *);
+int i9100_peripheral_native_sdio_close(struct i9100_peripheral_native *);
+/* SDHCI3 opens F1 only, never boots firmware/F2 or changes WLAN/BT rails.
+ * The board owner has already verified rail/reset state and sclk_mmc3 input
+ * (after its source/dividers). Close follows BCM/F2/workloop shutdown. */
 /* Actual IOKit private maps/locks/timebase bridge, no automatic registration.
  * enabled!=1 does no allocation or IO. No raw arbitrary-address mapping API.
  * I2C1/6/7 only, with separately verified PCLK and distinct outer bank-window

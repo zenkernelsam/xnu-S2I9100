@@ -28,6 +28,8 @@ static uint32_t read_generic(void *c,unsigned region,unsigned off)
 {struct model *p=c;assert(p->locked&&region<3U&&off<65536U&&!(off&3U));p->reads++;return p->regs[region][off/4];}
 static void write_generic(void *c,unsigned region,unsigned off,uint32_t value)
 {struct model *p=c;assert(p->locked&&region<3U&&off<65536U&&!(off&3U));p->writes++;if(p->fail_write!=p->writes)p->regs[region][off/4]=value;}
+static uint32_t board_clock_read(void *c,unsigned off){return read_generic(c,0,off);}
+static void board_clock_write(void *c,unsigned off,uint32_t v){write_generic(c,0,off,v);}
 static void board(void)
 {
  memset(&m,0,sizeof(m));struct i9100_gpio_broker b={0};
@@ -48,6 +50,17 @@ static void board(void)
  assert(allowed[108/32]&(1U<<(108%32)));
  const unsigned reserved[]={89,107,109,52,86,87,111,113};
  for(unsigned n=0;n<sizeof(reserved)/sizeof(reserved[0]);n++)assert(!(allowed[reserved[n]/32]&(1U<<(reserved[n]%32))));
+ struct i9100_clock_gates clocks={0};struct i9100_clock_io cio={&m,board_clock_read,board_clock_write,lock,unlock};
+ assert(!i9100_clock_init(&clocks,&cio,i9100_u1_gates,I9100_GATE_COUNT));assert(!i9100_clock_enable(&clocks,1));
+ m.regs[0][0xc940/4]=(1U<<7)|(1U<<9);m.regs[0][0xc340/4]=(1U<<8)|(1U<<16);
+ struct i9100_clock_lease ip={0},source={0};
+ assert(!i9100_clock_acquire(&clocks,I9100_GATE_HSMMC3,&ip));assert(!i9100_clock_acquire(&clocks,I9100_GATE_SCLK_MMC3,&source));
+ assert(m.regs[0][0xc940/4]==((1U<<7)|(1U<<9)|(1U<<8)));
+ assert(m.regs[0][0xc340/4]==((1U<<8)|(1U<<16)|(1U<<12)));
+ assert(!i9100_clock_release(&source));assert(!i9100_clock_release(&ip));
+ assert(m.regs[0][0xc940/4]==((1U<<7)|(1U<<9))&&m.regs[0][0xc340/4]==((1U<<8)|(1U<<16)));
+ memset(&clocks,0,sizeof(clocks));struct i9100_clock_gate_config invalid={0xc340,1U<<8};
+ assert(i9100_clock_init(&clocks,&cio,&invalid,1)==I9100_CLOCK_ARGUMENT);
 }
 static uint32_t i2c_read(void *c,unsigned off)
 {

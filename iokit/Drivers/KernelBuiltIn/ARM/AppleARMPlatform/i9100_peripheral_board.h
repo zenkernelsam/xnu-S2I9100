@@ -19,7 +19,7 @@ enum i9100_bank {
 enum i9100_gate {
  I9100_GATE_I2C1, I9100_GATE_I2C6, I9100_GATE_I2C7,
  I9100_GATE_PDMA0, I9100_GATE_PDMA1, I9100_GATE_UART0,
- I9100_GATE_PWM, I9100_GATE_COUNT
+ I9100_GATE_PWM, I9100_GATE_HSMMC3, I9100_GATE_SCLK_MMC3, I9100_GATE_COUNT
 };
 struct i9100_i2c_board_bus {
  uint32_t physical; unsigned bank, sda, scl, function, irq, gate;

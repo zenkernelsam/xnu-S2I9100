@@ -2,8 +2,11 @@
 #include "i9100_sdio.h"
 #include <string.h>
 enum {BLOCK_SIZE=4,BLOCK_COUNT=6,ARG=8,TRANSFER=12,COMMAND=14,RESPONSE=16,BUFFER=32,
- PRESENT=36,HOST=40,POWER=41,CLOCK=44,TIMEOUT=46,RESET=47,STATUS=48,INTEN=52,SIGNAL=56,CAPABILITIES=64,VERSION=254};
+ PRESENT=36,HOST=40,POWER=41,CLOCK=44,TIMEOUT=46,RESET=47,STATUS=48,INTEN=52,SIGNAL=56,CAPABILITIES=64,CTRL2=128,CTRL3=132,VERSION=254};
 #define ERRORS 0xffff8000U
+#define FEEDBACK_MASK ((1U<<31)|(1U<<30)|(1U<<15)|(1U<<14)|(3U<<9)|(1U<<8)|(3U<<4))
+#define FEEDBACK_VALUE ((1U<<31)|(1U<<30)|(1U<<14)|(1U<<8)|(2U<<4))
+#define DELAY_VALUE 0x80808080U
 static uint8_t r8(struct i9100_sdio *s,unsigned r){return s->io.read8(s->io.cookie,r);}
 static uint16_t r16(struct i9100_sdio *s,unsigned r){return s->io.read16(s->io.cookie,r);}
 static uint32_t r32(struct i9100_sdio *s,unsigned r){return s->io.read32(s->io.cookie,r);}
@@ -56,6 +59,24 @@ static int reset_lines(struct i9100_sdio *s)
   if(s->io.delay_us(s->io.cookie,2))return I9100_SDIO_IO;
  }
  return I9100_SDIO_TIMEOUT;
+}
+static int release_host(struct i9100_sdio *s)
+{
+ if(!s->host_owned)return 0;
+ w32(s,SIGNAL,0);w16(s,CLOCK,0);w8(s,POWER,0);
+ if(r32(s,PRESENT)&7U){int e=reset_lines(s);if(e)return e;if(r32(s,PRESENT)&7U)return I9100_SDIO_BUSY;}
+ w32(s,CTRL2,(r32(s,CTRL2)&~FEEDBACK_MASK)|(s->saved_feedback[0]&FEEDBACK_MASK));
+ w32(s,CTRL3,s->saved_feedback[1]);
+ if((r32(s,CTRL2)&FEEDBACK_MASK)!=(s->saved_feedback[0]&FEEDBACK_MASK)||r32(s,CTRL3)!=s->saved_feedback[1])return I9100_SDIO_IO;
+ w32(s,INTEN,s->saved_inten);w32(s,SIGNAL,s->saved_signal);
+ s->host_owned=0;return 0;
+}
+int i9100_sdio_release_host(struct i9100_sdio *s)
+{
+ if(!s||!s->initialized)return I9100_SDIO_ARGUMENT;
+ if(s->io.lock(s->io.cookie))return I9100_SDIO_BUSY;
+ int e=s->active?I9100_SDIO_BUSY:release_host(s);if(e&&e!=I9100_SDIO_BUSY)s->fault=1;
+ s->io.unlock(s->io.cookie);return e;
 }
 static int set_clock(struct i9100_sdio *s,uint32_t target)
 {
@@ -111,15 +132,17 @@ int i9100_sdio_enable(struct i9100_sdio *s,int enabled,int verified)
    s->fault=0;}
   uint8_t mask=s->saved_io_enable;e=cmd52(s,1,0,2,&mask);
   if(e){s->fault=1;goto done;}
-  w32(s,SIGNAL,0);w16(s,CLOCK,0);w8(s,POWER,0);
-  w32(s,INTEN,s->saved_inten);w32(s,SIGNAL,s->saved_signal);s->active=s->last_function=0;
+  s->active=s->last_function=0;e=release_host(s);if(e)s->fault=1;
   goto done;
  }
  if(!verified){e=I9100_SDIO_ARGUMENT;goto done;}
- if(s->active||s->fault||(r32(s,PRESENT)&7U)){e=I9100_SDIO_BUSY;goto done;}
+ if(s->active||s->fault||s->host_owned||(r32(s,PRESENT)&7U)){e=I9100_SDIO_BUSY;goto done;}
  if((r16(s,VERSION)&255U)<1U||!(r32(s,CAPABILITIES)&(1U<<24))){e=I9100_SDIO_CARD;goto done;}
  s->saved_inten=r32(s,INTEN);s->saved_signal=r32(s,SIGNAL);
+ s->saved_feedback[0]=r32(s,CTRL2);s->saved_feedback[1]=r32(s,CTRL3);s->host_owned=1;
  w32(s,SIGNAL,0);w32(s,INTEN,0xffffffffU);w32(s,STATUS,0xffffffffU);
+ w16(s,CLOCK,0);w32(s,CTRL2,(s->saved_feedback[0]&~FEEDBACK_MASK)|FEEDBACK_VALUE);w32(s,CTRL3,DELAY_VALUE);
+ if((r32(s,CTRL2)&FEEDBACK_MASK)!=FEEDBACK_VALUE||r32(s,CTRL3)!=DELAY_VALUE){e=I9100_SDIO_IO;goto failed;}
  e=reset_lines(s);if(e)goto failed;w8(s,TIMEOUT,14U);w8(s,HOST,0);w8(s,POWER,0xfU);
  if(s->io.delay_us(s->io.cookie,25000)){e=I9100_SDIO_IO;goto failed;}
  e=set_clock(s,400000);if(e)goto failed;
@@ -147,7 +170,7 @@ int i9100_sdio_enable(struct i9100_sdio *s,int enabled,int verified)
  uint8_t width=s->bus_control&~3U;e=cmd52(s,1,0,7,&width);if(e)goto failed;
  e=cis(s);if(e)goto failed;s->active=1;goto done;
 failed:
- w32(s,SIGNAL,0);w16(s,CLOCK,0);w8(s,POWER,0);w32(s,INTEN,s->saved_inten);w32(s,SIGNAL,s->saved_signal);s->fault=1;
+ (void)release_host(s);s->fault=1;
 done:
  s->io.unlock(s->io.cookie);return e;
 }
