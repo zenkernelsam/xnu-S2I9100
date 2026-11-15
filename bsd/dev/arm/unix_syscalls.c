@@ -93,6 +93,8 @@ extern int i9100_ui_sounds_unavailable_bootstrap(proc_t,unsigned,unsigned);
 extern void i9100_ui_sounds_unavailable_note(proc_t,unsigned,unsigned);
 extern int i9100_slab_publication_bootstrap(proc_t,unsigned,unsigned);
 extern void i9100_slab_publication_note(proc_t,unsigned,unsigned);
+extern int i9100_ui_execution_bootstrap(proc_t,unsigned,unsigned);
+extern void i9100_ui_execution_note(proc_t,unsigned,unsigned,unsigned);
 #endif
 
 #include <sys/kdebug.h>
@@ -882,11 +884,13 @@ void unix_syscall(arm_saved_state_t * state)
         if(!error)error=i9100_ui_sounds_unavailable_bootstrap(p,state->pc,state->cpsr);
         if(!error)error=i9100_slab_publication_bootstrap(p,state->pc,state->cpsr);
         if(!error)error=i9100_hid_execution_bootstrap(p,state->pc,state->cpsr);
+        if(!error)error=i9100_ui_execution_bootstrap(p,state->pc,state->cpsr);
         if(error)psignal(p,SIGKILL);
     }
     if(!error && code==20U)i9100_hid_execution_note(p,state->pc,state->sp,state->r[0]);
     if(!error && code==20U)i9100_ui_sounds_unavailable_note(p,state->pc,state->r[0]);
     if(!error && code==20U)i9100_slab_publication_note(p,state->pc,state->sp);
+    if(!error && code==20U)i9100_ui_execution_note(p,state->pc,state->sp,state->r[0]);
 #endif
     if (error)
         state->cpsr |= (1 << 29);  /* C-bit IIRC, turn this into a Define */
