@@ -1,6 +1,6 @@
 --- a/iokit/conf/files.arm
 +++ b/iokit/conf/files.arm
-@@ -58,6 +58,12 @@
+@@ -58,6 +58,17 @@
  # i9100 Exynos4210 SDMMC (SDHCI PIO) block device
  iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100SDMMC.cpp optional iokitcpp
  iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_sdmmc.c standard
@@ -10,6 +10,11 @@
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_clock_gates.c standard
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_irq_registry.c standard
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_dma_guard.c standard
++iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_peripheral_board.c standard
++iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_i2c_samsung.c standard
++iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_irq_cascade.c standard
++iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_audss.c standard
++iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_dma_native.cpp optional iokitcpp
  
  # GT-I9100 Atmel mXT224/mXT224E physical touch
  iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_touch.c standard

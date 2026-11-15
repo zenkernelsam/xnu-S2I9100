@@ -11,7 +11,7 @@ int i9100_gpio_broker_init(struct i9100_gpio_broker *b,const struct i9100_gpio_i
 {
  if(!b||!io||!cfg||b->count||!count||count>I9100_GPIO_BANKS_MAX||!io->read32||!io->write32||!io->lock||!io->unlock)return I9100_GPIO_ARGUMENT;
  for(unsigned n=0;n<count;n++){
-  if(cfg[n].region>1||!cfg[n].pins||cfg[n].pins>8||(cfg[n].offset&31U)||
+  if(cfg[n].region>2||(cfg[n].region==2&&cfg[n].offset!=0)||!cfg[n].pins||cfg[n].pins>8||(cfg[n].offset&31U)||
      (cfg[n].offset>0x3e0U&&!(cfg[n].region==1&&cfg[n].offset>=0xc00U&&cfg[n].offset<=0xc60U))||
      cfg[n].reserved_mask&~((1U<<cfg[n].pins)-1U))return I9100_GPIO_ARGUMENT;
   for(unsigned j=0;j<n;j++)if(cfg[n].region==cfg[j].region&&cfg[n].offset==cfg[j].offset)return I9100_GPIO_ARGUMENT;

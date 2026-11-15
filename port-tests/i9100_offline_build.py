@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Retained, CPU-capped offline build evidence, without changing shared BUILD."""
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+ROOT = REPO.parent
+PLATFORM = REPO / "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform"
+
+
+def cap_cpu():
+    if os.environ.get("I9100_CPU_CAPPED") != "1":
+        os.execvpe("taskset", ["taskset", "-c", "0-13", "nice", "-n10", "ionice",
+                              "-c2", "-n7", sys.executable, "-B", *sys.argv],
+                   dict(os.environ, I9100_CPU_CAPPED="1"))
+    if set(os.sched_getaffinity(0)) - set(range(14)) or os.getpriority(os.PRIO_PROCESS, 0) < 10:
+        raise RuntimeError("CPU envelope missing; refusing compilation")
+
+
+def idle():
+    jobs = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            name = (entry / "comm").read_text().strip()
+            args = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        if (name.startswith(("clang", "gcc", "cc1", "ld64", "make", "ninja", "qemu"))
+                or name.startswith("python") and any(x in args for x in (
+                    "prepare-automation.py", "rebuild-i9100.py", "package-oneshot.py",
+                    "check_i9100_peripheral", "check_i9100_audio", "check_i9100_sensors",
+                    "check_i9100_wifi", "check_i9100_camera", "check_i9100_modem"))):
+            jobs.append((entry.name, name))
+    if jobs:
+        raise RuntimeError("Other heavy job active; this offline build deferred: " + repr(jobs))
+
+
+class Evidence:
+    def __init__(self, prefix):
+        cap_cpu()
+        self.out = REPO / "out" / (prefix + "-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
+        self.out.mkdir()
+        self.result = dict(result="INCOMPLETE", hardware_tested=False, sources={})
+        self.commands = []
+
+    def run(self, command, label, env=None):
+        idle()
+        proc = subprocess.run(command, cwd=PLATFORM, env=env, text=True, capture_output=True)
+        (self.out / (label + ".log")).write_text(proc.stdout + proc.stderr)
+        if proc.returncode:
+            raise RuntimeError(label + " failed:\n" + (proc.stdout + proc.stderr)[-6000:])
+        print(proc.stdout.strip() if label.endswith("tests") else "PASS " + label, flush=True)
+        return proc.stdout
+
+    def model(self, test_file, sources):
+        self.run(["clang", "-std=c99", "-O1", "-Wall", "-Wextra", "-Werror", "-fno-pie", "-no-pie",
+                  "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-I" + str(PLATFORM),
+                  str(REPO / "port-tests" / test_file), *[str(PLATFORM / s) for s in sources],
+                  "-o", str(self.out / "models")], "compile-models")
+        self.run([str(self.out / "models")], "model-tests")
+        self.result["models"] = test_file
+        self.result["models_sha256"] = hashlib.sha256((REPO / "port-tests" / test_file).read_bytes()).hexdigest()
+
+    def cross_compile(self, sources):
+        commands = None
+        for file in sorted((REPO / "out/automation").glob("control-*/compile-commands.json"), reverse=True):
+            data = json.loads(file.read_text())
+            names = {item["object"] for item in data}
+            if "iokit/i9100_power.o" in names and any(name in names for name in (
+                    "iokit/IOS7I9100SDMMC.cpo", "iokit/IOS7I9100Power.cpo", "iokit/IOS7I9100Mali.cpo")):
+                commands = {item["object"]: item for item in data}
+                self.result["compile_template"] = str(file.relative_to(ROOT))
+                self.result["compile_template_sha256"] = hashlib.sha256(file.read_bytes()).hexdigest()
+                break
+        if commands is None:
+            raise RuntimeError("No retained ARM/XNU compiler templates")
+        env = dict(os.environ)
+        env["PATH"] = str(ROOT / "assets/i9100-toolchain/bin") + ":" + env["PATH"]
+        for name in sources:
+            cpp = name.endswith(".cpp")
+            obj = next((name for name in ("iokit/IOS7I9100SDMMC.cpo", "iokit/IOS7I9100Power.cpo",
+                        "iokit/IOS7I9100Mali.cpo") if name in commands)) if cpp else "iokit/i9100_power.o"
+            command = list(commands[obj]["arguments"])
+            inputs = [i for i, value in enumerate(command) if value.endswith(".cpp" if cpp else ".c")]
+            if len(inputs) != 1 or "-O1" not in command:
+                raise RuntimeError("Unexpected compiler template")
+            destination = self.out / (name + (".cpo" if cpp else ".o"))
+            command[inputs[0]] = str(PLATFORM / name)
+            command[command.index("-o") + 1] = str(destination)
+            for i, flag in enumerate(command[:-1]):
+                if flag in ("-MF", "-MT"):
+                    command[i + 1] = str(destination.with_suffix(".d") if flag == "-MF" else destination)
+            command.extend(["-MF", str(destination.with_suffix(".d"))])
+            self.run(command, "cross-" + name, env)
+            self.commands.append(dict(source=name, object=str(destination.relative_to(ROOT)), arguments=command))
+        (self.out / "compile-commands.json").write_text(json.dumps(self.commands, indent=2) + "\n")
+        self.result["cross_compiled"] = True
+
+    def finish(self, sources, scope):
+        for name in sources:
+            self.result["sources"][name] = hashlib.sha256((PLATFORM / name).read_bytes()).hexdigest()
+            header = PLATFORM / (Path(name).stem + ".h")
+            if header.exists():
+                self.result["sources"][header.name] = hashlib.sha256(header.read_bytes()).hexdigest()
+        self.result.update(result="PASS", scope=scope, complete_kernel_link=False)
+        (self.out / "manifest.json").write_text(json.dumps(self.result, indent=2) + "\n")
+        print("EVIDENCE", self.out, flush=True)
