@@ -27,6 +27,8 @@ struct i9100_bcm4330 {
  uint16_t request_id,next_request;
  int32_t firmware_status;
  uint8_t saved_clock,tx_sequence,tx_max,rx_sequence,rx_seen,flow_mask,pending;
+ uint8_t window_saved[3],window_restore_pending,window_touched;
+ uint32_t chip_holds;
 };
 int i9100_bcm_init(struct i9100_bcm4330 *,const struct i9100_bcm_io *);
 int i9100_bcm_enable(struct i9100_bcm4330 *,int enabled,uint16_t cis_vendor,uint16_t cis_device);
@@ -38,8 +40,9 @@ int i9100_bcm_receive(struct i9100_bcm4330 *,const uint8_t *frame,unsigned bytes
 int i9100_bcm_poll_request(struct i9100_bcm4330 *);
 /* BCM4330 only, read-only backplane diagnostics and nonglom SDPCM v4/BDC v2.
  * These are transport primitives, not a ready WiFi/iOS network interface.
- * Firmware/RAM-core discovery/calibration and an actual F2 frame adapter are
- * prerequisites to protocol_start. No NVRAM country/MAC synthesis, radio
+ * The separate chip/F2 modules supply bounded topology/RAM diagnostics and
+ * actual frames; firmware identity/loading/calibration remain prerequisites
+ * to protocol_start. No NVRAM country/MAC synthesis, radio
  * reset, image download or implicit retransmission is provided here. */
 #ifdef __cplusplus
 }

@@ -22,7 +22,7 @@ C_SOURCES = [
     "i9100_camera_protocol.c", "i9100_mfc.c", "i9100_video_layout.c",
     "i9100_sysmmu.c", "i9100_modem_sipc4.c", "i9100_emmc.c", "i9100_emmc_layout.c",
     "i9100_uart_bluetooth.c", "i9100_pwm_haptic.c",
-    "i9100_bcm_f2.c", "i9100_audio_power.c", "i9100_irq_router.c", "i9100_pcm_ring.c",
+    "i9100_bcm_f2.c", "i9100_audio_power.c", "i9100_irq_router.c", "i9100_pcm_ring.c", "i9100_bcm_chip.c",
 ]
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
                "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp"]
@@ -50,6 +50,7 @@ TESTS = [
         "i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_peripheral_board.c", "i9100_irq_registry.c", "i9100_irq_router.c", "i9100_pcm_ring.c",
         "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp"]),
     ("i9100_pcm_ring_test.c", ["i9100_pcm_ring.c"]),
+    ("i9100_bcm_chip_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c"]),
 ]
 
 

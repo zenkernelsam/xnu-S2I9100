@@ -1,21 +1,51 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "i9100_bcm4330.h"
+#include "i9100_bcm_backplane_private.h"
 #include <string.h>
 static uint16_t le16(const uint8_t *b){return (uint16_t)(b[0]|((uint16_t)b[1]<<8));}
 static uint32_t le32(const uint8_t *b){return b[0]|((uint32_t)b[1]<<8)|((uint32_t)b[2]<<16)|((uint32_t)b[3]<<24);}
 static void put32(uint8_t *b,uint32_t v){for(unsigned n=0;n<4;n++)b[n]=(uint8_t)(v>>(n*8U));}
-static int bp_read(struct i9100_bcm4330 *b,uint32_t address,uint32_t *value)
+static const uint32_t bp_ports[3]={0x1000a,0x1000b,0x1000c};
+static int bp_window_write(struct i9100_bcm4330 *b,unsigned n,uint8_t value)
 {
- const uint32_t ports[3]={0x1000a,0x1000b,0x1000c};
- uint8_t original[3],next[3]={(uint8_t)((address>>8)&128U),(uint8_t)(address>>16),(uint8_t)(address>>24)};
- for(unsigned n=0;n<3;n++)if(b->io.cmd52(b->io.cookie,0,1,ports[n],&original[n]))return I9100_BCM_IO;
- int e=0;unsigned touched=0;
- for(unsigned n=0;n<3;n++){touched=n+1U;if(b->io.cmd52(b->io.cookie,1,1,ports[n],&next[n])){e=I9100_BCM_IO;break;}}
- uint8_t data[4]={0};
- if(!e&&b->io.cmd53(b->io.cookie,0,1,(address&0x7fffU)|0x8000U,1,data,4))e=I9100_BCM_IO;
- for(unsigned n=0;n<touched;n++)if(b->io.cmd52(b->io.cookie,1,1,ports[n],&original[n]))e=I9100_BCM_IO;
- if(!e)*value=le32(data);return e;
+ uint8_t actual=0;
+ if(b->io.cmd52(b->io.cookie,1,1,bp_ports[n],&value)||
+    b->io.cmd52(b->io.cookie,0,1,bp_ports[n],&actual)||actual!=value)return I9100_BCM_IO;
+ return 0;
 }
+int i9100_bcm_bp_restore_locked(struct i9100_bcm4330 *b)
+{
+ if(!b->window_restore_pending)return 0;
+ int e=0;
+ for(unsigned n=0;n<b->window_touched;n++)if(bp_window_write(b,n,b->window_saved[n]))e=I9100_BCM_IO;
+ if(!e)b->window_restore_pending=b->window_touched=0;
+ else b->fault=1;
+ return e;
+}
+static int bp_word(struct i9100_bcm4330 *b,int write,uint32_t address,uint32_t *value)
+{
+ if(!b||!b->initialized||!value||(address&3U)||address<0x18000000U||address>=0x18200000U)
+  return I9100_BCM_ARGUMENT;
+ if(b->window_restore_pending)return I9100_BCM_IO;
+ uint8_t next[3]={(uint8_t)((address>>8)&128U),(uint8_t)(address>>16),(uint8_t)(address>>24)};
+ for(unsigned n=0;n<3;n++)if(b->io.cmd52(b->io.cookie,0,1,bp_ports[n],&b->window_saved[n]))return I9100_BCM_IO;
+ b->window_restore_pending=1;
+ int e=0;
+ for(unsigned n=0;n<3;n++){
+  b->window_touched=(uint8_t)(n+1U);
+  if(bp_window_write(b,n,next[n])){e=I9100_BCM_IO;break;}
+ }
+ uint8_t data[4]={0};if(write)put32(data,*value);
+ if(!e&&b->io.cmd53(b->io.cookie,write,1,(address&0x7fffU)|0x8000U,1,data,4))e=I9100_BCM_IO;
+ if(i9100_bcm_bp_restore_locked(b))e=I9100_BCM_IO;
+ if(!e&&!write)*value=le32(data);return e;
+}
+int i9100_bcm_bp_read_locked(struct i9100_bcm4330 *b,uint32_t address,uint32_t *value)
+{return bp_word(b,0,address,value);}
+int i9100_bcm_bp_write_locked(struct i9100_bcm4330 *b,uint32_t address,uint32_t value)
+{return bp_word(b,1,address,&value);}
+static int bp_read(struct i9100_bcm4330 *b,uint32_t address,uint32_t *value)
+{return i9100_bcm_bp_read_locked(b,address,value);}
 int i9100_bcm_init(struct i9100_bcm4330 *b,const struct i9100_bcm_io *io)
 {
  if(!b||b->initialized||!io||!io->claim||!io->release||!io->cmd52||!io->cmd53||!io->send_frame||!io->now_ns||!io->delay_us)
@@ -29,12 +59,14 @@ int i9100_bcm_enable(struct i9100_bcm4330 *b,int enabled,uint16_t vendor,uint16_
  int e=0;
  if(!enabled){
   if(!b->enabled){e=I9100_BCM_DISABLED;goto done;}
+  if(b->chip_holds){e=I9100_BCM_BUSY;goto done;}
+  if(i9100_bcm_bp_restore_locked(b)){e=I9100_BCM_IO;goto done;}
   uint8_t saved=b->saved_clock;
   if(b->io.cmd52(b->io.cookie,1,1,0x1000e,&saved)){e=I9100_BCM_IO;b->fault=1;}
   else b->enabled=b->protocol_ready=b->fault=b->pending=0;
   goto done;
  }
- if(b->enabled||b->fault){e=I9100_BCM_BUSY;goto done;}
+ if(b->enabled||b->fault||b->window_restore_pending){e=I9100_BCM_BUSY;goto done;}
  if(vendor!=0x02d0U||(device!=0x4330U&&device!=0x4329U)){e=I9100_BCM_ID;goto done;}
  if(b->io.cmd52(b->io.cookie,0,1,0x1000e,&b->saved_clock)){e=I9100_BCM_IO;goto done;}
  b->enabled=1; /* retain cleanup ownership if ALP request/restore fails */
@@ -53,7 +85,9 @@ int i9100_bcm_enable(struct i9100_bcm4330 *b,int enabled,uint16_t vendor,uint16_
  if(!e&&(b->chip_id&0xffffU)!=0x4330U)e=I9100_BCM_ID;
  if(!e){b->enabled=1;goto done;}
 restore:
- request=b->saved_clock;if(b->io.cmd52(b->io.cookie,1,1,0x1000e,&request))b->fault=1;else b->enabled=0;
+ request=b->saved_clock;
+ if(i9100_bcm_bp_restore_locked(b)||b->io.cmd52(b->io.cookie,1,1,0x1000e,&request))b->fault=1;
+ else b->enabled=0;
 done:
  b->io.release(b->io.cookie);return e;
 }
@@ -68,7 +102,7 @@ int i9100_bcm_protocol_start(struct i9100_bcm4330 *b,unsigned version,unsigned c
 {
  if(!b||!b->initialized||version!=4U||credit>127U)return I9100_BCM_ARGUMENT;
  if(b->io.claim(b->io.cookie))return I9100_BCM_BUSY;
- int e=0;if(!b->enabled)e=I9100_BCM_DISABLED;else if(b->fault||b->protocol_ready)e=I9100_BCM_BUSY;
+ int e=0;if(!b->enabled)e=I9100_BCM_DISABLED;else if(b->fault||b->protocol_ready||b->chip_holds)e=I9100_BCM_BUSY;
  else {b->protocol_ready=1;b->tx_sequence=b->rx_sequence=b->rx_seen=b->flow_mask=0;b->tx_max=(uint8_t)credit;}
  b->io.release(b->io.cookie);return e;
 }
