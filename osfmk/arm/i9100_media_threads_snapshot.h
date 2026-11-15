@@ -14,6 +14,7 @@ extern int proc_selfpid(void);
 extern volatile uint32_t i9100_audio_property_runtime[4];
 extern volatile uint32_t i9100_audio_property_lock_history[1+8*12];
 volatile uint32_t i9100_media_threads[16+16*72];
+volatile uint32_t i9100_media_identity[8+16*8];
 volatile uint32_t i9100_audio_owner_diag[4+8*64];
 volatile uint32_t i9100_media_dispatch_diag[16+64];
 static volatile UInt32 i9100_media_threads_once;
@@ -47,6 +48,9 @@ void i9100_media_threads_note(unsigned pid,unsigned slide)
     if(repaired==1 && !i9100_audio_select_task(pid,(unsigned)(uintptr_t)task))return;
     if(!OSCompareAndSwap(0U,1U,&i9100_media_threads_once))return;
     volatile uint32_t *out=i9100_media_threads;
+    volatile uint32_t *identity=i9100_media_identity;
+    identity[1]=1;identity[2]=pid;identity[3]=(unsigned)(uintptr_t)task;
+    identity[5]=I9100_MEDIA_THREADS_CAP;identity[6]=I9100_MEDIA_IDENTITY_STRIDE;
     out[1]=2;out[2]=pid;out[3]=(unsigned)(uintptr_t)task;out[6]=slide;out[13]=repaired==1;
     unsigned count=0,mask;I9100_SNAPSHOT_MASK_GET(mask);out[7]=mask;
     /* No referenced object pointer escapes the raw exclusion. Saved scalar
@@ -65,8 +69,14 @@ void i9100_media_threads_note(unsigned pid,unsigned slide)
            !i9100_irq_snapshot_read(&thread->machine.uss,&uss,sizeof(uss)) || !uss ||
            !i9100_irq_snapshot_read(uss,&registers,sizeof(registers)))error=1;
         volatile uint32_t *r=&out[16+count*I9100_MEDIA_THREADS_STRIDE];
+        volatile uint32_t *id=&identity[8+count*I9100_MEDIA_IDENTITY_STRIDE];
+        id[3]=id[5]=id[7]=UINT32_MAX;
         r[1]=(unsigned)(uintptr_t)thread;r[2]=(uint32_t)tid;r[3]=(uint32_t)(tid>>32);r[4]=state;r[5]=error;
         if(!error){
+            uint64_t tls=0;
+            if(i9100_irq_snapshot_read(&thread->machine.cthread_self,&tls,sizeof(tls))){
+                id[1]=(uint32_t)tls;id[2]=(uint32_t)(tls>>32);id[3]=0;
+            }
             memcpy((void *)&r[6],registers.r,13*4);r[19]=registers.sp;r[20]=registers.lr;r[21]=registers.pc;r[22]=registers.cpsr;
             if(i9100_irq_snapshot_read(&thread->uthread,&uth,sizeof(uth)) && uth &&
                i9100_irq_snapshot_read(uth,(void *)&r[60],24))r[66]=1;
@@ -79,6 +89,16 @@ void i9100_media_threads_note(unsigned pid,unsigned slide)
     I9100_SNAPSHOT_MASK_SET(mask);
     for(unsigned n=0;n<count;n++){
         volatile uint32_t *r=&out[16+n*I9100_MEDIA_THREADS_STRIDE];
+        volatile uint32_t *id=&identity[8+n*I9100_MEDIA_IDENTITY_STRIDE];
+        /* No thread dereference beyond exclusion. Own-map reads can fault,
+         * so these later bytes are sequential evidence, not atomic state. */
+        uint32_t tls=id[1]&~3U;
+        if(!id[3] && !id[2] && tls>=4096U && tls<=0x3ffffffcU)
+            id[5]=copyin((user_addr_t)tls,(void *)&id[4],4);
+        if(!r[5] && (r[22]&31U)==16U && (r[18]==301U || r[18]==302U) &&
+           r[6]>=4100U && r[6]<=0x3fffffd0U && !(r[6]&3U))
+            id[7]=copyin((user_addr_t)(r[6]-4U),(void *)&id[6],4);
+        OSMemoryBarrier();id[0]=n+1;
         if(r[5] || (r[22]&0x1fU)!=0x10U)continue;
         /* Preserve the exact saved PC's original bytes while this task is
          * alive. A low address without its own image map must not be named
@@ -109,6 +129,7 @@ void i9100_media_threads_note(unsigned pid,unsigned slide)
         if(!out[9]){out[10]=words[0];out[11]=words[1];out[12]=words[7];}
     }else out[9]=UINT32_MAX;
     i9100_media_dispatch_note(pid,slide);
+    identity[4]=count;OSMemoryBarrier();identity[0]=1;
     OSMemoryBarrier();out[0]=1;
 }
 

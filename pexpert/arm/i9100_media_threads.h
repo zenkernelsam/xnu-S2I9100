@@ -9,6 +9,11 @@
 #define I9100_MEDIA_THREADS_CAP 16U
 #define I9100_MEDIA_THREADS_STRIDE 72U
 extern volatile uint32_t i9100_media_threads[16+16*72];
+/* Parallel rows keyed to the published peer snapshot; preserve its v2 ABI.
+ * Raw cthread_self is uint64_t. A TLS first word is evidence, not an assumed
+ * pthread identity. The mutex prefix belongs only to that row's wait. */
+#define I9100_MEDIA_IDENTITY_STRIDE 8U
+extern volatile uint32_t i9100_media_identity[8+16*8];
 void i9100_media_threads_note(unsigned,unsigned);
 #define I9100_AUDIO_OWNER_CAP 8U
 #define I9100_AUDIO_OWNER_STRIDE 64U
