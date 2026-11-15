@@ -11,6 +11,6 @@ sources = ["i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_peripheral_board
 e = Evidence("peripheral-platform-offline")
 e.model("i9100_peripheral_platform_test.c", sources)
 if a.cross_compile:
-    e.cross_compile(sources + ["i9100_dma_native.cpp"])
-e.finish(sources + ["i9100_dma_native.cpp"],
+    e.cross_compile(sources + ["i9100_irq_registry.c","i9100_dma_native.cpp","i9100_peripheral_native.cpp"])
+e.finish(sources + ["i9100_irq_registry.c","i9100_dma_native.cpp","i9100_peripheral_native.cpp"],
          "Offline register/clock fault models and real ARM/XNU compilation; no live pin/DMA test")

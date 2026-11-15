@@ -50,9 +50,9 @@ class Evidence:
         self.result = dict(result="INCOMPLETE", hardware_tested=False, sources={})
         self.commands = []
 
-    def run(self, command, label, env=None):
+    def run(self, command, label, env=None, cwd=None):
         idle()
-        proc = subprocess.run(command, cwd=PLATFORM, env=env, text=True, capture_output=True)
+        proc = subprocess.run(command, cwd=cwd or PLATFORM, env=env, text=True, capture_output=True)
         (self.out / (label + ".log")).write_text(proc.stdout + proc.stderr)
         if proc.returncode:
             raise RuntimeError(label + " failed:\n" + (proc.stdout + proc.stderr)[-6000:])

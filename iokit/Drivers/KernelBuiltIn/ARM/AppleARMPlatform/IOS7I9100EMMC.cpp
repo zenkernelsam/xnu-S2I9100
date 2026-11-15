@@ -12,9 +12,11 @@
 #include <pexpert/pexpert.h>
 #include "i9100_emmc.h"
 #include "IOS7LabStoragePersonalities.h"
+#undef absolutetime_to_nanoseconds /* use the underlying uint64 kernel timebase function */
 extern void ios7i9100_install_gpt_ro_personality(void);
 extern "C" {
 #include <mach/mach_time.h>
+void absolutetime_to_nanoseconds(uint64_t,uint64_t *);
 volatile uint32_t i9100_emmc_diag[32]={1};
 }
 class IOS7I9100EMMC : public IOBlockStorageDevice {
@@ -30,7 +32,7 @@ class IOS7I9100EMMC : public IOBlockStorageDevice {
   IOS7I9100EMMC *s=(IOS7I9100EMMC *)cookie;
   OSSynchronizeIO();*(volatile UInt32 *)(s->regs+offset)=value;OSSynchronizeIO();
  }
- static uint64_t now(void *){return mach_absolute_time();}
+ static uint64_t now(void *){uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);return ns;}
  static int pause(void *,uint32_t us){IODelay(us);return 0;}
  void publish(){
   i9100_emmc_diag[1]=card.stage;i9100_emmc_diag[2]=(uint32_t)card.last_error;
