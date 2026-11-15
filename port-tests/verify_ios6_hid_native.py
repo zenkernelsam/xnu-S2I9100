@@ -4,15 +4,20 @@
 CF data/array allocation is modeled; this checks the native wire ABI, not UI
 delivery or a complete iOS process. All execution belongs in the CPU envelope.
 """
+import os
+import sys
+if os.environ.get('I9100_CPU_CAPPED') != '1':
+    os.execvpe('taskset', ['taskset','-c','0-13','nice','-n10','ionice','-c2','-n7',
+                         sys.executable,'-B',__file__,*sys.argv[1:]],
+               dict(os.environ,I9100_CPU_CAPPED='1'))
 import argparse
 import hashlib
 import json
 import mmap
 from pathlib import Path
 import struct
-import sys
-
-ROOT = Path(__file__).resolve().parents[3]
+REPO = Path(__file__).resolve().parents[1]
+ROOT = REPO.parent
 sys.path.insert(0, str(ROOT / 'assets/py-native-hid'))
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_HOOK_CODE, UC_HOOK_MEM_UNMAPPED
 from unicorn.arm_const import UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3, UC_ARM_REG_SP, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_CPSR, UC_ARM_REG_FPEXC
@@ -134,12 +139,27 @@ class Native:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--prefix', type=Path, required=True)
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument('--prefix', type=Path)
+    source.add_argument('--packet', type=Path, help='Decode an actual retained iOS6 touch queue packet')
     p.add_argument('--output', type=Path, required=True)
     a = p.parse_args()
-    assert a.output.resolve().is_relative_to(ROOT / 'neighbor/xnu/out')
+    assert a.output.resolve().is_relative_to(REPO / 'out')
     with (ROOT / 'assets/ios6-extract/dyld_cache6_armv7').open('rb') as f:
         cache = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        if a.packet:
+            assert a.packet.resolve().is_relative_to(ROOT)
+            data = a.packet.read_bytes()
+            assert len(data)==224 and struct.unpack_from('<I',data,12)[0]==2
+            result=Native(cache,data).decode()
+            assert result.get('type')==11 and result.get('size')==104 and result.get('transducer_type')==0x23
+            child,=result['children']
+            assert child['type']==11 and child['size']==104 and child['depth']==1 and child['transducer_type']==0x22
+            report=dict(result='PASS retained packet through original iOS6 decoder',
+                cf_runtime='modeled',ui_delivery_verified=False,decoder='0x31d2329c',
+                packet=str(a.packet),wire_sha256=hashlib.sha256(data).hexdigest(),native=result)
+            a.output.write_text(json.dumps(report,indent=2)+'\n')
+            print(json.dumps(report,indent=2));return
         results = {}
         for name in ('home6','touch6','home7'):
             data = Path(str(a.prefix)+'-'+name+'.bin').read_bytes()
