@@ -86,7 +86,8 @@
 #include <arm/machine_routines.h>
 #if BOARD_CONFIG_EXYNOS4210_I9100
 extern int i9100_quiet_charge_bootstrap(proc_t);
-extern int i9100_hid_execution_bootstrap(proc_t);
+extern int i9100_hid_execution_bootstrap(proc_t,unsigned,unsigned);
+extern void i9100_hid_execution_resume(proc_t,unsigned *,unsigned *);
 extern void i9100_hid_execution_note(proc_t,unsigned,unsigned,unsigned);
 #endif
 
@@ -874,7 +875,7 @@ void unix_syscall(arm_saved_state_t * state)
 #if BOARD_CONFIG_EXYNOS4210_I9100
     if(!error && code==372U){
         error=i9100_quiet_charge_bootstrap(p);
-        if(!error)error=i9100_hid_execution_bootstrap(p);
+        if(!error)error=i9100_hid_execution_bootstrap(p,state->pc,state->cpsr);
         if(error)psignal(p,SIGKILL);
     }
     if(!error && code==20U)i9100_hid_execution_note(p,state->pc,state->sp,state->r[0]);
@@ -926,6 +927,9 @@ void unix_syscall(arm_saved_state_t * state)
         }
     }
 
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    if(!error && code==372U)i9100_hid_execution_resume(p,&state->pc,&state->cpsr);
+#endif
     uthread->uu_flag &= ~UT_NOTCANCELPT;
 
     /*
