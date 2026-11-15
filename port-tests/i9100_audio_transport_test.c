@@ -1,0 +1,208 @@
+/* SPDX-License-Identifier: BSD-2-Clause */
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include "i9100_pl330.h"
+#include "i9100_i2s.h"
+#include "i9100_mc1n2.h"
+static uint8_t source[262144] __attribute__((aligned(64)));
+static uint8_t destination[262144] __attribute__((aligned(64)));
+static uint8_t program[4096] __attribute__((aligned(64)));
+struct model {
+ uint32_t regs[1024],locked,reads,writes,fail_write,go_busy,kill_stuck,freeze_time;
+ uint32_t code_pa,src_pa,dst_pa,program_size,fifo_words,manager_status;
+ uint64_t ns;
+ uint32_t i2s[4],dma_busy,dma_stop_fail,stopped_requests,reset_missing;
+ uint8_t codec[5][256],bank_address[5],wire_register;
+ unsigned bus_locked,transactions,fail_transaction,partial,busy_codec;
+};
+static struct model m;
+struct buffer_cookie {struct i9100_dma_buffer b;unsigned locked,fail_sync,sync_count,released;};
+static struct buffer_cookie code_buffer,src_buffer,dst_buffer;
+static uint32_t le32(const uint8_t *b){return b[0]|((uint32_t)b[1]<<8)|((uint32_t)b[2]<<16)|((uint32_t)b[3]<<24);}
+static uint8_t *memory(uint32_t pa,unsigned bytes)
+{
+ if(pa>=m.src_pa&&(uint64_t)pa+bytes<=(uint64_t)m.src_pa+sizeof(source))return source+(pa-m.src_pa);
+ if(pa>=m.dst_pa&&(uint64_t)pa+bytes<=(uint64_t)m.dst_pa+sizeof(destination))return destination+(pa-m.dst_pa);
+ assert(!"VM out-of-range memory address");return 0;
+}
+static void execute(unsigned used)
+{
+ /* Generic instruction interpreter, independent of encoder loop choices. */
+ unsigned pc=0,loops[2]={0},steps=0,loaded=0;uint32_t sar=0,dar=0,ccr=0,word=0;
+ while(pc<used&&++steps<1000000U){
+  uint8_t op=program[pc];
+  if(op==0xbc){assert(pc+6<=used);uint32_t v=le32(program+pc+2);
+   switch(program[pc+1]){case 0:sar=v;break;case 1:ccr=v;break;case 2:dar=v;break;default:assert(0);}pc+=6;
+  }else if(op==0x20||op==0x22){assert(pc+2<=used);loops[(op>>1)&1U]=program[pc+1]+1U;pc+=2;}
+  else if(op==0x38||op==0x3c){assert(pc+2<=used);unsigned loop=(op>>2)&1U,jump=program[pc+1];assert(loops[loop]);
+   if(--loops[loop]){assert(jump&&jump<=pc);pc-=jump;}else pc+=2;
+  }else if(op==4||op==0x27){
+   assert(!loaded);assert(((ccr>>1)&7U)==2U&&((ccr>>4)&15U)==0U);
+   if(op==0x27){assert(sar==0x03830014U&&program[pc+1]==11U<<3);word=0xa5000000U|m.fifo_words++;pc+=2;}
+   else{word=le32(memory(sar,4));pc++;}if(ccr&1U)sar+=4;loaded=1;
+  }else if(op==8||op==0x2b){
+   assert(loaded);assert(((ccr>>15)&7U)==2U&&((ccr>>18)&15U)==0U);
+   if(op==0x2b){assert(dar==0x03830010U&&program[pc+1]==12U<<3);m.fifo_words++;pc+=2;}
+   else{uint8_t *out=memory(dar,4);for(unsigned n=0;n<4;n++)out[n]=(uint8_t)(word>>(n*8));pc++;}
+   if(ccr&(1U<<14))dar+=4;loaded=0;
+  }else if(op==0x32||op==0x35){assert(pc+2<=used);unsigned request=program[pc+1]>>3;assert(request==11U||request==12U);pc+=2;}
+  else if(op==0x13){assert(!loaded);pc++;}
+  else if(op==0x34){assert(pc+2<=used);m.regs[0x24/4]|=1U<<(program[pc+1]>>3);pc+=2;}
+  else if(op==0){assert(!loaded&&!loops[0]&&!loops[1]);assert(pc+1==used);m.regs[0x100/4]=0;return;}
+  else assert(!"Unsupported instruction in generated finite program");
+ }
+ assert(!"Program ended without DMAEND or exceeded bound");
+}
+static int lock(void *c){struct model *p=c;if(p->locked)return -1;p->locked=1;return 0;}
+static void unlock(void *c){struct model *p=c;assert(p->locked);p->locked=0;}
+static uint64_t now(void *c){return ((struct model *)c)->ns;}
+static int delay(void *c,uint32_t us){struct model *p=c;if(!p->freeze_time)p->ns+=us*1000ULL;return 0;}
+static uint32_t read(void *c,unsigned off){struct model *p=c;assert(off<4096U);p->reads++;return p->regs[off/4];}
+static void write(void *c,unsigned off,uint32_t value)
+{
+ struct model *p=c;assert(p->locked&&off<4096);p->writes++;if(p->fail_write==p->writes)return;
+ if(off==0x2c){p->regs[0x24/4]&=~value;return;}
+ p->regs[off/4]=value;
+ if(off==0xd04){uint32_t instruction=p->regs[0xd08/4];unsigned op=(instruction>>16)&255U;
+  if(op==0xa2){assert(((instruction>>24)&7U)==0);assert(p->regs[0xd0c/4]==p->code_pa);p->regs[0x100/4]=1;
+   if(p->go_busy)p->regs[0xd00/4]=1;}
+  else if(op==1){assert(instruction&1U);if(!p->kill_stuck){p->regs[0x100/4]=0;p->regs[0x34/4]=0;}}
+  else assert(0);
+ }
+}
+static int block_lock(void *c){struct buffer_cookie *b=c;if(b->locked)return -1;b->locked=1;return 0;}
+static void block_unlock(void *c){struct buffer_cookie *b=c;assert(b->locked);b->locked=0;}
+static int sync(void *c,uintptr_t cpu,uint32_t pa,uint32_t bytes,unsigned action)
+{struct buffer_cookie *b=c;assert(b->locked&&cpu==b->b.cpu&&pa==b->b.physical&&bytes==b->b.bytes);assert(action>=1&&action<=4);return ++b->sync_count==b->fail_sync?-1:0;}
+static int idle(void *c){(void)c;return m.regs[0x100/4]||m.regs[0xd00/4]?-1:0;}
+static void free_buffer(void *c,uintptr_t cpu,uint32_t pa,uint32_t bytes){struct buffer_cookie *b=c;(void)cpu;(void)pa;(void)bytes;assert(!b->locked);b->released++;}
+static void bind(struct buffer_cookie *b,void *cpu,uint32_t pa,unsigned bytes)
+{memset(b,0,sizeof(*b));struct i9100_dma_io io={b,block_lock,block_unlock,sync,idle,free_buffer};assert(!i9100_dma_bind(&b->b,&io,(uintptr_t)cpu,pa,bytes));assert(!i9100_dma_enable(&b->b,1));}
+static void init_pl(struct i9100_pl330 *p)
+{
+ memset(&m,0,sizeof(m));memset(p,0,sizeof(*p));m.code_pa=0x40004000;m.src_pa=0x40010000;m.dst_pa=0x40200000;
+ const uint32_t ids[2]={0x41330,0xb105f00d};
+ for(unsigned which=0;which<2;which++)for(unsigned n=0;n<4;n++)m.regs[((which?0xff0:0xfe0)+n*4)/4]=(ids[which]>>(n*8))&255U;
+ m.regs[0xe00/4]=1U|(7U<<4)|(31U<<12)|(31U<<17);
+ struct i9100_pl330_io io={&m,read,write,lock,unlock,now,delay};assert(!i9100_pl330_init(p,&io,0,3));
+ assert(!m.reads&&!m.writes);assert(!i9100_pl330_enable(p,1));
+ bind(&code_buffer,program,m.code_pa,sizeof(program));bind(&src_buffer,source,m.src_pa,sizeof(source));bind(&dst_buffer,destination,m.dst_pa,sizeof(destination));
+}
+static struct i9100_pl330_job job(unsigned mode,unsigned bytes)
+{
+ struct i9100_pl330_job j;memset(&j,0,sizeof(j));j.mode=mode;j.code=&code_buffer.b;
+ j.source=mode==I9100_PL330_I2S_RX?0:&src_buffer.b;j.destination=mode==I9100_PL330_I2S_TX?0:&dst_buffer.b;
+ j.bytes=bytes;j.timeout_ms=50;return j;
+}
+static void pl330(void)
+{
+ const unsigned sizes[]={4,100,1024,1028,65536,262144};
+ for(unsigned mode=1;mode<=3;mode++)for(unsigned n=0;n<sizeof(sizes)/sizeof(sizes[0]);n++){
+  struct i9100_pl330 p;init_pl(&p);struct i9100_pl330_job j=job(mode,sizes[n]);
+  for(unsigned b=0;b<sizeof(source);b++)source[b]=(uint8_t)(b*37U);memset(destination,0,sizeof(destination));
+  assert(!i9100_pl330_submit(&p,&j));assert(p.active&&code_buffer.b.state==I9100_DMA_DEVICE);
+  assert(i9100_dma_release(&code_buffer.b)==I9100_DMA_OWNER);uint32_t completed=99;
+  assert(i9100_pl330_poll(&p,&completed)==I9100_PL330_BUSY&&!completed);
+  execute(p.program_bytes);assert(!i9100_pl330_poll(&p,&completed)&&completed==sizes[n]);
+  assert(code_buffer.b.state==I9100_DMA_CPU&&!p.active);
+  if(mode==1)assert(!memcmp(source,destination,sizes[n]));else assert(m.fifo_words==sizes[n]/4);
+  assert(!i9100_pl330_enable(&p,0));
+ }
+ struct i9100_pl330 p;init_pl(&p);struct i9100_pl330_job j=job(1,1024);
+ j.destination=&src_buffer.b;assert(i9100_pl330_submit(&p,&j)==I9100_PL330_ARGUMENT);j=job(1,1024);
+ assert(!i9100_pl330_submit(&p,&j));m.ns=50000001;m.kill_stuck=1;m.freeze_time=1;
+ uint32_t completed=99;assert(i9100_pl330_poll(&p,&completed)==I9100_PL330_TIMEOUT&&!completed);
+ assert(p.active&&p.fault&&code_buffer.b.state==I9100_DMA_QUARANTINED);
+ assert(i9100_dma_release(&src_buffer.b)==I9100_DMA_OWNER);m.kill_stuck=0;assert(!i9100_pl330_stop(&p));
+ assert(!p.active&&!p.fault&&src_buffer.b.state==I9100_DMA_CPU);
+ init_pl(&p);j=job(1,1024);m.go_busy=1;
+ assert(i9100_pl330_submit(&p,&j)==I9100_PL330_TIMEOUT&&p.fault&&p.active);
+ assert(code_buffer.b.state==I9100_DMA_QUARANTINED);m.regs[0xd00/4]=0;m.go_busy=0;assert(!i9100_pl330_stop(&p));
+ init_pl(&p);j=job(1,1024);assert(!i9100_pl330_submit(&p,&j));m.regs[0x34/4]=1;m.regs[0x40/4]=0x20;
+ assert(i9100_pl330_poll(&p,&completed)==I9100_PL330_FAULT&&p.error_status==0x20&&!completed);
+ init_pl(&p);j=job(1,1024);src_buffer.fail_sync=1;assert(i9100_pl330_submit(&p,&j)==I9100_PL330_IO);
+ assert(!p.active&&code_buffer.b.state==I9100_DMA_CPU&&src_buffer.b.state==I9100_DMA_CPU);
+ unsigned used=99;assert(i9100_pl330_encode(2,m.src_pa,0x13800000,4,3,program,sizeof(program),&used)==I9100_PL330_ARGUMENT&&!used);
+}
+static uint32_t i2s_read(void *c,unsigned off){struct model *p=c;assert(p->locked&&off<=12);return p->i2s[off/4];}
+static void i2s_write(void *c,unsigned off,uint32_t value)
+{struct model *p=c;assert(p->locked&&off<=12);if(off==0&&!(value&0x80000000U)&&(value&7U))p->reset_missing=1;
+ p->i2s[off/4]=value;if(off==0&&!(value&7U))p->stopped_requests=1;}
+static int dma_idle(void *c){return ((struct model *)c)->dma_busy?-1:0;}
+static int dma_stop(void *c){struct model *p=c;assert(p->stopped_requests);if(p->dma_stop_fail)return -1;p->dma_busy=0;return 0;}
+static void i2s(void)
+{
+ memset(&m,0,sizeof(m));struct i9100_i2s s={0};struct i9100_i2s_io io={&m,i2s_read,i2s_write,lock,unlock,dma_idle,dma_stop};
+ assert(!i9100_i2s_init(&s,&io));assert(!i9100_i2s_enable(&s,1));
+ m.i2s[1]=0x20000000;assert(i9100_i2s_configure(&s,48000,1536000,0)==I9100_I2S_CLOCK);
+ assert(!i9100_i2s_configure(&s,48000,1536000,1));
+ assert(m.i2s[1]==0xe0001c00U);assert(i9100_i2s_start(&s,0,0)==I9100_I2S_ARGUMENT);
+ assert(!i9100_i2s_start(&s,0,1));assert(!m.reset_missing&&m.i2s[0]==0x8000002dU);
+ m.dma_busy=m.dma_stop_fail=1;assert(i9100_i2s_stop(&s)==I9100_I2S_IO&&s.fault&&s.prepared);
+ assert(!(m.i2s[0]&7U));m.dma_stop_fail=0;assert(!i9100_i2s_stop(&s));assert(!s.prepared&&m.i2s[1]==0x20000000U);
+}
+static int bus_claim(void *c){struct model *p=c;if(p->bus_locked)return -1;p->bus_locked=1;return 0;}
+static void bus_release(void *c){struct model *p=c;assert(p->bus_locked);p->bus_locked=0;}
+static unsigned bank(unsigned port){switch(port){case 1:return 1;case 12:return 2;case 14:return 3;case 16:return 4;default:return 0;}}
+static void codec_write(unsigned wire,uint8_t value)
+{
+ assert(!(wire&1U));unsigned reg=wire>>1,index=bank(reg);
+ if(index)m.bank_address[index]=value;
+ else if((index=bank(reg-1U)))m.codec[index][m.bank_address[index]]=value;
+ else m.codec[0][reg]=value;
+}
+static uint8_t codec_read(unsigned wire)
+{
+ assert(!(wire&1U));unsigned reg=wire>>1,index=bank(reg-1U);
+ if(index){if(index==2U&&(m.bank_address[index]==12||m.bank_address[index]==13)&&m.busy_codec)return 0x18;
+  return m.codec[index][m.bank_address[index]];}
+ return m.codec[0][reg];
+}
+static int codec_transfer(void *c,const struct i9100_i2c_message *msgs,unsigned count,unsigned *done)
+{
+ struct model *p=c;assert(p->bus_locked&&msgs[0].address==0x3a);*done=0;p->transactions++;
+ if(count==1){assert(!msgs[0].read&&!(msgs[0].length&1U));for(unsigned n=0;n<msgs[0].length;n+=2)codec_write(msgs[0].bytes[n],msgs[0].bytes[n+1]);}
+ else{assert(count==2&&msgs[0].length==1&&msgs[1].read&&msgs[1].length==1);msgs[1].bytes[0]=codec_read(msgs[0].bytes[0]);}
+ if(p->transactions==p->fail_transaction)return -1;
+ *done=p->partial?count-1:count;return 0;
+}
+static struct i9100_peripheral_i2c codec_io={&m,codec_transfer,bus_claim,bus_release,now,delay};
+static void codec_init(struct i9100_mc1n2 *c)
+{
+ memset(c,0,sizeof(*c));memset(&m,0,sizeof(m));m.codec[0][8]=0x79;
+ m.codec[2][35]=m.codec[2][36]=m.codec[2][37]=m.codec[2][38]=31;m.codec[2][77]=0x83;
+ assert(!i9100_mc1n2_init(c,&codec_io));assert(!m.transactions);
+}
+static void codec(void)
+{
+ struct i9100_mc1n2 c;codec_init(&c);assert(i9100_mc1n2_mute(&c)==I9100_MC_DISABLED&&!m.transactions);
+ assert(!i9100_mc1n2_enable(&c,1));assert(c.muted&&(m.codec[2][3]&0x3fU)==0x3fU&&(m.codec[3][78]&2U));
+ assert(!i9100_mc1n2_stage_gain(&c,I9100_MC_SPEAKER,-30000));assert(c.actual_gain_mdb==-36000&&c.analog_gain==1);
+ assert((m.codec[2][37]&31U)==1&&m.codec[2][38]==1&&(m.codec[2][77]&3U)==0&&(m.codec[2][3]&0x3fU)==0x3fU);
+ assert(i9100_mc1n2_stage_gain(&c,I9100_MC_SPEAKER,-29000)==I9100_MC_ARGUMENT);
+ uint8_t code;int32_t gain;
+ for(int32_t requested=-96000;requested<=-30000;requested+=10){assert(!i9100_mc1n2_safe_gain(requested,&code,&gain));assert(code<=1&&gain<=requested);}
+ uint8_t sentinel=0xab;m.partial=1;assert(i9100_mc1n2_read(&c,I9100_MC_ANALOG,77,&sentinel)==I9100_MC_IO&&sentinel==0xab);m.partial=0;
+ assert(!i9100_mc1n2_enable(&c,0));
+ for(unsigned point=1;point<65;point++){
+  codec_init(&c);assert(!i9100_mc1n2_enable(&c,1));m.fail_transaction=m.transactions+point;
+  int error=i9100_mc1n2_stage_gain(&c,I9100_MC_HEADPHONES,-30000);
+  if(error){assert(c.fault&&!c.gain_armed);assert((m.codec[2][3]&0x3fU)==0x3fU);
+   for(unsigned n=35;n<=38;n++)assert(!(m.codec[2][n]&31U));}
+  else assert(c.analog_gain<=1);
+ }
+ codec_init(&c);m.codec[0][8]=0x80;assert(i9100_mc1n2_enable(&c,1)==I9100_MC_ID&&m.transactions==1&&!c.enabled);
+ codec_init(&c);m.busy_codec=1;m.freeze_time=1;assert(i9100_mc1n2_enable(&c,1)==I9100_MC_TIMEOUT&&c.fault);
+ m.busy_codec=0;assert(!i9100_mc1n2_mute(&c));
+}
+static int16_t pcm_in[65536],pcm_out[65536];
+static void pcm(void)
+{
+ for(unsigned n=0;n<65536;n++)pcm_in[n]=(int16_t)(n-32768);
+ i9100_pcm_attenuate_30db(pcm_out,pcm_in,65536);
+ for(unsigned n=0;n<65536;n++){assert(pcm_out[n]>=-1036&&pcm_out[n]<=1036);assert(pcm_out[n]==(int32_t)pcm_in[n]*1036/32768);}
+}
+int main(void)
+{pl330();i2s();codec();pcm();puts("PASS PL330 finite VM/bounds/handshake/stop/debug fault/quarantine; I2S reset/clock/mute/stop ordering; MC1N2 bank address/identity/mute/<=-36dB/64 fault points; PCM <=-30dB");return 0;}
