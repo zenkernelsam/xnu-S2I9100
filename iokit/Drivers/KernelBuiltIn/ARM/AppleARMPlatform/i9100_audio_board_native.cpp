@@ -154,7 +154,7 @@ int i9100_audio_board_open(int enabled,i9100_peripheral_native *parent,const i91
  a->bus_owned=!e||a->bus.cookie!=0;
  if(!e)e=i9100_mc1n2_init(&a->codec,&a->bus);
  if(!e)e=i9100_mc1n2_enable(&a->codec,1);
- if(!e&&a->codec.id!=0x79U)e=I9100_MC_ID;
+ if(!e&&a->codec.id!=0x78U&&a->codec.id!=0x79U)e=I9100_MC_ID;
  /* Own codec state is muted; PMU acquisition may disregard its enabled flag
   * during startup but must still prove AP/DMA quiescence. */
  if(!e){a->mclk.io.consumers_idle=ap_idle;a->domain.io.consumers_idle=ap_idle;}

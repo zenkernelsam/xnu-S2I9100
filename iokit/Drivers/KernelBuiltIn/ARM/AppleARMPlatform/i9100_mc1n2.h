@@ -36,7 +36,7 @@ int i9100_mc1n2_cold_init(struct i9100_mc1n2 *,uint32_t verified_mclk_hz,uint32_
 int i9100_mc1n2_cold_stop(struct i9100_mc1n2 *);
 int i9100_mc1n2_clock_start(struct i9100_mc1n2 *,const struct i9100_mc1n2_clock_guard *);
 int i9100_mc1n2_clock_stop(struct i9100_mc1n2 *);
-/* Clock-only AB24MHz/44.1/48kHz: manual32fs master, DIR0/SRC/timer START=4c,
+/* Clock-only AA/AB24MHz/44.1/48kHz: manual32fs master, DIR0/SRC/timer START=4c,
  * BCLK/LRCK output pad DDR=50, PCM data pads remain high-Z. DAC and every amp
  * stay muted/off. Board guard must prove no competing AP clock output and
  * actual idle consumers before start/stop; it performs no bus recursion.
@@ -45,11 +45,11 @@ int i9100_mc1n2_clock_stop(struct i9100_mc1n2 *);
  * clock_active means programmed/readback-verified, not measured frequency;
  * independent BCLK32fs measurement is still required by the native adapter.
  * No PCM power, output route, amplifier or audible playback is enabled here. */
-/* Cold initialization is currently AB(79),24MHz CMOS,44.1/48kHz only.
+/* Cold initialization supports AA(78)/AB(79),24MHz CMOS,44.1/48kHz only.
  * Programs actual PLL/DIO/LDOA/VREF, verifies ready and safe amplifier/mute
  * registers; leaves DAC,clock pads and all output amplifiers disabled.
- * AA has a different vendor implementation and is explicitly unsupported
- * for this stage, rather than fed AB settings. Output/continuous PCM/HAL
+ * AA uses its BASE PLL/DP0 sequence and ANA power unlock; AB uses CODEC PLL.
+ * Both retain separate, verified shutdown ordering. Output/continuous PCM/HAL
  * remain separate required stages. Cold state5 means configured+muted. */
 /* MC1N2AA/AB only, slave0x3a. Real wire register=logical address<<1,
  * bank address/window transaction serialized on the bus. No arbitrary write

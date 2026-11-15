@@ -114,7 +114,7 @@ static int open_impl(int enabled,i9100_peripheral_native *parent,i9100_audss *au
  if(!ml_get_interrupts_enabled()||!parent||!audss||!codec||verified!=1||
     (rate!=44100U&&rate!=48000U)||frames<16U||frames>4096U||bclk!=rate*32U||
     !audss->active||!audss->domain_owned||audss->fault||!audss->rates.bus||!audss->rates.i2s||
-    !codec->enabled||!codec->cold_owned||codec->cold_stage!=5U||!codec->clock_owned||!codec->clock_active||codec->id!=0x79U||
+    !codec->enabled||!codec->cold_owned||codec->cold_stage!=5U||!codec->clock_owned||!codec->clock_active||(codec->id!=0x78U&&codec->id!=0x79U)||
     !codec->clock_guard.lease_valid||!codec->clock_guard.consumers_idle||
     codec->mclk_hz!=24000000U||codec->sample_rate!=rate)return I9100_PCM_ARGUMENT;
  i9100_gpio_broker *gpio=i9100_peripheral_native_gpio(parent);

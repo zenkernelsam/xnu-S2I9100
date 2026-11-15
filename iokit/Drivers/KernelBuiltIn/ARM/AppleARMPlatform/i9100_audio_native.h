@@ -23,7 +23,7 @@ int i9100_audio_native_close(struct i9100_audio_native **);
 /* Default OFF actual IOKit private PDMA0/I2S0/GIC read-only maps and DMA32 NC
  * allocations. Requires one whole PDMA0/GPZ owner; no global reset or IRQ hook.
  * Uses PDMA0 channel0/event3/request12 and GPZ0..6/AF2, as pinned Exynos4210.
- * UART/radio/PMU/EPLL/codec rails are not touched. AUDSS and AB79/24MHz codec
+ * UART/radio/PMU/EPLL/codec rails are not touched. AUDSS and AA78/AB79/24MHz codec
  * cold/owned clock-only states are borrowed from live providers. Clock pads/
  * DIR0-SRC-timer(4c) must be configured and BCLK measured32fs; cold stage5
  * alone is insufficient. This adapter never enables codec amps/clock pads.

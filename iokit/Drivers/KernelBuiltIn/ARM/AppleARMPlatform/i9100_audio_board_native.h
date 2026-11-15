@@ -36,10 +36,11 @@ int i9100_audio_board_close(struct i9100_audio_board_native **);
  * Codec ID/mute readback precedes any MCLK-source change. If register access
  * with inherited MCLK cannot establish silence, open stops safely; board
  * reset/rail support is still required before attempting that hardware case.
- * Owns I2C6, GPIO GPZ, PMU leases, AUDSS, AB cold/clock-only state and optional
+ * Owns I2C6, GPIO GPZ, PMU leases, AUDSS, AA/AB cold/clock-only state and optional
  * PCM child. GPZ stays leased until codec clocks are off; PCM borrows it.
  * PCM opening requires separately measured BCLK; register-ready is not a
- * measurement. All outputs stay muted/off. No worker/IRQ/HAL/unmute yet.
+ * measurement. All outputs stay muted/off. The optional audio worker owns
+ * scheduling/IRQ routing separately; no HAL or amplifier-enable API exists.
  * A nonnull result on error retains failed cleanup ownership; only explicit
  * close may recover it. Parent, profile evidence and maps remain live until
  * close succeeds; owner serializes pointer lifetime with API calls.

@@ -61,6 +61,9 @@ int main()
  assert(!i9100_audio_board_close(&a)&&!a);board_released();
  board_setup();m.codec[3][78]=1;m.codec[2][3]=0;m.check_mclk_silence=1;
  assert(!open_board(&a));assert(!i9100_audio_board_close(&a));board_released();
+ board_setup();m.codec[0][8]=0x78;assert(!open_board(&a)&&m.board_aa_unlocked&&m.codec[1][14]==0);
+ assert(!i9100_audio_board_pcm_open(a,1536000));assert(!i9100_audio_board_start(a));
+ assert(!i9100_audio_board_close(&a));assert(m.codec[1][14]==1&&m.codec[1][1]==7);board_released();
  for(unsigned point=1;point<=allocations;point++){
   board_setup();m.fail_allocation=point;assert(open_board(&a)!=0&&!a);board_released();
  }

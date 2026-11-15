@@ -25,6 +25,7 @@ static struct {
  uint32_t previous_mode;
  unsigned board_mode,board_bus_owned,board_bus_fail,board_close_fail,board_tx_fail,board_stall_power;
  unsigned check_mclk_silence,extra_contexts;uint32_t previous_mclk;
+ unsigned board_aa_unlocked;
  uint32_t pmu[4096],chip[1024],previous_power;uint64_t power_ready_at,vref_started;
 } m;
 static uint32_t board_audss[1024] __attribute__((aligned(4096)));
@@ -128,11 +129,14 @@ static int bus_delay(void *,uint32_t us){IODelay(us);return 0;}
 static void board_codec_write(unsigned reg,uint8_t value)
 {
  if(reg==0U&&value==1U){uint8_t id=m.codec[0][8];memset(m.codec,0,sizeof(m.codec));m.codec[0][8]=id;
-  m.codec[1][0]=0x10;m.codec[1][1]=6;m.codec[1][3]=0x1f;m.codec[3][15]=1;
+  m.codec[1][0]=0x10;m.codec[1][1]=id==0x78U?7U:6U;m.codec[1][3]=0x1f;m.codec[3][15]=1;
+  m.codec[1][14]=id==0x78U?1U:0U;m.board_aa_unlocked=0;
   m.codec[2][2]=15;m.codec[2][3]=m.codec[2][4]=0xff;m.codec[3][78]=2;}
  unsigned index=bank(reg);
+ if(reg==60U&&value==0xd9U&&m.codec[0][8]==0x78U)m.board_aa_unlocked=1;
  if(index)m.address[index]=value;
  else if((index=bank(reg-1U))){unsigned address=m.address[index];
+  if(index==2U&&address==2U&&m.codec[0][8]==0x78U&&!m.board_aa_unlocked)return;
   if(index==2U&&address==2U&&(m.codec[2][2]&1U)&&!(value&1U))m.vref_started=m.ns;
   m.codec[index][address]=value;
  }else m.codec[0][reg]=value;

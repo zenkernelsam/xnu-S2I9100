@@ -22,6 +22,7 @@ struct model {
  uint64_t vref_started;
  unsigned stream_locked,i2s_locked,i2s_writes,i2s_fail_write,reject_quiesce,sticky_event;
  unsigned pads_calls,pads_fail,clock_lease_invalid,clock_consumer_busy,clock_lease_calls,clock_fail_lease_call;
+ unsigned aa_unlocked,aa_wrong_pll_writes,aa_dpb_sequence_errors,aa_spare_pll_writes,aa_unlock_errors;
  unsigned require_quiesce,kills,mute_calls,mute_fail;
  struct i9100_pl330 *stream_dma;
 };
@@ -173,12 +174,23 @@ static void codec_write(unsigned wire,uint8_t value)
  assert(!(wire&1U));unsigned reg=wire>>1,index=bank(reg);
  if(reg==0U&&value==1U){
   uint8_t id=m.codec[0][8];memset(m.codec,0,sizeof(m.codec));m.codec[0][8]=id;
-  m.codec[1][0]=0x10;m.codec[1][1]=6;m.codec[1][3]=0x1f;m.codec[3][15]=1;
+  m.codec[1][0]=0x10;m.codec[1][1]=id==0x78U?7U:6U;m.codec[1][3]=0x1f;m.codec[3][15]=1;
+  m.codec[1][14]=id==0x78U?1U:0U;m.aa_unlocked=0;
   m.codec[2][2]=15;m.codec[2][3]=0xff;m.codec[2][4]=0xff;m.codec[3][78]=2;
+ }
+ if(reg==60U&&value==0xd9U&&m.codec[0][8]==0x78U){
+  if(m.bank_address[2]!=2U)m.aa_unlock_errors++;
+  else m.aa_unlocked=1;
  }
  if(index)m.bank_address[index]=value;
  else if((index=bank(reg-1U))){
   unsigned address=m.bank_address[index];uint8_t old=m.codec[index][address];
+  if(m.codec[0][8]==0x78U){
+   if(index==3U&&(address==1U||address==4U||(address>=15U&&address<=19U)))m.aa_wrong_pll_writes++;
+   if(index==1U&&(address==17U||address==18U))m.aa_spare_pll_writes++;
+   if(index==2U&&address==2U&&!m.aa_unlocked)return;
+   if(index==1U&&address==3U&&!(old&1U)&&(value&1U)&&((old^value)&0x1eU))m.aa_dpb_sequence_errors++;
+  }
   if(index==3U&&address==78U&&(value&2U)&&m.drop_dac_mute)return;
   if(index==2U&&address==2U&&(old&1U)&&!(value&1U))m.vref_started=m.ns;
   if(index==2U&&address==3U&&(value&0x3fU)!=0x3fU)m.unsafe_amplifier_writes++;
@@ -256,8 +268,7 @@ static void codec_cold(void)
   assert((m.codec[2][3]&0x3f)==0x3f&&m.codec[2][44]==0x30);
   assert(!i9100_mc1n2_cold_stop(&c)&&!c.cold_owned&&!c.cold_stage&&m.codec[2][2]==15&&m.codec[3][15]==1);
  }
- codec_init(&c);m.codec[0][8]=0x78;assert(!i9100_mc1n2_enable(&c,1));unsigned before=m.transactions;
- assert(i9100_mc1n2_cold_init(&c,24000000,48000,1)==I9100_MC_ID&&m.transactions==before+1&&!c.cold_owned);
+ codec_init(&c);m.codec[0][8]=0x80;assert(i9100_mc1n2_enable(&c,1)==I9100_MC_ID);unsigned before=m.transactions;
  codec_init(&c);assert(!i9100_mc1n2_enable(&c,1));before=m.transactions;
  assert(!i9100_mc1n2_cold_init(&c,24000000,48000,1));unsigned count=m.transactions-before;
  for(unsigned point=1;point<=count;point++){
@@ -278,6 +289,34 @@ static int clock_lease(void *c)
  return p->clock_lease_invalid||p->clock_lease_calls==p->clock_fail_lease_call?-1:0;}
 static int clock_idle(void *c){struct model *p=c;assert(p->bus_locked);return p->clock_consumer_busy?-1:0;}
 static struct i9100_mc1n2_clock_guard clock_guard={&m,clock_lease,clock_idle};
+static void codec_aa(void)
+{
+ struct i9100_mc1n2 c;
+ for(unsigned rate=44100;rate<=48000;rate+=3900){
+  codec_init(&c);m.codec[0][8]=0x78;assert(!i9100_mc1n2_enable(&c,1));
+  assert(!i9100_mc1n2_cold_init(&c,24000000,rate,1)&&c.cold_owned&&c.cold_stage==5&&c.id==0x78U);
+  assert(m.aa_unlocked&&!m.aa_wrong_pll_writes&&m.codec[1][14]==0&&m.codec[1][15]==28&&m.codec[1][16]==86);
+  assert(!m.aa_spare_pll_writes&&!m.aa_unlock_errors&&m.codec[1][1]==0&&m.codec[1][3]==0x1c);
+  assert(m.codec[1][12]==0xae&&m.codec[3][78]==2&&(m.codec[2][3]&0x3f)==0x3f);
+  assert(!i9100_mc1n2_clock_start(&c,&clock_guard)&&m.codec[4][137]==0x4c&&m.codec[1][12]==0x5e);
+  assert(!i9100_mc1n2_clock_stop(&c));assert(!i9100_mc1n2_cold_stop(&c));
+  assert(!c.cold_owned&&m.codec[1][14]==1&&m.codec[1][1]==7&&m.codec[1][3]==0x1f&&!m.aa_dpb_sequence_errors);
+  assert(!m.aa_wrong_pll_writes&&!m.aa_spare_pll_writes&&!m.aa_unlock_errors&&!m.unsafe_amplifier_writes);
+ }
+ codec_init(&c);m.codec[0][8]=0x78;assert(!i9100_mc1n2_enable(&c,1));unsigned before=m.transactions;
+ assert(!i9100_mc1n2_cold_init(&c,24000000,48000,1));unsigned count=m.transactions-before;
+ for(unsigned point=1;point<=count;point++){
+  codec_init(&c);m.codec[0][8]=0x78;assert(!i9100_mc1n2_enable(&c,1));m.fail_transaction=m.transactions+point;
+  assert(i9100_mc1n2_cold_init(&c,24000000,48000,1)&&!c.cold_owned&&c.cold_stage!=5&&!m.aa_wrong_pll_writes);
+  assert(!m.aa_dpb_sequence_errors&&!m.aa_spare_pll_writes&&!m.aa_unlock_errors&&!m.unsafe_amplifier_writes);
+ }
+ codec_init(&c);m.codec[0][8]=0x78;assert(!i9100_mc1n2_enable(&c,1));assert(!i9100_mc1n2_cold_init(&c,24000000,48000,1));
+ m.sticky_codec_error=1;assert(i9100_mc1n2_cold_stop(&c)&&c.cold_owned&&c.fault);
+ m.sticky_codec_error=0;assert(!i9100_mc1n2_cold_stop(&c)&&m.codec[1][14]==1&&m.codec[1][1]==7);
+ codec_init(&c);assert(!i9100_mc1n2_enable(&c,1));m.codec[0][8]=0x78;before=m.transactions;
+ assert(i9100_mc1n2_cold_init(&c,24000000,48000,1)==I9100_MC_ID&&m.transactions==before+1U);
+ assert(c.id==0x79U&&!c.cold_owned);
+}
 static void init_clock(struct i9100_mc1n2 *c,unsigned rate)
 {codec_init(c);assert(!i9100_mc1n2_enable(c,1));assert(!i9100_mc1n2_cold_init(c,24000000,rate,1));}
 static void codec_clock(void)
@@ -507,5 +546,5 @@ static void stream_faults(void)
  assert(s.i2s_fault.errors==((1U<<26)|(1U<<24))&&!(m.i2s[0]&7U));assert(!i9100_pcm_stream_stop(&s));
 }
 int main(void)
-{pl330();i2s();codec();codec_cold();codec_clock();pcm();stream_periods();stream_rejects();stream_faults();
+{pl330();i2s();codec();codec_cold();codec_aa();codec_clock();pcm();stream_periods();stream_rejects();stream_faults();
  puts("PASS finite DMA/I2S pad-idle-before-mode-restore/MC1N2 cold/mute/clock-only4c/all clock transactions/busy consumers/sticky shutdown; PCM512 periods/zero/-30dB/exact positions/pins/explicit recovery");return 0;}

@@ -155,9 +155,18 @@ static int cold_off_locked(struct i9100_mc1n2 *c)
  r=checked_write(c,I9100_MC_MIXER,137,0,0xff);if(r)e=r;
  r=checked_write(c,I9100_MC_BASE,12,0xae,0xff);if(r)e=r;
  r=checked_write(c,I9100_MC_ANALOG,2,0x0f,0x0f);if(r)e=r;
- r=checked_write(c,I9100_MC_CODEC,15,1,1);if(r)e=r;
- r=checked_write(c,I9100_MC_BASE,1,6,6);if(r)e=r;
- r=checked_write(c,I9100_MC_BASE,3,0x1f,0x1f);if(r)e=r;
+ if(c->id==0x78U){
+  /* AA: DPDI/PDM and DPB are not written down in the same transaction. */
+  r=checked_write(c,I9100_MC_BASE,3,0x1e,0x1f);if(r)e=r;
+  r=checked_write(c,I9100_MC_BASE,3,0x1f,0x1f);if(r)e=r;
+  r=checked_write(c,I9100_MC_BASE,1,6,7);if(r)e=r;
+  r=checked_write(c,I9100_MC_BASE,14,1,1);if(r)e=r;
+  r=checked_write(c,I9100_MC_BASE,1,7,7);if(r)e=r;
+ }else{
+  r=checked_write(c,I9100_MC_CODEC,15,1,1);if(r)e=r;
+  r=checked_write(c,I9100_MC_BASE,1,6,6);if(r)e=r;
+  r=checked_write(c,I9100_MC_BASE,3,0x1f,0x1f);if(r)e=r;
+ }
  if(e)c->fault=1;else{c->cold_owned=0;c->cold_stage=0;c->fault=0;}
  return e;
 }
@@ -203,11 +212,11 @@ int i9100_mc1n2_clock_start(struct i9100_mc1n2 *c,const struct i9100_mc1n2_clock
  if(g->lease_valid(g->cookie)){e=I9100_MC_NOT_READY;goto done;}
  if(g->consumers_idle(g->cookie)){e=I9100_MC_BUSY;goto done;}
  c->clock_error=c->clock_cleanup_error=0;c->clock_failure_stage=0;
- e=direct_read(c,8,&identity);if(!e&&identity!=0x79U)e=I9100_MC_ID;
+ e=direct_read(c,8,&identity);if(!e&&(identity!=c->id||(identity!=0x78U&&identity!=0x79U)))e=I9100_MC_ID;
  if(!e)e=read_bank(c,I9100_MC_BASE,12,&pad);
  if(!e)e=read_bank(c,I9100_MC_MIXER,137,&start);
  if(!e)e=read_bank(c,I9100_MC_MIXER,135,&fs);
- if(!e)e=read_bank(c,I9100_MC_CODEC,15,&pll);
+ if(!e)e=read_bank(c,c->id==0x78U?I9100_MC_BASE:I9100_MC_CODEC,c->id==0x78U?14U:15U,&pll);
  if(!e&&((pad&0xf0U)!=0xa0U||start||fs!=(uint8_t)(c->sample_rate==48000U?0xa0U:0xa1U)||(pll&1U)))e=I9100_MC_NOT_READY;
  if(!e)e=ready(c,0xc0U);
  if(e){c->clock_error=e;goto done;}
@@ -236,9 +245,9 @@ int i9100_mc1n2_cold_init(struct i9100_mc1n2 *c,uint32_t mclk,uint32_t rate,int 
  if(!c->enabled){e=I9100_MC_DISABLED;goto done;}
  if(c->fault||c->cold_owned){e=I9100_MC_BUSY;goto done;}
  e=direct_read(c,8,&identity);if(e)goto done;
- if(identity!=0x79U){e=I9100_MC_ID;goto done;}
+ if(identity!=c->id||(identity!=0x78U&&identity!=0x79U)){e=I9100_MC_ID;goto done;}
  c->cold_owned=1;c->cold_stage=1;c->mclk_hz=mclk;c->sample_rate=rate;c->cold_error=0;c->failure_stage=0;
- /* Vendor AB reset ordering. Both digital and analog reset defaults power
+ /* Vendor AA/AB reset ordering. Both digital and analog reset defaults power
   * down the output stages. Re-assert explicit mute immediately afterwards. */
  e=direct_write(c,0,1);if(!e)e=direct_write(c,0,0);
  if(!e)e=write_bank(c,I9100_MC_ANALOG,0,1);if(!e)e=write_bank(c,I9100_MC_ANALOG,0,0);
@@ -249,16 +258,38 @@ int i9100_mc1n2_cold_init(struct i9100_mc1n2 *c,uint32_t mclk,uint32_t rate,int 
  };
  for(unsigned n=0;n<sizeof(pins)/sizeof(pins[0])&&!e;n++)e=checked_write(c,pins[n].bank,pins[n].reg,pins[n].value,0xff);
  c->cold_stage=2;
- if(!e)e=checked_write(c,I9100_MC_CODEC,15,1,1);
- if(!e)e=checked_write(c,I9100_MC_CODEC,4,0,0xc0); /* CMOS clock source */
- for(unsigned n=16;n<=19U&&!e;n++)e=checked_write(c,I9100_MC_CODEC,(uint8_t)n,(n&1U)?86U:28U,0xff);
- if(!e)e=checked_write(c,I9100_MC_CODEC,1,0x18,0xff);
- if(!e)e=checked_write(c,I9100_MC_CODEC,15,0,1);if(!e)e=pause(c,2000);
- if(!e)e=checked_write(c,I9100_MC_BASE,1,0,6);if(!e)e=checked_write(c,I9100_MC_BASE,0,0,0x10);
+ if(identity==0x78U){
+  /* AA PLL/CKSEL are BASE registers; its DP0 is explicitly powered first. */
+  if(!e)e=checked_write(c,I9100_MC_BASE,14,1,1);
+  if(!e)e=checked_write(c,I9100_MC_BASE,20,0,0x80);
+  /* AA vendor init/power-up only program DIVR0/F0. R1/F1 have no AA
+   * initialization sequence; their presence in the common config is not
+   * permission to write them. */
+  if(!e)e=checked_write(c,I9100_MC_BASE,15,28U,0xff);
+  if(!e)e=checked_write(c,I9100_MC_BASE,16,86U,0xff);
+  if(!e)e=checked_write(c,I9100_MC_BASE,1,6,7);
+  if(!e)e=checked_write(c,I9100_MC_BASE,14,0,1);if(!e)e=pause(c,2000);
+  if(!e)e=checked_write(c,I9100_MC_BASE,1,0,7);
+ }else{
+  if(!e)e=checked_write(c,I9100_MC_CODEC,15,1,1);
+  if(!e)e=checked_write(c,I9100_MC_CODEC,4,0,0xc0);
+  for(unsigned n=16;n<=19U&&!e;n++)e=checked_write(c,I9100_MC_CODEC,(uint8_t)n,(n&1U)?86U:28U,0xff);
+  if(!e)e=checked_write(c,I9100_MC_CODEC,1,0x18,0xff);
+  if(!e)e=checked_write(c,I9100_MC_CODEC,15,0,1);if(!e)e=pause(c,2000);
+  if(!e)e=checked_write(c,I9100_MC_BASE,1,0,6);
+ }
+ if(!e)e=checked_write(c,I9100_MC_BASE,0,0,0x10);
  if(!e)e=checked_write(c,I9100_MC_BASE,3,0x1e,0x1f);
  if(!e)e=checked_write(c,I9100_MC_CODEC,79,0,0xff); /* DCL boost0dB, not vendor12dB */
  if(e)goto failed;
  c->cold_stage=3;
+ if(identity==0x78U){
+  /* AA vendor init explicitly unlocks ANA power via direct register60=D9
+   * between the bank address and its initial power-down window write. */
+  uint8_t bytes[6]={24U,2U,120U,0xd9U,26U,0x0fU};
+  struct i9100_i2c_message message={0x3a,0,6,bytes};e=transfer(c,&message,1);
+  uint8_t value=0;if(!e)e=read_bank(c,I9100_MC_ANALOG,2,&value);if(!e&&(value&15U)!=15U)e=I9100_MC_IO;
+ }
  if(!e)e=checked_write(c,I9100_MC_ANALOG,24,0,0xff);
  if(!e)e=checked_write(c,I9100_MC_ANALOG,44,0x30,0x33); /* speaker high-Z, amps remain off */
  if(!e)e=checked_write(c,I9100_MC_ANALOG,45,0,0xff);if(!e)e=checked_write(c,I9100_MC_ANALOG,46,0,0xff);
