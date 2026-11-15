@@ -42,22 +42,25 @@ static void release(void *cookie,uintptr_t,uint32_t,uint32_t)
  n->memory->release();n->memory=0;n->released=true;
 }
 int i9100_dma_native_allocate(int enabled,uint32_t bytes,void *engine_cookie,int (*engine_idle)(void *),i9100_dma_native **result)
+{return i9100_dma_native_allocate_aligned(enabled,bytes,4096,engine_cookie,engine_idle,result);}
+int i9100_dma_native_allocate_aligned(int enabled,uint32_t bytes,uint32_t alignment,void *engine_cookie,int (*engine_idle)(void *),i9100_dma_native **result)
 {
  if(!result)return I9100_DMA_ARGUMENT;*result=0;
  if(enabled!=1)return I9100_DMA_DISABLED;
- if(!engine_idle||!bytes||(bytes&4095U)||bytes>8U*1024U*1024U)return I9100_DMA_ARGUMENT;
+ if(!engine_idle||!bytes||(bytes&4095U)||bytes>8U*1024U*1024U||
+    (alignment!=4096U&&alignment!=8192U&&alignment!=16384U&&alignment!=32768U))return I9100_DMA_ARGUMENT;
  i9100_dma_native *n=(i9100_dma_native *)IOMalloc(sizeof(*n));
  if(!n)return I9100_DMA_IO;
  memset(n,0,sizeof(*n));n->engine_cookie=engine_cookie;n->engine_idle=engine_idle;
  n->lock=IOLockAlloc();
  if(!n->lock){IOFree(n,sizeof(*n));return I9100_DMA_IO;}
  n->memory=IOBufferMemoryDescriptor::withOptions(kIODirectionInOut|
-    kIOMemoryPhysicallyContiguous|kIOMapInhibitCache,bytes,4096);
+    kIOMemoryPhysicallyContiguous|kIOMapInhibitCache,bytes,alignment);
  n->prepared=n->memory&&n->memory->prepare(kIODirectionInOut)==kIOReturnSuccess;
  IOByteCount span=0;addr64_t pa=n->prepared?n->memory->getPhysicalSegment(0,&span):0;
  void *cpu=n->memory?n->memory->getBytesNoCopy():0;
  bool valid=n->prepared&&cpu&&pa>=0x40000000ULL&&pa+bytes<=0x80000000ULL&&
-    !(pa&4095U)&&!((uintptr_t)cpu&4095U)&&span>=bytes;
+    !(pa&(alignment-1U))&&!((uintptr_t)cpu&(alignment-1U))&&span>=bytes;
  if(valid)for(unsigned off=0;off<bytes;off+=4096U){
   pmap_set_cache_attributes((ppnum_t)((pa+off)>>12),VM_MEM_COHERENT|VM_MEM_NOT_CACHEABLE|VM_MEM_GUARDED);
   vm_offset_t ptep=pmap_pte(kernel_pmap,(vm_offset_t)cpu+off);

@@ -7,6 +7,7 @@ extern "C" {
 #endif
 struct i9100_dma_native;
 int i9100_dma_native_allocate(int enabled,uint32_t bytes,void *engine_cookie,int (*engine_idle)(void *),struct i9100_dma_native **);
+int i9100_dma_native_allocate_aligned(int enabled,uint32_t bytes,uint32_t alignment,void *engine_cookie,int (*engine_idle)(void *),struct i9100_dma_native **);
 struct i9100_dma_buffer *i9100_dma_native_buffer(struct i9100_dma_native *);
 int i9100_dma_native_destroy(struct i9100_dma_native **);
 /* Real IOKit physically contiguous, wired DMA32 allocation. Every retained

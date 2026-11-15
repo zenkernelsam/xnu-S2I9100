@@ -64,9 +64,28 @@ int i9100_dma_release(struct i9100_dma_buffer *b)
  if(!b||!b->state)return I9100_DMA_ARGUMENT;
  if(b->self!=(uintptr_t)b)return I9100_DMA_OWNER;
  int e=enter(b);if(e)return e;
+ if(b->holds){leave(b);return I9100_DMA_BUSY;}
  if(b->state!=I9100_DMA_CPU&&b->state!=I9100_DMA_BOUND){leave(b);return I9100_DMA_OWNER;}
  if(b->io.is_idle(b->io.cookie)){b->state=I9100_DMA_QUARANTINED;leave(b);return I9100_DMA_BUSY;}
  e=sync(b,I9100_DMA_CLEAN_INVALIDATE);if(!e)e=sync(b,I9100_DMA_BARRIER);
  if(e){b->state=I9100_DMA_QUARANTINED;leave(b);return e;}
  b->state=I9100_DMA_RELEASED;leave(b);b->io.release(b->io.cookie,b->cpu,b->physical,b->bytes);return 0;
+}
+int i9100_dma_hold(struct i9100_dma_buffer *b)
+{
+ if(!b||!b->state)return I9100_DMA_ARGUMENT;
+ if(b->self!=(uintptr_t)b)return I9100_DMA_OWNER;
+ int e=enter(b);if(e)return e;
+ if(b->state==I9100_DMA_RELEASED||b->holds==UINT32_MAX)e=I9100_DMA_OWNER;
+ else b->holds++;
+ leave(b);return e;
+}
+int i9100_dma_unhold(struct i9100_dma_buffer *b)
+{
+ if(!b||!b->state)return I9100_DMA_ARGUMENT;
+ if(b->self!=(uintptr_t)b)return I9100_DMA_OWNER;
+ int e=enter(b);if(e)return e;
+ if(!b->holds||b->state==I9100_DMA_RELEASED)e=I9100_DMA_OWNER;
+ else b->holds--;
+ leave(b);return e;
 }
