@@ -28,6 +28,9 @@ struct i9100_irq_lease {struct i9100_irq_registry *registry;uint32_t slot,token,
 int i9100_irq_registry_init(struct i9100_irq_registry *,const struct i9100_irq_io *,const uint32_t allowed[8]);
 int i9100_irq_registry_enable(struct i9100_irq_registry *,int);
 int i9100_irq_register(struct i9100_irq_registry *,unsigned irq,int edge,i9100_irq_handler,void *,struct i9100_irq_lease *);
+int i9100_irq_register_masked(struct i9100_irq_registry *,unsigned irq,int edge,i9100_irq_handler,void *,struct i9100_irq_lease *);
+int i9100_irq_mask(struct i9100_irq_lease *);
+int i9100_irq_unmask(struct i9100_irq_lease *);
 int i9100_irq_unregister(struct i9100_irq_lease *);
 int i9100_irq_dispatch(struct i9100_irq_registry *,uint32_t acknowledge);
 /* No GIC reset, no SGI/PPI changes and no EOI: caller retains the complete

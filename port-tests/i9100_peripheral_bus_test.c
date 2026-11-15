@@ -169,13 +169,13 @@ static void clock_tests(void)
  assert(i9100_clock_enable(&m,0)==I9100_CLOCK_BUSY);model.ignore=0;assert(!i9100_clock_release(&a)&&!i9100_clock_enable(&m,0));
  puts("PASS gate-only clock leases,reference counts,pre-existing clocks,foreign bits,stale tokens and failed-write ownership retention");
 }
-struct irq_model {uint32_t regs[1024],masked,locked,last_ack,writes;int fail_enable,fail_mask,handler_error;struct i9100_irq_lease *lease;};
+struct irq_model {uint32_t regs[1024],masked,locked,last_ack,writes;int fail_enable,fail_mask,handler_error,ignore_restore;struct i9100_irq_lease *lease;};
 static uint32_t irq_read(void *cookie,unsigned off){struct irq_model *m=cookie;assert(m->locked&&off<4096&&!(off&3));return m->regs[off/4];}
 static void irq_write(void *cookie,unsigned off,uint32_t v){
  struct irq_model *m=cookie;assert(m->locked&&off<4096&&!(off&3));m->writes++;
  if(off>=0x100&&off<0x120){if(!m->fail_enable)m->regs[off/4]|=v;}
  else if(off>=0x180&&off<0x1a0){if(!m->fail_mask)m->regs[(off-0x80)/4]&=~v;}
- else m->regs[off/4]=v;
+ else if(!m->ignore_restore)m->regs[off/4]=v;
 }
 static uint32_t irq_enter(void *cookie){struct irq_model *m=cookie;assert(!m->locked);uint32_t old=m->masked;m->masked=1;m->locked=1;return old;}
 static void irq_leave(void *cookie,uint32_t old){struct irq_model *m=cookie;assert(m->locked);m->locked=0;m->masked=old;}
@@ -196,6 +196,15 @@ static void irq_tests(void)
  assert(!i9100_irq_register(&r,91,1,irq_handler,&m,&other));unsigned writes=m.writes;assert(i9100_irq_unregister(&stale)==I9100_IRQ_OWNER&&m.writes==writes);assert(!i9100_irq_unregister(&other));
  m.regs[(0x100+96/32*4)/4]|=1U<<(96&31);assert(i9100_irq_register(&r,96,0,irq_handler,&m,&l)==I9100_IRQ_BUSY);
  m.fail_enable=1;assert(i9100_irq_register(&r,91,0,irq_handler,&m,&l)==I9100_IRQ_IO&&!l.active);assert(!i9100_irq_registry_enable(&r,0));
+ memset(&m,0,sizeof(m));memset(&r,0,sizeof(r));assert(!i9100_irq_registry_init(&r,&io,allow));assert(!i9100_irq_registry_enable(&r,1));
+ m.regs[(0x400+96/4*4)/4]=0x11;m.regs[(0x800+96/4*4)/4]=0x22;
+ assert(!i9100_irq_register_masked(&r,96,0,irq_handler,&m,&l)&&l.active&&!r.slots[l.slot].enabled);
+ assert(!i9100_irq_dispatch(&r,96));assert(!i9100_irq_unmask(&l));assert(i9100_irq_dispatch(&r,96)==1);
+ assert(!i9100_irq_mask(&l)&&!i9100_irq_dispatch(&r,96));m.fail_enable=1;
+ assert(i9100_irq_unmask(&l)==I9100_IRQ_IO&&l.active&&!r.slots[l.slot].enabled);m.fail_enable=0;assert(!i9100_irq_unmask(&l));
+ m.fail_mask=1;assert(i9100_irq_mask(&l)==I9100_IRQ_IO&&l.active&&r.slots[l.slot].enabled);m.fail_mask=0;assert(!i9100_irq_mask(&l));
+ m.ignore_restore=1;assert(i9100_irq_unregister(&l)==I9100_IRQ_IO&&l.active);
+ m.ignore_restore=0;assert(!i9100_irq_unregister(&l)&&!i9100_irq_registry_enable(&r,0));
  puts("PASS IRQ whitelist/exclusive leases,full ACK token,no implicit EOI,active callback lifetime,source masking and original GIC fields");
 }
 struct dma_model {unsigned locked,busy,released,fail_sync,count,actions[32];uintptr_t cpu;uint32_t pa,bytes;};

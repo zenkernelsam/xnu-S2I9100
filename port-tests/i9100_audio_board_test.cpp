@@ -43,6 +43,7 @@ static void board_released()
 }
 static int open_board(i9100_audio_board_native **out)
 {i9100_audio_board_profile p=profile();return i9100_audio_board_open(1,&parent,&p,out);}
+#ifndef I9100_BOARD_MODEL_ONLY
 int main()
 {
  i9100_audio_board_native *a=0;board_setup();
@@ -88,3 +89,4 @@ int main()
  assert(!mprotect(board_audss,4096,PROT_READ|PROT_WRITE)&&!mprotect(board_i2s,4096,PROT_READ|PROT_WRITE));
  puts("PASS real audio board+PCM/host IOKit: mute-before-MCLK/4210 PMU/power-guarded pages/all allocations+codec transaction failures/borrowed pins/DMA-stop-before-cold-off/failed-close lifetime/no C93C writes");return 0;
 }
+#endif

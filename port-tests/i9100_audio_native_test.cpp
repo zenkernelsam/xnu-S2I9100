@@ -24,7 +24,7 @@ static struct {
  uint32_t previous_debug;
  uint32_t previous_mode;
  unsigned board_mode,board_bus_owned,board_bus_fail,board_close_fail,board_tx_fail,board_stall_power;
- unsigned check_mclk_silence;uint32_t previous_mclk;
+ unsigned check_mclk_silence,extra_contexts;uint32_t previous_mclk;
  uint32_t pmu[4096],chip[1024],previous_power;uint64_t power_ready_at,vref_started;
 } m;
 static uint32_t board_audss[1024] __attribute__((aligned(4096)));
@@ -92,7 +92,7 @@ static int buffer_sync(void *c,uintptr_t cpu,uint32_t pa,uint32_t bytes,unsigned
  return ++m.sync_calls==m.fail_sync?-1:0;}
 static void buffer_release(void *c,uintptr_t,uint32_t,uint32_t)
 {i9100_dma_native *n=(i9100_dma_native *)c;assert(!n->locked&&!m.pdma[0x100/4]&&!(i2s_regs()[0]&7U));
- assert(m.cmu[0xc940/4]&1U);assert(m.maps==(m.board_mode?8U:3U)&&m.contexts==(m.board_mode?2U:1U));m.dma_releases++;}
+ assert(m.cmu[0xc940/4]&1U);assert(m.maps==(m.board_mode?8U:3U)&&m.contexts==(m.board_mode?2U:1U)+m.extra_contexts);m.dma_releases++;}
 int i9100_dma_native_allocate(int enabled,uint32_t bytes,void *engine,int (*idle)(void *),i9100_dma_native **out)
 {
  assert(enabled==1&&bytes>=4096&&bytes<=16384&&!(*out));if(allocation_fails())return I9100_DMA_IO;

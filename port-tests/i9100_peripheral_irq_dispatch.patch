@@ -1,0 +1,22 @@
+--- a/pexpert/arm/i9100_timer.c
++++ b/pexpert/arm/i9100_timer.c
+@@ -9,6 +9,7 @@
+ #include <machine/machine_routines.h>
+ #include <kern/debug.h>
+ #include "i9100_timer.h"
++#include "../../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_irq_router.h"
+ 
+ #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+ #define I9100_MCT_PA 0x10050000U
+@@ -288,6 +289,11 @@
+     irq=ack & 0x3ffU;
+     last_vector=irq;
+     if(irq==1023U){ spurious_irq_count++; return; }
++    /* Route this complete IAR token before servicing a simultaneously
++     * pending MCT tick. The original paths still perform exactly one EOI. */
++    if(irq!=I9100_TIMER_IRQ){
++        (void)i9100_irq_route(ack);
++    }
+ 
+     pending=read_reg(i9100_mct, I9100_MCT_G_INT_CSTAT);
+     if(irq==I9100_TIMER_IRQ || (pending & 1U)){

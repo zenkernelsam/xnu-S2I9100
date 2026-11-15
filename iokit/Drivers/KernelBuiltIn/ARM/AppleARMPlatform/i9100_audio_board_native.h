@@ -16,10 +16,14 @@ struct i9100_audio_board_profile {
 struct i9100_audio_board_status {
  uint32_t phase,stage,mclk_owned,domain_owned,audss_active,pins_owned,bus_owned;
  uint32_t codec_enabled,cold_owned,clock_owned,pcm_owned;
+ uint32_t worker_holds;
  int32_t error;
 };
 int i9100_audio_board_open(int enabled,struct i9100_peripheral_native *,const struct i9100_audio_board_profile *,struct i9100_audio_board_native **);
 int i9100_audio_board_pcm_open(struct i9100_audio_board_native *,uint32_t independently_measured_bclk);
+int i9100_audio_board_pcm_close(struct i9100_audio_board_native *);
+int i9100_audio_board_hold(struct i9100_audio_board_native *);
+int i9100_audio_board_unhold(struct i9100_audio_board_native *);
 int i9100_audio_board_queue(struct i9100_audio_board_native *,const int16_t *,uint32_t frames);
 int i9100_audio_board_start(struct i9100_audio_board_native *);
 int i9100_audio_board_service(struct i9100_audio_board_native *,uint32_t *completed_periods);

@@ -7,6 +7,11 @@
 #include <stdint.h>
 enum {kIODirectionInOut=3,kIOMapInhibitCache=0x100};
 struct IOLock {bool held;};
+struct IOSimpleLock {bool held;};
+typedef unsigned IOInterruptState;
+IOSimpleLock *IOSimpleLockAlloc();void IOSimpleLockFree(IOSimpleLock *);
+IOInterruptState IOSimpleLockLockDisableInterrupt(IOSimpleLock *);
+void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *,IOInterruptState);
 void *IOMalloc(size_t);void IOFree(void *,size_t);
 IOLock *IOLockAlloc();void IOLockFree(IOLock *);bool IOLockTryLock(IOLock *);void IOLockUnlock(IOLock *);
 void OSSynchronizeIO();void IODelay(unsigned);
