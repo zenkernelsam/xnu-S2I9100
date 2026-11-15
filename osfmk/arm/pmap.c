@@ -1154,6 +1154,13 @@ uint32_t pmap_vm_prot_to_page_flags(pmap_t pmap, vm_prot_t prot, int wired, int 
      */
     if (pmap != kernel_pmap)
         pte |= L2_ACCESS_USER;
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    /* User translations must belong to their ASID. TLBIASID deliberately
+     * leaves global entries intact; a global user PTE can survive munmap or
+     * replacement and send subsequent stores to the previous physical page. */
+    if (pmap != kernel_pmap)
+        pte |= L2_NG_BIT;
+#endif
     pte |= L2_ACCESS_PRW;
 
     /*
