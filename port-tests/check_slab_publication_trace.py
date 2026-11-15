@@ -141,6 +141,11 @@ int main(int argc,char**argv){
   if(n==0)image[0x6460]^=1;if(n==1)image[36]^=1;if(n==2)dyld[20]=1;if(n==3)dyld_error=1;if(n==4)copy_fail_addr=0x65000;
   assert(!i9100_slab_publication_bootstrap(&p,0x30080,0x30)&&!ops&&i9100_slab_publication_diag[1]==3);
  }
+ for(unsigned n=0;n<4;n++){
+  reset();dyld[20]=(unsigned[]){0x02e9f000,0x0375b000,0x0375c000,0x02e9f001}[n];
+  i9100_slab_publication_record(&p,0x65000);assert(!i9100_slab_publication_bootstrap(&p,0x30080,0x30)&&!ops);
+  assert(i9100_slab_publication_diag[8]==(n<2?7:6));
+ }
  reset();install();i9100_slab_publication_note(&p,0x1016,0x30000);
  volatile uint32_t*r=&i9100_slab_publication_rows[4];
  assert(r[0]==1&&r[4]==0x20000&&r[5]==0x21000&&r[6]==0xdeafbe03&&r[7]==r[6]&&!r[8]&&!r[9]&&!r[10]);

@@ -139,7 +139,9 @@ int i9100_hid_execution_bootstrap(proc_t p,unsigned return_pc,unsigned return_cp
        info_count!=TASK_DYLD_INFO_COUNT || info.all_image_info_format!=TASK_DYLD_ALL_IMAGE_INFO_32 ||
        info.all_image_info_addr<4096 || info.all_image_info_addr>0x3fffffacU ||
        info.all_image_info_size<84 || copyin(info.all_image_info_addr,dyld,84) ||
-       dyld[0]<12 || dyld[0]>15 || (dyld[20]&4095U) || dyld[20]>0x02800000U){d[8]=6;goto failed;}
+       /* Exact iOS6 cache mapping end is3c8a5000, including LINKEDIT. A
+        * valid random slide may exceed40MiB; bound the whole cache instead. */
+       dyld[0]<12 || dyld[0]>15 || (dyld[20]&4095U) || dyld[20]>0x40000000U-0x3c8a5000U){d[8]=6;goto failed;}
     uint32_t slide=dyld[20];d[31]=slide;
     if(!i9100_hid_execution_image_matches(0x30242000U+slide,i9100_hid_execution_cache_uuid[0]) ||
        !i9100_hid_execution_image_matches(0x31d0e000U+slide,i9100_hid_execution_cache_uuid[1])){d[8]=7;goto failed;}

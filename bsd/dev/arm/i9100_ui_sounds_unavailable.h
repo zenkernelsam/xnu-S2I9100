@@ -103,7 +103,8 @@ int i9100_ui_sounds_unavailable_bootstrap(proc_t p,unsigned return_pc,unsigned r
        info_count!=TASK_DYLD_INFO_COUNT || info.all_image_info_format!=TASK_DYLD_ALL_IMAGE_INFO_32 ||
        info.all_image_info_addr<4096 || info.all_image_info_addr>0x3fffffacU ||
        info.all_image_info_size<84 || copyin(info.all_image_info_addr,dyld,84) ||
-       dyld[0]<12 || dyld[0]>15 || (dyld[20]&4095U) || dyld[20]>0x02800000U){d[8]=6;goto failed;}
+       /* Account for all original iOS6 cache mappings, including LINKEDIT. */
+       dyld[0]<12 || dyld[0]>15 || (dyld[20]&4095U) || dyld[20]>0x40000000U-0x3c8a5000U){d[8]=6;goto failed;}
     uint32_t slide=dyld[20];d[31]=slide;
     if(!i9100_ui_sounds_unavailable_image_matches(0x30af6000U+slide,i9100_ui_sounds_unavailable_cache_uuid[0])){d[8]=7;goto failed;}
     for(unsigned n=0;n<9;n++){

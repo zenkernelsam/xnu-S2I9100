@@ -136,6 +136,13 @@ int main(int argc,char**argv){
  reset();io_image[36]^=1;i9100_hid_execution_record(&p,0x65000);assert(!i9100_hid_execution_bootstrap(&p)&&!ops&&i9100_hid_execution_diag[8]==7);
  reset();dyld[20]=1;i9100_hid_execution_record(&p,0x65000);assert(!i9100_hid_execution_bootstrap(&p)&&!ops&&i9100_hid_execution_diag[8]==6);
  reset();dyld_error=1;i9100_hid_execution_record(&p,0x65000);assert(!i9100_hid_execution_bootstrap(&p)&&!ops&&i9100_hid_execution_diag[8]==6);
+ for(unsigned n=0;n<4;n++){
+  reset();dyld[20]=(unsigned[]){0x02e9f000,0x0375b000,0x0375c000,0x02e9f001}[n];
+  i9100_hid_execution_record(&p,0x65000);assert(!i9100_hid_execution_bootstrap(&p)&&!ops);
+  /* Valid high slides reach the unchanged UUID/map check; the fixture has
+   * no mappings there. Overflow/unaligned slides stop at metadata. */
+  assert(i9100_hid_execution_diag[8]==(n<2?7:6));
+ }
  reset();install();
  unsigned pc=0x30080,cpsr=0x30;i9100_hid_execution_resume(&p,&pc,&cpsr);assert(pc==0x11c0&&cpsr==0x30);
  pc=0x30080;i9100_hid_execution_resume(&p,&pc,&cpsr);assert(pc==0x30080);
