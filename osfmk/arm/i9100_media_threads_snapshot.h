@@ -15,7 +15,7 @@ extern volatile uint32_t i9100_audio_property_runtime[4];
 extern volatile uint32_t i9100_audio_property_lock_history[1+8*12];
 volatile uint32_t i9100_media_threads[16+16*72];
 volatile uint32_t i9100_media_identity[8+16*8];
-volatile uint32_t i9100_audio_owner_diag[4+8*64];
+volatile uint32_t i9100_audio_owner_diag[4+8*96];
 volatile uint32_t i9100_media_dispatch_diag[16+64];
 static volatile UInt32 i9100_media_threads_once;
 static void i9100_media_dispatch_note(unsigned pid,unsigned slide)
@@ -148,7 +148,7 @@ void i9100_audio_owner_note(unsigned sequence,unsigned pid,unsigned code,
        i9100_audio_observation_target[3]!=(unsigned)(uintptr_t)task)return;
     volatile uint32_t *r=&i9100_audio_owner_diag[4+(sequence-1)*I9100_AUDIO_OWNER_STRIDE];
     r[1]=pid;r[2]=(unsigned)(uintptr_t)task;r[3]=mutex;r[4]=code;
-    r[5]=owner_low;r[6]=owner_high;r[9]=2;r[12]=UINT32_MAX;r[13]=1;
+    r[5]=owner_low;r[6]=owner_high;r[9]=2;r[12]=UINT32_MAX;r[13]=2;
     unsigned mask;I9100_SNAPSHOT_MASK_GET(mask);r[14]=mask;
     queue_entry_t entry=NULL;
     if(!i9100_irq_snapshot_read(&task->threads.next,&entry,sizeof(entry)))r[9]=3;
@@ -176,7 +176,7 @@ void i9100_audio_owner_note(unsigned sequence,unsigned pid,unsigned code,
         if((r[28]==301U || r[28]==302U) && r[16]>=4096U && r[16]<=0x3fffffd0U)
             r[12]=copyin((user_addr_t)r[16],(void *)&r[34],48);
         uint32_t frame=r[23];unsigned sp=r[29];
-        for(unsigned n=0;n<6;n++){
+        for(unsigned n=0;n<I9100_AUDIO_OWNER_FRAMES;n++){
             uint32_t pair[2];
             if((frame&3U) || frame<sp || frame>0x3ffffff8U || frame-sp>131072U){r[11]=1;break;}
             if(copyin((user_addr_t)frame,pair,8)){r[11]=2;break;}
@@ -185,7 +185,7 @@ void i9100_audio_owner_note(unsigned sequence,unsigned pid,unsigned code,
         }
     }
     I9100_SNAPSHOT_MASK_GET(mask);
-    i9100_audio_owner_diag[1]=1;i9100_audio_owner_diag[2]=I9100_AUDIO_OWNER_CAP;
+    i9100_audio_owner_diag[1]=2;i9100_audio_owner_diag[2]=I9100_AUDIO_OWNER_CAP;
     i9100_audio_owner_diag[3]=I9100_AUDIO_OWNER_STRIDE;
     OSMemoryBarrier();r[0]=sequence;
     if(i9100_audio_owner_diag[0]<sequence)i9100_audio_owner_diag[0]=sequence;
