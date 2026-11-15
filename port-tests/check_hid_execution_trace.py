@@ -16,11 +16,16 @@ source=r'''
 #include <string.h>
 typedef uint32_t UInt32,vm_map_offset_t;typedef uint64_t user_addr_t;
 typedef int kern_return_t,boolean_t;
+typedef unsigned mach_msg_type_number_t;typedef int*task_info_t;
+typedef struct {uint64_t all_image_info_addr,all_image_info_size;int all_image_info_format;}task_dyld_info_data_t;
+#define TASK_DYLD_INFO 17
+#define TASK_DYLD_ALL_IMAGE_INFO_32 0
+#define TASK_DYLD_INFO_COUNT (sizeof(task_dyld_info_data_t)/sizeof(unsigned))
 struct task {int acts;uint64_t all_image_info_addr,all_image_info_size;};typedef struct task*task_t;
 struct proc {const char*p_comm;unsigned p_pid;task_t task;unsigned char p_uuid[16];unsigned p_idversion;};typedef struct proc*proc_t;
 struct map {int dummy;};typedef struct map*vm_map_t;
 static struct task child={1},parent={1};static task_t current=&child;static struct map map;static struct proc p;
-static unsigned enabled=1,abi=6,irq,interrupts=1,preempt,ops,fail_at,fail_again,reads,allocated,removed,copy_fail_addr;
+static unsigned enabled=1,abi=6,irq,interrupts=1,preempt,ops,fail_at,fail_again,reads,allocated,removed,copy_fail_addr,dyld_error;
 static uint8_t shared[0x60000],image[0x60000],codebuf[4096],event[136],gs[116];static uint32_t saved[16],dyld[21];
 static uint8_t io_shared[0x18000],io_image[0x18000],plugin_shared[0x10000],plugin_image[0x10000];
 #define FALSE 0
@@ -37,6 +42,10 @@ static uint8_t io_shared[0x18000],io_image[0x18000],plugin_shared[0x10000],plugi
 #define EIO 5
 #define EINVAL 22
 static task_t current_task(void){return current;}
+static int task_info(task_t t,unsigned flavor,task_info_t data,unsigned *count){
+ assert(t==&child&&flavor==17&&*count==TASK_DYLD_INFO_COUNT);if(dyld_error)return 4;
+ task_dyld_info_data_t *info=(void*)data;info->all_image_info_addr=t->all_image_info_addr;info->all_image_info_size=t->all_image_info_size;info->all_image_info_format=0;return 0;
+}
 static vm_map_t current_map(void){return &map;}
 static vm_map_t get_task_map(task_t t){return t==&child?&map:NULL;}
 static unsigned get_task_numacts(task_t t){return t->acts;}
@@ -82,7 +91,7 @@ static void cache_header(uint8_t *image,const uint8_t *uuid){
 static void reset(void){
  memset((void*)i9100_hid_execution_diag,0,sizeof(i9100_hid_execution_diag));i9100_hid_execution_diag[0]=2;
  memset((void*)i9100_hid_execution_rows,0,sizeof(i9100_hid_execution_rows));memset(i9100_hid_execution_pending,0,16);i9100_hid_execution_guard=0;
- i9100_hid_execution_resume_pending=0;
+ i9100_hid_execution_resume_pending=dyld_error=0;
  current=&child;child.acts=1;enabled=interrupts=1;abi=6;irq=preempt=ops=fail_at=fail_again=reads=allocated=removed=copy_fail_addr=0;
  child.all_image_info_addr=0x25000;child.all_image_info_size=84;memset(dyld,0,sizeof(dyld));dyld[0]=12;
  p.p_comm="backboardd";p.p_pid=8;p.task=&child;p.p_idversion=8;memcpy(p.p_uuid,i9100_hid_execution_uuid,16);
@@ -121,6 +130,7 @@ int main(int argc,char**argv){
  reset();i9100_hid_execution_record(&p,0x65000);image[0x5094]^=1;assert(!i9100_hid_execution_bootstrap(&p)&&!ops);
  reset();io_image[36]^=1;i9100_hid_execution_record(&p,0x65000);assert(!i9100_hid_execution_bootstrap(&p)&&!ops&&i9100_hid_execution_diag[8]==7);
  reset();dyld[20]=1;i9100_hid_execution_record(&p,0x65000);assert(!i9100_hid_execution_bootstrap(&p)&&!ops&&i9100_hid_execution_diag[8]==6);
+ reset();dyld_error=1;i9100_hid_execution_record(&p,0x65000);assert(!i9100_hid_execution_bootstrap(&p)&&!ops&&i9100_hid_execution_diag[8]==6);
  reset();install();
  unsigned pc=0x30080,cpsr=0x30;i9100_hid_execution_resume(&p,&pc,&cpsr);assert(pc==0x11c0&&cpsr==0x30);
  pc=0x30080;i9100_hid_execution_resume(&p,&pc,&cpsr);assert(pc==0x30080);

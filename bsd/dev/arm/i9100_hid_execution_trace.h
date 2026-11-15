@@ -3,6 +3,7 @@
 #include <vm/vm_map.h>
 #include <machine/machine_routines.h>
 #include <libkern/OSAtomic.h>
+#include <mach/task.h>
 
 /* Optional own-task probes: original callback/digitizer/GS arguments and
  * event bytes only. getpid is real; its temporary result/flags/registers are
@@ -91,10 +92,12 @@ int i9100_hid_execution_bootstrap(proc_t p,unsigned return_pc,unsigned return_cp
     uint8_t original[7][12],code[512]={0};unsigned touched=0;boolean_t allocated=FALSE;int error=0;
     if(memcmp(p->p_uuid,i9100_hid_execution_uuid,16) || header<4096 || (header&4095U) ||
        header>0x40000000U-0x60000U || copyin(header,mh,28) || mh[0]!=0xfeedfaceU || mh[1]!=12 || mh[3]!=2)goto failed;
-    task_t owner=current_task();
+    task_dyld_info_data_t info={0};mach_msg_type_number_t info_count=TASK_DYLD_INFO_COUNT;
     if(return_pc<4096 || return_pc>0x3fffffffU || (return_cpsr&31U)!=16 ||
-       owner->all_image_info_addr<4096 || owner->all_image_info_addr>0x3fffffacU ||
-       owner->all_image_info_size<84 || copyin(owner->all_image_info_addr,dyld,84) ||
+       task_info(current_task(),TASK_DYLD_INFO,(task_info_t)&info,&info_count)!=KERN_SUCCESS ||
+       info_count!=TASK_DYLD_INFO_COUNT || info.all_image_info_format!=TASK_DYLD_ALL_IMAGE_INFO_32 ||
+       info.all_image_info_addr<4096 || info.all_image_info_addr>0x3fffffacU ||
+       info.all_image_info_size<84 || copyin(info.all_image_info_addr,dyld,84) ||
        dyld[0]<12 || dyld[0]>15 || (dyld[20]&4095U) || dyld[20]>0x02800000U){d[8]=6;goto failed;}
     uint32_t slide=dyld[20];d[31]=slide;
     if(!i9100_hid_execution_image_matches(0x30242000U+slide,i9100_hid_execution_cache_uuid[0]) ||
