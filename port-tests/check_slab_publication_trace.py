@@ -60,6 +60,7 @@ static int task_info(task_t t,unsigned flavor,task_info_t data,unsigned*count){
 }
 static vm_map_t current_map(void){return wrong_map?&other_map:&map;}
 static vm_map_t get_task_map(task_t t){return t==&child?&map:NULL;}
+static pmap_t get_task_pmap(task_t t){assert(t==&child);return &pmap;}
 static unsigned get_task_numacts(task_t t){return t->acts;}
 static unsigned ml_at_interrupt_context(void){return irq;}
 static unsigned ml_get_interrupts_enabled(void){return interrupts;}

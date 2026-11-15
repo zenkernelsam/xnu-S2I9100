@@ -82,7 +82,7 @@ int i9100_slab_publication_bootstrap(proc_t p,unsigned return_pc,unsigned return
     d[6]++;d[1]=1;d[2]=p->p_pid;d[3]=(uint32_t)(uintptr_t)p->task;d[4]=header;d[12]=p->p_idversion;
     d[7]=d[8]=d[9]=0;d[11]=1;
     vm_map_t map=current_map();vm_map_offset_t address=4096,sites[1];uint32_t mh[7],dyld[21];
-    d[13]=(uint32_t)(uintptr_t)map;d[14]=(uint32_t)(uintptr_t)map->pmap;
+    d[13]=(uint32_t)(uintptr_t)map;d[14]=(uint32_t)(uintptr_t)get_task_pmap(current_task());
     uint8_t original[1][12],code[64]={0};unsigned touched=0;boolean_t allocated=FALSE;int error=0;
     if(memcmp(p->p_uuid,i9100_slab_publication_uuid,16) || header<4096 || (header&4095U) ||
        header>0x40000000U-0x2a4000U || copyin(header,mh,28) || mh[0]!=0xfeedfaceU || mh[1]!=12 || mh[3]!=2)goto failed;
@@ -152,11 +152,11 @@ void i9100_slab_publication_note(proc_t p,unsigned pc,unsigned sp)
     unsigned stack_error=copyin(sp,saved,64);
     unsigned expected_error=stack_error?stack_error:copyin(sp+104U,&expected,4);
     unsigned candidate=saved[7],link=saved[5],read_error=UINT32_MAX;
-    unsigned before=0,after=0;vm_map_t map=current_map();
+    unsigned before=0,after=0;vm_map_t map=current_map();pmap_t pmap=get_task_pmap(current_task());
     if(!stack_error && candidate>=4096 && candidate<=0x3fffffe0U && !(candidate&3U)){
-        before=pmap_find_phys(map->pmap,candidate);
+        before=pmap_find_phys(pmap,candidate);
         read_error=copyin(candidate,header,32);
-        after=pmap_find_phys(map->pmap,candidate);
+        after=pmap_find_phys(pmap,candidate);
     }
     if(d[1]!=2 || d[2]!=(unsigned)p->p_pid || d[3]!=(unsigned)(uintptr_t)current_task() || d[12]!=p->p_idversion)return;
     if(!OSCompareAndSwap(0,1,&i9100_slab_publication_guard))return;
@@ -190,14 +190,14 @@ void i9100_slab_publication_failure(proc_t p,unsigned candidate)
        current_map()!=get_task_map(p->task) || candidate<4096 ||
        candidate>0x3fffffe0U || (candidate&3U) || ml_at_interrupt_context() ||
        !ml_get_interrupts_enabled() || get_preemption_level()!=0)return;
-    vm_map_t map=current_map();uint32_t header[8]={0};
-    unsigned before=pmap_find_phys(map->pmap,candidate);
+    vm_map_t map=current_map();pmap_t pmap=get_task_pmap(current_task());uint32_t header[8]={0};
+    unsigned before=pmap_find_phys(pmap,candidate);
     unsigned error=copyin(candidate,header,32);
-    unsigned after=pmap_find_phys(map->pmap,candidate);
+    unsigned after=pmap_find_phys(pmap,candidate);
     if(!OSCompareAndSwap(0,1,&i9100_slab_publication_guard))return;
     if(!r[1] && d[1]==2 && d[2]==(uint32_t)p->p_pid && d[3]==(uint32_t)(uintptr_t)current_task() && d[12]==p->p_idversion){
         r[2]=p->p_pid;r[3]=p->p_idversion;r[4]=d[3];r[5]=candidate;
-        r[6]=(uint32_t)(uintptr_t)map;r[7]=(uint32_t)(uintptr_t)map->pmap;
+        r[6]=(uint32_t)(uintptr_t)map;r[7]=(uint32_t)(uintptr_t)pmap;
         r[8]=before;r[9]=after;r[10]=header[4];r[11]=error;r[12]=d[10];r[13]=d[16];r[14]=d[30];r[15]=1;
         OSMemoryBarrier();r[1]=1;
     }
