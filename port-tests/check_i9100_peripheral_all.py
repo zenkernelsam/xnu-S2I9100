@@ -12,6 +12,7 @@ import shlex
 import time
 from pathlib import Path
 from i9100_offline_build import Evidence, REPO, ROOT, PLATFORM, idle
+from i9100_link_snapshot import freeze,verify
 
 C_SOURCES = [
     "i9100_gpio_broker.c", "i9100_i2c_gpio.c", "i9100_clock_gates.c",
@@ -23,6 +24,7 @@ C_SOURCES = [
     "i9100_sysmmu.c", "i9100_modem_sipc4.c", "i9100_emmc.c", "i9100_emmc_layout.c",
     "i9100_uart_bluetooth.c", "i9100_pwm_haptic.c",
     "i9100_bcm_f2.c", "i9100_audio_power.c", "i9100_irq_router.c", "i9100_pcm_ring.c", "i9100_bcm_chip.c",
+    "i9100_bcm_firmware.c", "i9100_bcm_firmware_crypto.c",
 ]
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
                "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp"]
@@ -51,6 +53,7 @@ TESTS = [
         "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp"]),
     ("i9100_pcm_ring_test.c", ["i9100_pcm_ring.c"]),
     ("i9100_bcm_chip_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c"]),
+    ("i9100_bcm_firmware_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c", "i9100_bcm_firmware.c"]),
 ]
 
 
@@ -81,7 +84,7 @@ def main():
                 e.model_cpp(test, [name for name in sources if name.endswith(".c")],
                             [name for name in sources if name.endswith(".cpp")])
             else:
-                e.model(test, sources)
+                e.model(test, sources, libraries=["crypto"] if test=="i9100_bcm_firmware_test.c" else ())
             e.out = previous
         e.result["model_suites"] = [name for name, _ in TESTS]
     e.cross_compile(C_SOURCES + CPP_SOURCES)
@@ -104,23 +107,32 @@ def main():
         known = set(base_list)
         if known.intersection(extra):
             raise RuntimeError("New objects duplicate reference entries")
-        filelist = e.out / "link.filelist"
-        filelist.write_text("\n".join(base_list + extra) + "\n")
         build = REPO / "BUILD/obj/RELEASE_ARM_EXYNOS4210_I9100"
+        # A retained filelist often still names shared BUILD/*.o. The older
+        # reference mach_kernel hash alone cannot freeze those inputs. Copy
+        # every input before linking and retain its exact bytes/hash.
+        idle()
+        stable_base,base_snapshot=freeze(base_list,e.out/"frozen-base")
+        stable_aux,aux_snapshot=freeze([build/"version.o",build/"lastkernelconstructor.o"],e.out/"frozen-aux")
+        filelist = e.out / "link.filelist"
+        filelist.write_text("\n".join(stable_base + extra) + "\n")
         command = shlex.split((reference / "link-flags.txt").read_text().strip().splitlines()[-1])
-        command.extend(["-filelist", str(filelist), str(build / "version.o"),
-                        str(build / "lastkernelconstructor.o"), "-o", str(e.out / "mach_kernel.sys")])
+        command.extend(["-filelist", str(filelist), *stable_aux, "-o", str(e.out / "mach_kernel.sys")])
         env = dict(os.environ, TC=str(ROOT / "assets/i9100-toolchain"), SDKROOT="/",
                    LD64_WRAPPER=str(ROOT / "assets/i9100-toolchain/bin/ld64"),
                    SRCROOT=str(REPO), OBJROOT=str(REPO / "BUILD/obj"),
                    SYMROOT=str(REPO / "BUILD/sym"), TARGET=str(build))
         env["PATH"] = str(ROOT / "assets/i9100-toolchain/bin") + ":" + env["PATH"]
         e.run(command, "complete-kernel-link", env, cwd=build)
+        verify(base_snapshot)
+        verify(aux_snapshot)
         if hashlib.sha256((reference / "mach_kernel").read_bytes()).hexdigest() != reference_hash:
             raise RuntimeError("Reference changed during linking; result cannot be called a fixed comparison")
         e.result.update(kernel_reference=str(reference.relative_to(ROOT)),
                         reference_sha256=reference_hash, reference_objects=len(base_list),
-                        new_objects=len(extra), linked_kernel_sha256=hashlib.sha256((e.out / "mach_kernel.sys").read_bytes()).hexdigest())
+                        new_objects=len(extra), linked_kernel_sha256=hashlib.sha256((e.out / "mach_kernel.sys").read_bytes()).hexdigest(),
+                        frozen_input_manifests=[str(path.relative_to(ROOT)) for path in (base_snapshot,aux_snapshot)],
+                        reference_mode="Historical reference filelist; actual object bytes frozen at this run")
     e.finish(C_SOURCES + CPP_SOURCES, "Offline default-OFF peripheral objects; no loader package or live hardware")
     if args.link:
         result = json.loads((e.out / "manifest.json").read_text())

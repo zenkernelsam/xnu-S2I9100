@@ -58,11 +58,11 @@ class Evidence:
         print(proc.stdout.strip() if label.endswith("tests") else "PASS " + label, flush=True)
         return proc.stdout
 
-    def model(self, test_file, sources):
+    def model(self, test_file, sources, libraries=()):
         self.run(["clang", "-std=c99", "-O1", "-Wall", "-Wextra", "-Werror", "-fno-pie", "-no-pie",
                   "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-I" + str(PLATFORM),
                   str(REPO / "port-tests" / test_file), *[str(PLATFORM / s) for s in sources],
-                  "-o", str(self.out / "models")], "compile-models")
+                  "-o", str(self.out / "models"), *["-l" + name for name in libraries]], "compile-models")
         self.run([str(self.out / "models")], "model-tests")
         self.result["models"] = test_file
         self.result["models_sha256"] = hashlib.sha256((REPO / "port-tests" / test_file).read_bytes()).hexdigest()

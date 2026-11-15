@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "i9100_bcm_chip.h"
 #include "i9100_bcm_backplane_private.h"
+#include "i9100_bcm_chip_private.h"
 #include <string.h>
 #define ENUM_BASE 0x18000000U
 #define ENUM_END 0x18200000U
@@ -156,7 +157,7 @@ int i9100_bcm_chip_probe(struct i9100_bcm_chip *c,int enabled,int verified)
  if(!e){struct reader r={c,bus_word,I9100_BCM_EROM_WORDS,0};e=parse(&r,&c->topology);}
  if(!e)c->probed=1;return record(c,e);
 }
-static int ram_guard(struct i9100_bcm_chip *c)
+int i9100_bcm_chip_ram_guard_locked(struct i9100_bcm_chip *c)
 {
  const struct i9100_bcm_core *cpu_core=find(&c->topology,CORE_CM3),*ram=find(&c->topology,CORE_RAM);
  uint32_t reset=0,clock=0,rreset=0;int e=read32(c,cpu_core->wrapper+0x800U,&reset);
@@ -169,7 +170,7 @@ static int restore_selector(struct i9100_bcm_chip *c)
 {
  if(!c->ram_selector_owned)return 0;
  const struct i9100_bcm_core *ram=find(&c->topology,CORE_RAM);uint32_t value=0;
- int e=i9100_bcm_bp_restore_locked(c->bus)?I9100_BCM_CHIP_IO:ram_guard(c);
+ int e=i9100_bcm_bp_restore_locked(c->bus)?I9100_BCM_CHIP_IO:i9100_bcm_chip_ram_guard_locked(c);
  if(!e)e=write32(c,ram->base+0x10U,c->ram_selector_saved);
  if(!e)e=read32(c,ram->base+0x10U,&value);
  if(!e&&value!=c->ram_selector_saved)e=I9100_BCM_CHIP_IO;
@@ -186,7 +187,7 @@ int i9100_bcm_chip_close(struct i9100_bcm_chip *c)
  if(!c||!c->initialized||c->owner!=(uintptr_t)c||!c->bus||!c->bus->initialized)
   return I9100_BCM_CHIP_ARGUMENT;
  struct i9100_bcm4330 *b=c->bus;if(b->io.claim(b->io.cookie))return I9100_BCM_CHIP_BUSY;
- if(c->ram_selector_owned||b->window_restore_pending||b->chip_holds!=1U){
+ if(c->ram_selector_owned||c->firmware_holds||c->ram_image_owned||b->window_restore_pending||b->chip_holds!=1U){
   b->io.release(b->io.cookie);return I9100_BCM_CHIP_BUSY;
  }
  b->chip_holds=0;c->initialized=0;c->owner=0;c->bus=0;b->io.release(b->io.cookie);return 0;
@@ -194,9 +195,9 @@ int i9100_bcm_chip_close(struct i9100_bcm_chip *c)
 int i9100_bcm_chip_ram_probe(struct i9100_bcm_chip *c)
 {
  int e=claim(c,0);if(e)return e;
- if(!c->probed||c->ram_ready||c->ram_selector_owned){c->bus->io.release(c->bus->io.cookie);return I9100_BCM_CHIP_BUSY;}
+ if(!c->probed||c->ram_ready||c->ram_selector_owned||c->firmware_holds||c->ram_image_owned){c->bus->io.release(c->bus->io.cookie);return I9100_BCM_CHIP_BUSY;}
  const struct i9100_bcm_core *ram=find(&c->topology,CORE_RAM);c->stage=3;
- e=ram_guard(c);if(e)return record(c,e);
+ e=i9100_bcm_chip_ram_guard_locked(c);if(e)return record(c,e);
  if(ram->revision<4U)return record(c,I9100_BCM_CHIP_UNSUPPORTED);
  c->stage=4;e=read32(c,ram->base,&c->coreinfo);
  uint32_t banks=(c->coreinfo>>4)&15U;uint64_t size=0,retention=0;
@@ -221,7 +222,7 @@ int i9100_bcm_chip_ram_probe(struct i9100_bcm_chip *c)
  }
  c->stage=5;c->cleanup_error=restore_selector(c);if(c->cleanup_error&&!e)e=c->cleanup_error;
  if(!e&&(!size||size>I9100_BCM_MAX_RAM||retention>size))e=I9100_BCM_CHIP_LAYOUT;
- if(!e)e=ram_guard(c);
+ if(!e)e=i9100_bcm_chip_ram_guard_locked(c);
  if(!e){c->ram_size=(uint32_t)size;c->retention_size=(uint32_t)retention;c->bank_count=banks;c->ram_ready=1;}
  return record(c,e);
 }

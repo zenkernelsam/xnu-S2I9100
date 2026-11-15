@@ -22,10 +22,8 @@ int i9100_bcm_bp_restore_locked(struct i9100_bcm4330 *b)
  else b->fault=1;
  return e;
 }
-static int bp_word(struct i9100_bcm4330 *b,int write,uint32_t address,uint32_t *value)
+static int bp_transfer(struct i9100_bcm4330 *b,int write,uint32_t address,uint8_t *data,uint32_t bytes)
 {
- if(!b||!b->initialized||!value||(address&3U)||address<0x18000000U||address>=0x18200000U)
-  return I9100_BCM_ARGUMENT;
  if(b->window_restore_pending)return I9100_BCM_IO;
  uint8_t next[3]={(uint8_t)((address>>8)&128U),(uint8_t)(address>>16),(uint8_t)(address>>24)};
  for(unsigned n=0;n<3;n++)if(b->io.cmd52(b->io.cookie,0,1,bp_ports[n],&b->window_saved[n]))return I9100_BCM_IO;
@@ -35,10 +33,23 @@ static int bp_word(struct i9100_bcm4330 *b,int write,uint32_t address,uint32_t *
   b->window_touched=(uint8_t)(n+1U);
   if(bp_window_write(b,n,next[n])){e=I9100_BCM_IO;break;}
  }
- uint8_t data[4]={0};if(write)put32(data,*value);
- if(!e&&b->io.cmd53(b->io.cookie,write,1,(address&0x7fffU)|0x8000U,1,data,4))e=I9100_BCM_IO;
+ if(!e&&b->io.cmd53(b->io.cookie,write,1,(address&0x7fffU)|0x8000U,1,data,bytes))e=I9100_BCM_IO;
  if(i9100_bcm_bp_restore_locked(b))e=I9100_BCM_IO;
- if(!e&&!write)*value=le32(data);return e;
+ return e;
+}
+static int bp_word(struct i9100_bcm4330 *b,int write,uint32_t address,uint32_t *value)
+{
+ if(!b||!b->initialized||!value||(address&3U)||address<0x18000000U||address>=0x18200000U)
+  return I9100_BCM_ARGUMENT;
+ uint8_t data[4]={0};if(write)put32(data,*value);
+ int e=bp_transfer(b,write,address,data,4);if(!e&&!write)*value=le32(data);return e;
+}
+int i9100_bcm_bp_memory_locked(struct i9100_bcm4330 *b,int write,uint32_t address,uint8_t *data,uint32_t bytes)
+{
+ if(!b||!b->initialized||!data||(write!=0&&write!=1)||!bytes||bytes>512U||
+    (bytes&3U)||(address&3U)||(uint64_t)address+bytes>4U*1024U*1024U||
+    (address&0x7fffU)+bytes>0x8000U)return I9100_BCM_ARGUMENT;
+ return bp_transfer(b,write,address,data,bytes);
 }
 int i9100_bcm_bp_read_locked(struct i9100_bcm4330 *b,uint32_t address,uint32_t *value)
 {return bp_word(b,0,address,value);}

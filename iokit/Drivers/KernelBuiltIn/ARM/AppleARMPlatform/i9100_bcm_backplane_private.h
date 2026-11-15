@@ -10,4 +10,7 @@
 int i9100_bcm_bp_read_locked(struct i9100_bcm4330 *,uint32_t,uint32_t *);
 int i9100_bcm_bp_write_locked(struct i9100_bcm4330 *,uint32_t,uint32_t);
 int i9100_bcm_bp_restore_locked(struct i9100_bcm4330 *);
+int i9100_bcm_bp_memory_locked(struct i9100_bcm4330 *,int write,uint32_t address,uint8_t *,uint32_t bytes);
+/* The memory operation is limited to aligned <=512B RAM chunks below4MiB,
+ * split at32KiB windows. Its firmware caller further bounds by actual RAM. */
 #endif

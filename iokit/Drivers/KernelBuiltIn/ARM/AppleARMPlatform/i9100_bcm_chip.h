@@ -28,6 +28,7 @@ struct i9100_bcm_chip {
  uint32_t initialized,probed,ram_ready,fault,stage,erom_base,chip_id;
  uint32_t ram_size,retention_size,coreinfo,bank_count,bankinfo[I9100_BCM_MAX_BANKS];
  uint32_t ram_selector_saved,ram_selector_owned;
+ uint32_t firmware_holds,ram_image_owned;
  int32_t error,cleanup_error;
 };
 int i9100_bcm_erom_decode(const uint32_t *,uint32_t word_count,struct i9100_bcm_topology *);
