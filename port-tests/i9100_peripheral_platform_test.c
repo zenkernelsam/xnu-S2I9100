@@ -13,7 +13,7 @@ struct model {
  uint32_t ack_count,acks[32],fail_address,fail_data,arbitration,stalled,stop_stalled;
  uint8_t data[256],pointer;
  uint64_t ns;
- uint32_t freeze_time,domain,domain_fail,domain_put_fail,consumer_busy;
+ uint32_t freeze_time,domain,domain_fail,domain_put_fail,consumer_busy,domain_partial,restore_drop;
  struct i9100_irq_cascade *cascade;struct i9100_cascade_lease *lease;
  unsigned handler_count,clear_source,handler_error;
 };
@@ -147,8 +147,10 @@ static void cascade(void)
  assert(!i9100_cascade_unregister(&l));assert(!i9100_cascade_enable(&c,0));
 }
 static uint32_t aud_read(void *c,unsigned off){return read_generic(c,0,off);}
-static void aud_write(void *c,unsigned off,uint32_t value){write_generic(c,0,off,value);}
-static int domain_get(void *c){struct model *p=c;if(p->domain_fail)return -1;p->domain++;return 0;}
+static void aud_write(void *c,unsigned off,uint32_t value)
+{struct model *p=c;if(p->restore_drop&&off==0U&&value==8U){p->writes++;return;}write_generic(c,0,off,value);}
+static int domain_get(void *c,unsigned *owned)
+{struct model *p=c;*owned=0;if(p->domain_fail&&!p->domain_partial)return -1;p->domain++;*owned=1;return p->domain_fail?-1:0;}
 static int domain_put(void *c){struct model *p=c;if(p->domain_put_fail)return -1;assert(p->domain);p->domain--;return 0;}
 static int consumer_idle(void *c){return ((struct model *)c)->consumer_busy?-1:0;}
 static void audss(void)
@@ -169,6 +171,13 @@ static void audss(void)
  m.domain_put_fail=0;assert(!i9100_audss_release(&a)&&!m.domain);assert(m.regs[0][0]==8U&&!m.regs[0][1]);
  m.domain_fail=1;assert(i9100_audss_acquire(&a,&conf)==I9100_AUDSS_IO&&!m.domain);
  m.domain_fail=0;m.regs[0][0]=12U;assert(i9100_audss_acquire(&a,0)==I9100_AUDSS_CLOCK&&!m.domain);
+ m.regs[0][0]=8U;m.regs[0][2]=0;assert(!i9100_audss_acquire(&a,&conf));m.restore_drop=1;
+ assert(i9100_audss_release(&a)==I9100_AUDSS_IO&&a.reconfigured&&a.domain_owned&&m.domain==1);
+ m.restore_drop=0;assert(!i9100_audss_release(&a)&&!m.domain&&m.regs[0][0]==8U);
+ m.domain_fail=m.domain_partial=1;unsigned reads=m.reads,writes=m.writes;
+ assert(i9100_audss_acquire(&a,0)==I9100_AUDSS_IO&&a.domain_owned&&!a.saved_valid&&a.fault&&m.domain==1);
+ assert(m.reads==reads&&m.writes==writes);assert(!i9100_audss_release(&a)&&!m.domain);
+ assert(m.reads==reads&&m.writes==writes);m.domain_fail=m.domain_partial=0;
 }
 int main(void)
 {board();i2c();cascade();audss();puts("PASS U1 reserved pins/IRQ IDs; Samsung I2C repeated-start/NACK/arbitration/STOP/clock stalls; EINT/combiner ownership/storm; AUDSS source/divider/domain lifecycle");return 0;}

@@ -12,14 +12,14 @@ struct i9100_audss_io {
  uint32_t (*read32)(void *,unsigned);
  void (*write32)(void *,unsigned,uint32_t);
  int (*lock)(void *);void (*unlock)(void *);
- int (*domain_get)(void *);int (*domain_put)(void *);
+ int (*domain_get)(void *,unsigned *owned);int (*domain_put)(void *);
  int (*consumers_idle)(void *); /* includes I2S and DMA; zero=quiescent */
 };
 struct i9100_audss_rates {uint32_t xtal,epll,external_i2s,sclk_audio0,bus,i2s;};
 struct i9100_audss_config {uint8_t main_source,i2s_source,rp_div,bus_div,i2s_div;};
 struct i9100_audss {
  struct i9100_audss_io io;struct i9100_audss_rates rates;
- uint32_t saved[3],enabled,active,initialized,domain_owned,reconfigured,fault;
+ uint32_t saved[3],enabled,active,initialized,domain_owned,reconfigured,fault,saved_valid;
 };
 int i9100_audss_init(struct i9100_audss *,const struct i9100_audss_io *,const struct i9100_audss_rates *);
 int i9100_audss_enable(struct i9100_audss *,int);
@@ -29,6 +29,9 @@ int i9100_audss_release(struct i9100_audss *);
  * guessed PMU register or EPLL programming. Reconfiguration requires all
  * AUDSS gates initially off. Gate-only adoption preserves inherited clocks.
  * Initialization and enable are software-only. No output pin is enabled. */
+/* domain_get reports retained/pending ownership even on an error. Such a
+ * failure never reads AUDSS until power-on succeeds; release delegates to
+ * the pending provider without touching inaccessible registers. */
 #ifdef __cplusplus
 }
 #endif
