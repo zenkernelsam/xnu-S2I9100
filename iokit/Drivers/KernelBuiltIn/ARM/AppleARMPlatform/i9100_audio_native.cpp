@@ -41,6 +41,24 @@ static int delay(void *,uint32_t us){if(!ml_get_interrupts_enabled()||us>100000U
 static int dma_idle(void *c){return i9100_pl330_idle(&((i9100_audio_native *)c)->dma);}
 static int dma_stop(void *c){return i9100_pl330_stop(&((i9100_audio_native *)c)->dma);}
 static int muted(void *c){return i9100_mc1n2_mute(((i9100_audio_native *)c)->codec);}
+static int pads_idle(void *c)
+{
+ i9100_audio_native *a=(i9100_audio_native *)c;if(!a->pins.active)return 0;
+ for(unsigned n=0;n<7U;n++){int e=i9100_gpio_input(&a->pins,n);if(e)return e;}
+ return 0;
+}
+static int initial_clock_pads(i9100_audio_native *a,i9100_gpio_broker *gpio)
+{
+ if(gpio->io.lock(gpio->io.cookie))return I9100_PCM_BUSY;
+ uint32_t con=gpio->io.read32(gpio->io.cookie,2,0);gpio->io.unlock(gpio->io.cookie);
+ uint32_t mode=read(a,I2S_MAP,4);
+ if(read(a,I2S_MAP,0)&(7U|(1U<<18)|(1U<<25)|(1U<<23)|(1U<<16)))return I9100_I2S_BUSY;
+ for(unsigned n=0;n<3U;n++){
+  unsigned function=(con>>(n*4U))&15U;
+  if(function&&!(function==2U&&(mode&0x1800U)==0x1800U))return I9100_I2S_CLOCK;
+ }
+ return 0;
+}
 static int controller_idle(i9100_audio_native *a)
 {
  if(read(a,PDMA_MAP,0xd00U)&1U||read(a,PDMA_MAP,0x30U)||read(a,PDMA_MAP,0x34U))return I9100_PCM_BUSY;
@@ -93,7 +111,8 @@ int i9100_audio_native_open(int enabled,i9100_peripheral_native *parent,i9100_au
  if(!ml_get_interrupts_enabled()||!parent||!audss||!codec||verified!=1||
     (rate!=44100U&&rate!=48000U)||frames<16U||frames>4096U||bclk!=rate*32U||
     !audss->active||!audss->domain_owned||audss->fault||!audss->rates.bus||!audss->rates.i2s||
-    !codec->enabled||!codec->cold_owned||codec->cold_stage!=5U||codec->id!=0x79U||
+    !codec->enabled||!codec->cold_owned||codec->cold_stage!=5U||!codec->clock_owned||!codec->clock_active||codec->id!=0x79U||
+    !codec->clock_guard.lease_valid||!codec->clock_guard.consumers_idle||
     codec->mclk_hz!=24000000U||codec->sample_rate!=rate)return I9100_PCM_ARGUMENT;
  i9100_gpio_broker *gpio=i9100_peripheral_native_gpio(parent);
  i9100_clock_gates *clocks=i9100_peripheral_native_clocks(parent);
@@ -106,12 +125,14 @@ int i9100_audio_native_open(int enabled,i9100_peripheral_native *parent,i9100_au
  const uint32_t addresses[MAPS]={0x12680000U,0x03830000U,0x10490000U};
  for(unsigned n=0;n<MAPS;n++)if(!map(a,n,addresses[n])){dispose(a);return I9100_PCM_IO;}
  i9100_pl330_io di={a,dma_read,dma_write,dma_take,dma_drop,now,delay};
- i9100_i2s_io ii={a,i2s_read,i2s_write,i2s_take,i2s_drop,dma_idle,dma_stop};
+ i9100_i2s_io ii={a,i2s_read,i2s_write,i2s_take,i2s_drop,dma_idle,dma_stop,pads_idle};
  i9100_pcm_io pi={a,stream_take,stream_drop,muted};
- uint8_t pads=0,start=0;int e=i9100_mc1n2_read(codec,I9100_MC_BASE,12,&pads);
+ uint8_t pads=0,start=0,fs=0;int e=i9100_mc1n2_read(codec,I9100_MC_BASE,12,&pads);
  if(!e)e=i9100_mc1n2_read(codec,I9100_MC_MIXER,137,&start);
+ if(!e)e=i9100_mc1n2_read(codec,I9100_MC_MIXER,135,&fs);
  /* Cold init deliberately masks these pads; do not confuse that with clocks. */
- if(!e&&((pads&0xf0U)!=0x50U||(start&0x1cU)!=0x1cU))e=I9100_MC_NOT_READY;
+ if(!e&&((pads&0xf0U)!=0x50U||(start&0x4cU)!=0x4cU||(fs&0x7fU)!=(rate==48000U?0x20U:0x21U)))e=I9100_MC_NOT_READY;
+ if(!e)e=initial_clock_pads(a,gpio);
  if(!e&&(read(a,GIC_MAP,0x108U)&(1U<<3)||read(a,GIC_MAP,0x110U)&(1U<<1)))e=I9100_PCM_BUSY;
  if(e){dispose(a);return e;}
  e=muted(a);if(e){*out=a;return e;}
@@ -119,7 +140,6 @@ int i9100_audio_native_open(int enabled,i9100_peripheral_native *parent,i9100_au
  if(!e)e=i9100_clock_acquire(clocks,I9100_GATE_PDMA0,&a->gate);
  if(!e&&(clocks->gates[I9100_GATE_PDMA0].refs!=1U||controller_idle(a)))e=I9100_PCM_BUSY;
  if(!e)e=i9100_gpio_claim(gpio,I9100_GPZ,0x7fU,&a->pins);
- for(unsigned n=0;n<7U&&!e;n++)e=i9100_gpio_function(&a->pins,n,2);
  if(!e)e=i9100_pl330_enable(&a->dma,1);
  if(!e)e=i9100_i2s_enable(&a->i2s,1);
  unsigned bytes=((frames*4U+4095U)/4096U)*4096U;
@@ -131,6 +151,8 @@ int i9100_audio_native_open(int enabled,i9100_peripheral_native *parent,i9100_au
   i9100_dma_native_buffer(a->allocation[0]),i9100_dma_native_buffer(a->allocation[1]),i9100_dma_native_buffer(a->allocation[2]));
  if(!e)e=i9100_pcm_stream_enable(&a->pcm,1);
  if(!e)e=i9100_pcm_stream_prepare(&a->pcm,rate,frames,bclk,verified);
+ /* Configure slave/CDCLK-input mode before connecting codec clock pads. */
+ for(unsigned n=0;n<7U&&!e;n++)e=i9100_gpio_function(&a->pins,n,2);
  if(e){int off=cleanup(a);if(off)*out=a;else dispose(a);return e;}
  a->phase=READY;*out=a;return 0;
 }

@@ -2,6 +2,7 @@
 #include "i9100_mc1n2.h"
 #include <string.h>
 static int cold_off_locked(struct i9100_mc1n2 *);
+static int clock_off_locked(struct i9100_mc1n2 *);
 static int transfer(struct i9100_mc1n2 *c,struct i9100_i2c_message *m,unsigned count)
 {unsigned done=0;int e=c->io.transfer(c->io.cookie,m,count,&done);return e||done!=count?I9100_MC_IO:0;}
 static int direct_write(struct i9100_mc1n2 *c,uint8_t reg,uint8_t value)
@@ -149,6 +150,7 @@ static int ready(struct i9100_mc1n2 *c,uint8_t bits)
 }
 static int cold_off_locked(struct i9100_mc1n2 *c)
 {
+ if(c->clock_owned){int off=clock_off_locked(c);c->clock_cleanup_error=off;if(off)return off;}
  int e=mute_locked(c),r;
  r=checked_write(c,I9100_MC_MIXER,137,0,0xff);if(r)e=r;
  r=checked_write(c,I9100_MC_BASE,12,0xae,0xff);if(r)e=r;
@@ -164,6 +166,66 @@ int i9100_mc1n2_cold_stop(struct i9100_mc1n2 *c)
  if(!c||!c->initialized)return I9100_MC_ARGUMENT;
  if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
  int e=!c->enabled||!c->cold_owned?I9100_MC_DISABLED:cold_off_locked(c);
+ c->io.release(c->io.cookie);return e;
+}
+static int clock_off_locked(struct i9100_mc1n2 *c)
+{
+ if(!c->clock_guard.lease_valid||!c->clock_guard.consumers_idle)return I9100_MC_ARGUMENT;
+ if(c->clock_guard.consumers_idle(c->clock_guard.cookie))return I9100_MC_BUSY;
+ int e=c->clock_guard.lease_valid(c->clock_guard.cookie)?I9100_MC_NOT_READY:0,r;
+ r=mute_locked(c);if(r)e=r;
+ /* Mask output pads before stopping their timer, while AP/DMA are idle. */
+ r=checked_write(c,I9100_MC_BASE,12,c->clock_saved_pad,0xff);
+ if(r)e=r;else c->clock_active=0;
+ r=checked_write(c,I9100_MC_MIXER,137,c->clock_saved_start,0xff);if(r)e=r;
+ r=checked_write(c,I9100_MC_MIXER,135,c->clock_saved_fs,0xff);if(r)e=r;
+ if(e)c->fault=1;
+ else{c->clock_owned=c->clock_active=c->clock_stage=0;c->fault=0;memset(&c->clock_guard,0,sizeof(c->clock_guard));}
+ return e;
+}
+int i9100_mc1n2_clock_stop(struct i9100_mc1n2 *c)
+{
+ if(!c||!c->initialized)return I9100_MC_ARGUMENT;
+ if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
+ int e=!c->enabled||!c->clock_owned?I9100_MC_DISABLED:clock_off_locked(c);
+ c->clock_cleanup_error=e;if(e&&!c->clock_error)c->clock_error=e;
+ c->io.release(c->io.cookie);return e;
+}
+int i9100_mc1n2_clock_start(struct i9100_mc1n2 *c,const struct i9100_mc1n2_clock_guard *g)
+{
+ if(!c||!c->initialized||!g||!g->lease_valid||!g->consumers_idle)return I9100_MC_ARGUMENT;
+ if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
+ int e=0;uint8_t identity=0,pad=0,start=0,fs=0,pll=0;
+ if(!c->enabled||!c->cold_owned||c->cold_stage!=5U){e=I9100_MC_DISABLED;goto done;}
+ if(c->clock_owned||c->fault){e=I9100_MC_BUSY;goto done;}
+ if(c->mclk_hz!=24000000U||(c->sample_rate!=44100U&&c->sample_rate!=48000U))
+  {e=I9100_MC_ARGUMENT;goto done;}
+ if(g->lease_valid(g->cookie)){e=I9100_MC_NOT_READY;goto done;}
+ if(g->consumers_idle(g->cookie)){e=I9100_MC_BUSY;goto done;}
+ c->clock_error=c->clock_cleanup_error=0;c->clock_failure_stage=0;
+ e=direct_read(c,8,&identity);if(!e&&identity!=0x79U)e=I9100_MC_ID;
+ if(!e)e=read_bank(c,I9100_MC_BASE,12,&pad);
+ if(!e)e=read_bank(c,I9100_MC_MIXER,137,&start);
+ if(!e)e=read_bank(c,I9100_MC_MIXER,135,&fs);
+ if(!e)e=read_bank(c,I9100_MC_CODEC,15,&pll);
+ if(!e&&((pad&0xf0U)!=0xa0U||start||fs!=(uint8_t)(c->sample_rate==48000U?0xa0U:0xa1U)||(pll&1U)))e=I9100_MC_NOT_READY;
+ if(!e)e=ready(c,0xc0U);
+ if(e){c->clock_error=e;goto done;}
+ e=mute_locked(c);if(e){c->clock_error=e;goto done;}
+ c->clock_guard=*g;c->clock_saved_pad=pad;c->clock_saved_start=start;c->clock_saved_fs=fs;
+ c->clock_owned=1;c->clock_stage=1;
+ /* Auto-FS is a slave-mode option. Master uses explicit FS and 32fs. */
+ e=checked_write(c,I9100_MC_MIXER,135,c->sample_rate==48000U?0x20U:0x21U,0xff);if(e)goto failed;
+ c->clock_stage=2;
+ /* Vendor MCB_DITIM0_START is bit6 (40), not bit4. DIT remains off. */
+ e=checked_write(c,I9100_MC_MIXER,137,0x4cU,0xff);if(e)goto failed;
+ c->clock_stage=3;
+ e=checked_write(c,I9100_MC_BASE,12,(pad&0x0fU)|0x50U,0xff);if(e)goto failed;
+ if(g->lease_valid(g->cookie)){e=I9100_MC_NOT_READY;goto failed;}
+ c->clock_stage=4;c->clock_active=1;goto done;
+failed:
+ c->clock_error=e;c->clock_failure_stage=c->clock_stage;c->clock_cleanup_error=clock_off_locked(c);c->fault=1;
+done:
  c->io.release(c->io.cookie);return e;
 }
 int i9100_mc1n2_cold_init(struct i9100_mc1n2 *c,uint32_t mclk,uint32_t rate,int verified)

@@ -12,6 +12,7 @@ struct i9100_i2s_io {
  void (*write32)(void *,unsigned,uint32_t);
  int (*lock)(void *);void (*unlock)(void *);
  int (*dma_idle)(void *);int (*dma_stop)(void *);
+ int (*pads_idle)(void *); /* after DMA stops: put AP clock pads in input/high-Z before restoring mode */
 };
 struct i9100_i2s {
  struct i9100_i2s_io io;
@@ -27,7 +28,8 @@ void i9100_pcm_attenuate_30db(int16_t *destination,const int16_t *source,unsigne
 /* I2S0 main FIFO, codec-master/slave-AP, stereo16/BCLK32fs. Configure while
  * idle; no secondary/IDMA/FIFO sharing or arbitrary clock inference.
  * Start requires mute acknowledged. Stop suppresses requests before killing
- * DMA, and only restores registers after the engine is quiescent. */
+ * DMA, then confirms AP clock pads are input/high-Z before restoring mode.
+ * Failed pad shutdown retains configuration ownership. */
 #ifdef __cplusplus
 }
 #endif

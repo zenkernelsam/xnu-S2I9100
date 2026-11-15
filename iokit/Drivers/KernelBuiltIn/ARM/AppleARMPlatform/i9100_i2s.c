@@ -11,7 +11,7 @@ static uint32_t rd(struct i9100_i2s *s,unsigned off){return s->io.read32(s->io.c
 static void wr(struct i9100_i2s *s,unsigned off,uint32_t value){s->io.write32(s->io.cookie,off,value);}
 int i9100_i2s_init(struct i9100_i2s *s,const struct i9100_i2s_io *io)
 {
- if(!s||s->initialized||!io||!io->read32||!io->write32||!io->lock||!io->unlock||!io->dma_idle||!io->dma_stop)
+ if(!s||s->initialized||!io||!io->read32||!io->write32||!io->lock||!io->unlock||!io->dma_idle||!io->dma_stop||!io->pads_idle)
   return I9100_I2S_ARGUMENT;
  memset(s,0,sizeof(*s));s->io=*io;s->initialized=1;return 0;
 }
@@ -77,6 +77,7 @@ int i9100_i2s_stop(struct i9100_i2s *s)
  e=quiesce_locked(s);if(e)goto done;
  if(s->io.dma_stop(s->io.cookie)||s->io.dma_idle(s->io.cookie))
   {e=I9100_I2S_IO;s->fault=1;goto done;}
+ e=s->io.pads_idle(s->io.cookie);if(e){s->fault=1;goto done;}
  wr(s,FIFO,(1U<<15)|(1U<<7));wr(s,FIFO,0);
  wr(s,MODE,s->saved[1]);wr(s,PRESCALER,s->saved[2]);wr(s,CONTROL,s->saved[0]);
  if(rd(s,MODE)!=s->saved[1]||rd(s,PRESCALER)!=s->saved[2]||

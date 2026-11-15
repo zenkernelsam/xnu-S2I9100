@@ -21,6 +21,7 @@ struct model {
  unsigned stall_ready,sticky_codec_error,unsafe_amplifier_writes,codec_delays,drop_dac_mute;
  uint64_t vref_started;
  unsigned stream_locked,i2s_locked,i2s_writes,i2s_fail_write,reject_quiesce,sticky_event;
+ unsigned pads_calls,pads_fail,clock_lease_invalid,clock_consumer_busy,clock_lease_calls,clock_fail_lease_call;
  unsigned require_quiesce,kills,mute_calls,mute_fail;
  struct i9100_pl330 *stream_dma;
 };
@@ -144,16 +145,21 @@ static void i2s_write(void *c,unsigned off,uint32_t value)
  p->i2s[off/4]=value;if(off==0&&!(value&7U))p->stopped_requests=1;}
 static int dma_idle(void *c){return ((struct model *)c)->dma_busy?-1:0;}
 static int dma_stop(void *c){struct model *p=c;assert(p->stopped_requests);if(p->dma_stop_fail)return -1;p->dma_busy=0;return 0;}
+static int pads_idle(void *c)
+{struct model *p=c;assert(!(p->i2s[0]&7U)&&!p->dma_busy);if(p->stream_dma)assert(!i9100_pl330_idle(p->stream_dma));
+ p->pads_calls++;return p->pads_fail?I9100_I2S_IO:0;}
 static void i2s(void)
 {
- memset(&m,0,sizeof(m));struct i9100_i2s s={0};struct i9100_i2s_io io={&m,i2s_read,i2s_write,lock,unlock,dma_idle,dma_stop};
+ memset(&m,0,sizeof(m));struct i9100_i2s s={0};struct i9100_i2s_io io={&m,i2s_read,i2s_write,lock,unlock,dma_idle,dma_stop,pads_idle};
  assert(!i9100_i2s_init(&s,&io));assert(!i9100_i2s_enable(&s,1));
  m.i2s[1]=0x20000000;assert(i9100_i2s_configure(&s,48000,1536000,0)==I9100_I2S_CLOCK);
  assert(!i9100_i2s_configure(&s,48000,1536000,1));
  assert(m.i2s[1]==0xe0001c00U);assert(i9100_i2s_start(&s,0,0)==I9100_I2S_ARGUMENT);
  assert(!i9100_i2s_start(&s,0,1));assert(!m.reset_missing&&m.i2s[0]==0x8000002dU);
  m.dma_busy=m.dma_stop_fail=1;assert(i9100_i2s_stop(&s)==I9100_I2S_IO&&s.fault&&s.prepared);
- assert(!(m.i2s[0]&7U));m.dma_stop_fail=0;assert(!i9100_i2s_stop(&s));assert(!s.prepared&&m.i2s[1]==0x20000000U);
+ assert(!(m.i2s[0]&7U)&&!m.pads_calls);m.dma_stop_fail=0;m.pads_fail=1;
+ assert(i9100_i2s_stop(&s)==I9100_I2S_IO&&s.prepared&&s.fault&&m.i2s[1]==0xe0001c00U);
+ m.pads_fail=0;assert(!i9100_i2s_stop(&s));assert(!s.prepared&&m.i2s[1]==0x20000000U);
 }
 static int bus_claim(void *c){struct model *p=c;if(p->bus_locked)return -1;p->bus_locked=1;return 0;}
 static void bus_release(void *c){struct model *p=c;assert(p->bus_locked);p->bus_locked=0;}
@@ -263,6 +269,60 @@ static void codec_cold(void)
  m.sticky_codec_error=0;assert(!i9100_mc1n2_cold_stop(&c)&&!c.cold_owned);
 }
 static int16_t pcm_in[65536],pcm_out[65536];
+static int clock_lease(void *c)
+{struct model *p=c;assert(p->bus_locked);p->clock_lease_calls++;
+ return p->clock_lease_invalid||p->clock_lease_calls==p->clock_fail_lease_call?-1:0;}
+static int clock_idle(void *c){struct model *p=c;assert(p->bus_locked);return p->clock_consumer_busy?-1:0;}
+static struct i9100_mc1n2_clock_guard clock_guard={&m,clock_lease,clock_idle};
+static void init_clock(struct i9100_mc1n2 *c,unsigned rate)
+{codec_init(c);assert(!i9100_mc1n2_enable(c,1));assert(!i9100_mc1n2_cold_init(c,24000000,rate,1));}
+static void codec_clock(void)
+{
+ struct i9100_mc1n2 c;
+ for(unsigned rate=44100;rate<=48000;rate+=3900){
+  init_clock(&c,rate);unsigned transactions=m.transactions;m.clock_consumer_busy=1;
+  assert(i9100_mc1n2_clock_start(&c,&clock_guard)==I9100_MC_BUSY&&m.transactions==transactions&&!c.clock_owned);
+  m.clock_consumer_busy=0;m.clock_lease_invalid=1;
+  assert(i9100_mc1n2_clock_start(&c,&clock_guard)==I9100_MC_NOT_READY&&m.transactions==transactions&&!c.clock_owned);
+  m.clock_lease_invalid=0;assert(!i9100_mc1n2_clock_start(&c,&clock_guard));
+  assert(c.clock_owned&&c.clock_active&&c.clock_stage==4&&c.cold_owned&&c.muted);
+  assert(m.codec[4][137]==0x4c&&m.codec[1][12]==0x5e&&m.codec[4][135]==(rate==48000?0x20:0x21));
+  assert(!m.unsafe_amplifier_writes&&m.codec[3][78]==2&&(m.codec[2][3]&0x3f)==0x3f);
+  transactions=m.transactions;assert(i9100_mc1n2_clock_start(&c,&clock_guard)==I9100_MC_BUSY&&m.transactions==transactions);
+  m.clock_consumer_busy=1;assert(i9100_mc1n2_clock_stop(&c)==I9100_MC_BUSY&&m.transactions==transactions&&c.clock_owned);
+  assert(i9100_mc1n2_cold_stop(&c)==I9100_MC_BUSY&&m.transactions==transactions&&c.cold_owned);
+  assert(i9100_mc1n2_enable(&c,0)==I9100_MC_BUSY&&m.transactions==transactions&&c.enabled);
+  m.clock_consumer_busy=0;assert(!i9100_mc1n2_clock_stop(&c)&&!c.clock_owned&&!c.clock_active&&c.cold_owned);
+  assert(m.codec[1][12]==0xae&&!m.codec[4][137]&&m.codec[4][135]==(rate==48000?0xa0:0xa1));
+  assert(!c.clock_guard.lease_valid);assert(!i9100_mc1n2_cold_stop(&c));
+ }
+ init_clock(&c,48000);unsigned before=m.transactions;assert(!i9100_mc1n2_clock_start(&c,&clock_guard));
+ unsigned count=m.transactions-before;
+ for(unsigned point=1;point<=count;point++){
+  init_clock(&c,48000);m.fail_transaction=m.transactions+point;int error=i9100_mc1n2_clock_start(&c,&clock_guard);
+  assert(error&&!c.clock_owned&&!c.clock_active&&c.cold_owned&&!m.unsafe_amplifier_writes);
+  assert(m.codec[1][12]==0xae&&!m.codec[4][137]);
+  if(c.clock_failure_stage)assert(c.fault&&!c.clock_cleanup_error&&m.codec[4][135]==0xa0);
+ }
+ init_clock(&c,48000);m.codec[0][8]=0x78;before=m.transactions;
+ assert(i9100_mc1n2_clock_start(&c,&clock_guard)==I9100_MC_ID&&m.transactions==before+1&&!c.clock_owned);
+ init_clock(&c,48000);m.codec[4][137]=0x1c;
+ assert(i9100_mc1n2_clock_start(&c,&clock_guard)==I9100_MC_NOT_READY&&!c.clock_owned); /* reserved bit4 is not the timer */
+ init_clock(&c,48000);m.stall_ready=m.freeze_time=1;
+ assert(i9100_mc1n2_clock_start(&c,&clock_guard)==I9100_MC_TIMEOUT&&!c.clock_owned&&m.codec[1][12]==0xae);
+ init_clock(&c,48000);m.clock_fail_lease_call=2;
+ assert(i9100_mc1n2_clock_start(&c,&clock_guard)==I9100_MC_NOT_READY&&c.clock_failure_stage==3&&!c.clock_owned&&c.fault);
+ assert(m.codec[1][12]==0xae&&!m.codec[4][137]);
+ init_clock(&c,48000);assert(!i9100_mc1n2_clock_start(&c,&clock_guard));m.sticky_codec_error=1;
+ assert(i9100_mc1n2_clock_stop(&c)==I9100_MC_IO&&c.clock_owned&&c.fault);
+ assert(i9100_mc1n2_cold_stop(&c)==I9100_MC_IO&&c.cold_owned&&(m.codec[2][2]&15U)==6U);
+ m.sticky_codec_error=0;assert(!i9100_mc1n2_clock_stop(&c));assert(!i9100_mc1n2_cold_stop(&c));
+ init_clock(&c,48000);assert(!i9100_mc1n2_clock_start(&c,&clock_guard));m.clock_lease_invalid=1;
+ assert(i9100_mc1n2_clock_stop(&c)==I9100_MC_NOT_READY&&c.clock_owned&&!c.clock_active);
+ m.clock_lease_invalid=0;assert(!i9100_mc1n2_clock_stop(&c));
+ init_clock(&c,48000);assert(!i9100_mc1n2_clock_start(&c,&clock_guard));assert(!i9100_mc1n2_enable(&c,0));
+ assert(!c.clock_owned&&!c.cold_owned&&!c.enabled&&!m.codec[4][137]);
+}
 static void pcm(void)
 {
  for(unsigned n=0;n<65536;n++)pcm_in[n]=(int16_t)(n-32768);
@@ -279,7 +339,7 @@ static int ensure_muted(void *c){struct model *p=c;assert(p->stream_locked);p->m
 static void init_stream(struct i9100_pcm_stream *s,struct i9100_pl330 *p,struct i9100_i2s *i)
 {
  init_pl(p);memset(i,0,sizeof(*i));memset(s,0,sizeof(*s));m.stream_dma=p;m.require_quiesce=1;m.i2s[1]=0x20000000U;
- struct i9100_i2s_io ii={&m,i2s_read,i2s_write,live_i2s_lock,live_i2s_unlock,live_dma_idle,live_dma_stop};
+ struct i9100_i2s_io ii={&m,i2s_read,i2s_write,live_i2s_lock,live_i2s_unlock,live_dma_idle,live_dma_stop,pads_idle};
  assert(!i9100_i2s_init(i,&ii));assert(!i9100_i2s_enable(i,1));
  struct i9100_pcm_io io={&m,stream_lock,stream_unlock,ensure_muted};
  unsigned reads=m.reads,writes=m.writes;
@@ -432,5 +492,5 @@ static void stream_faults(void)
  p.job.source=&src_buffer.b;assert(!i9100_pcm_stream_stop(&s));assert_stream_released(&s,&p,&i);
 }
 int main(void)
-{pl330();i2s();codec();codec_cold();pcm();stream_periods();stream_rejects();stream_faults();
- puts("PASS finite DMA/I2S/MC1N2 cold/mute; PCM periods/512 alternating VM jobs/zero fill/-30dB/exact positions/pins/no kill before quiesce/stop faults/explicit recovery/no fault retries");return 0;}
+{pl330();i2s();codec();codec_cold();codec_clock();pcm();stream_periods();stream_rejects();stream_faults();
+ puts("PASS finite DMA/I2S pad-idle-before-mode-restore/MC1N2 cold/mute/clock-only4c/all clock transactions/busy consumers/sticky shutdown; PCM512 periods/zero/-30dB/exact positions/pins/explicit recovery");return 0;}
