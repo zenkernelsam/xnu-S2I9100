@@ -3,7 +3,7 @@
 /* One exact CMSessionCreate wait, matched through its original own-task
  * frame chain. Semaphore hooks only copy caller-provided kernel scalars;
  * no user copy, clock, printf, VM/port walk or scheduling under a lock. */
-extern volatile uint32_t i9100_audio_property_lock_history[1+8*12];
+#include "i9100_audio_observation_target.h"
 extern unsigned int real_ncpus;
 volatile uint32_t i9100_media_semaphore_diag[12+128*16];
 volatile uint32_t i9100_media_dispatch_wait[16+64];
@@ -39,11 +39,9 @@ static void i9100_media_semaphore_begin(unsigned semaphore,unsigned name)
     task_t task=current_task();
     if(i9100_media_semaphore_claim || !semaphore || !name || !task || task==kernel_task || real_ncpus!=1 ||
        ml_at_interrupt_context() || !ml_get_interrupts_enabled() || get_preemption_level()!=0 ||
-       i9100_audio_property_lock_history[0]<1 ||
-       i9100_audio_property_lock_history[3]!=(unsigned)(uintptr_t)task ||
-       i9100_audio_property_lock_history[2]!=(unsigned)proc_selfpid())return;
+       !i9100_audio_select_task((unsigned)proc_selfpid(),(unsigned)(uintptr_t)task))return;
     arm_saved_state_t *s=current_thread()->machine.uss;
-    unsigned slide=i9100_audio_property_lock_history[4];
+    unsigned slide=i9100_audio_observation_target[4];
     if(!s || (s->cpsr&31U)!=16U || slide>=0x40000000U-0x39494dd4U ||
        s->pc!=0x392bcf04U+slide)return;
     unsigned frame=s->r[7],matched=0;
@@ -56,7 +54,7 @@ static void i9100_media_semaphore_begin(unsigned semaphore,unsigned name)
     }
     if(!matched || !OSCompareAndSwap(0U,1U,&i9100_media_semaphore_claim))return;
     i9100_media_semaphore_diag[1]=1;i9100_media_semaphore_diag[2]=128;i9100_media_semaphore_diag[3]=16;
-    i9100_media_semaphore_diag[4]=i9100_audio_property_lock_history[2];
+    i9100_media_semaphore_diag[4]=i9100_audio_observation_target[2];
     i9100_media_semaphore_diag[5]=(unsigned)(uintptr_t)task;i9100_media_semaphore_diag[6]=semaphore;
     i9100_media_semaphore_diag[7]=name;i9100_media_semaphore_target=semaphore;
     i9100_media_semaphore_record(1,semaphore,0,0,0,0,matched);

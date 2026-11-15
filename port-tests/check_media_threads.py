@@ -26,11 +26,13 @@ struct task {queue_head_t threads;};
 static struct task task;static struct thread threads[20];static struct uthread uthreads[20];static arm_saved_state_t registers[20];
 static task_t current_task(void){return &task;}static task_t kernel_task;
 unsigned int real_ncpus=1;volatile uint32_t i9100_audio_property_runtime[4];volatile uint32_t i9100_audio_property_lock_history[97];
-static unsigned masks,reads,userreads,irq,interrupts=1,preemption,enable=1,failread,current_pid=33;
+static unsigned masks,reads,userreads,irq,interrupts=1,preemption,enable=1,failread,current_pid=33,repair,target_allowed=1;
 int proc_selfpid(void){return (int)current_pid;}
+volatile uint32_t i9100_audio_observation_target[8];
+int i9100_audio_select_task(unsigned pid,unsigned owner){return target_allowed&&i9100_audio_observation_target[1]==2&&pid==i9100_audio_observation_target[2]&&owner==i9100_audio_observation_target[3];}
 static unsigned ml_at_interrupt_context(void){return irq;}static unsigned ml_get_interrupts_enabled(void){return interrupts;}
 static unsigned get_preemption_level(void){return preemption;}
-static int PE_parse_boot_argn(const char*n,int*out,unsigned bytes){assert(!strcmp(n,"i9100xpcdiag")&&bytes==4);*out=enable;return 1;}
+static int PE_parse_boot_argn(const char*n,int*out,unsigned bytes){assert(bytes==4);if(!strcmp(n,"i9100xpcdiag"))*out=enable;else {assert(!strcmp(n,"i9100audiolock"));*out=repair;}return 1;}
 static int OSCompareAndSwap(unsigned old,unsigned val,volatile unsigned*p){if(*p!=old)return 0;*p=val;return 1;}
 #define OSMemoryBarrier() __sync_synchronize()
 #define I9100_SNAPSHOT_MASK_GET(out) do{out=masks;masks=0xc0;}while(0)
@@ -56,6 +58,7 @@ static int copyin(user_addr_t at,void*out,unsigned n){
 static void reset(unsigned count){
  memset((void*)i9100_media_threads,0,sizeof(i9100_media_threads));i9100_media_threads_once=0;reads=userreads=failread=0;masks=irq=preemption=0;interrupts=enable=real_ncpus=1;current_pid=33;
  memset((void*)i9100_media_dispatch_diag,0,sizeof(i9100_media_dispatch_diag));
+ repair=0;target_allowed=1;i9100_audio_observation_target[0]=1;i9100_audio_observation_target[1]=2;i9100_audio_observation_target[2]=33;i9100_audio_observation_target[3]=(unsigned)(uintptr_t)&task;i9100_audio_observation_target[4]=0x100000;i9100_audio_observation_target[5]=0x20000;
  task.threads.next=count?(queue_entry_t)&threads[0]:(queue_entry_t)&task.threads;
  for(unsigned n=0;n<count;n++){
   threads[n].task_threads.next=n+1<count?(queue_entry_t)&threads[n+1]:(queue_entry_t)&task.threads;
@@ -67,7 +70,7 @@ static void reset(unsigned count){
  i9100_audio_property_runtime[1]=33;i9100_audio_property_runtime[2]=(uint32_t)(uintptr_t)&task;i9100_audio_property_runtime[3]=0x20000;
 }
 int main(int argc,char**argv){
- assert(argc==5);reset(3);i9100_media_threads_note(33,0x100000);
+ assert(argc==6);reset(3);i9100_media_threads_note(33,0x100000);
  assert(i9100_media_threads[0]==1&&i9100_media_threads[1]==2&&i9100_media_threads[4]==3&&!i9100_media_threads[5]);
  volatile uint32_t*r=&i9100_media_threads[16];assert(r[2]==578&&!r[5]&&r[23]==1&&r[28]==0x4d555458&&r[36]==578&&r[42]==0x310fdd65&&r[60]==0x5500&&r[66]==1);
  assert(!r[67]&&r[68]==0xe1a00000&&r[71]==0x55667788);
@@ -91,6 +94,11 @@ int main(int argc,char**argv){
  assert(!i9100_media_threads[8]&&!i9100_media_threads[10]&&!i9100_media_threads[11]&&!i9100_media_threads[12]&&!masks);
  assert(i9100_media_threads[16+2]==578&&i9100_media_dispatch_diag[9]==256);
  f=fopen(argv[4],"wb");assert(f);fwrite((const void*)i9100_media_threads,1,sizeof(i9100_media_threads),f);fclose(f);
+ reset(3);repair=1;target_allowed=0;i9100_media_threads_note(33,0x100000);
+ assert(!i9100_media_threads[0]&&!i9100_media_threads_once);
+ current_pid=34;target_allowed=1;i9100_audio_observation_target[2]=34;i9100_audio_property_runtime[1]=34;
+ i9100_media_threads_note(34,0x100000);assert(i9100_media_threads[0]==1&&i9100_media_threads[2]==34&&i9100_media_threads[13]==1);
+ f=fopen(argv[5],"wb");assert(f);fwrite((const void*)i9100_media_threads,1,sizeof(i9100_media_threads),f);fclose(f);
  for(unsigned n=0;n<8;n++){reset(3);unsigned slide=0;if(n==0)real_ncpus=2;if(n==1)irq=1;if(n==2)preemption=1;if(n==3)enable=0;if(n==4)current_pid=34;if(n==5)slide=1;if(n==6)interrupts=0;if(n==7)slide=0x40000000U-0x392cc840U;i9100_media_threads_note(33,slide);assert(!reads&&!userreads&&!i9100_media_threads[0]);}
  reset(20);i9100_media_threads_note(33,0);assert(i9100_media_threads[4]==16&&i9100_media_threads[5]==3);
  reset(3);failread=1;i9100_media_threads_note(33,0);assert(i9100_media_threads[5]==1&&!i9100_media_threads[4]&&!masks);
@@ -101,4 +109,4 @@ int main(int argc,char**argv){
 '''
 (out/'check.c').write_text(source)
 subprocess.run(['clang','-O1','-g','-fno-pie','-no-pie','-fsanitize=address,undefined','-fno-sanitize-recover=all',str(out/'check.c'),'-o',str(out/'check')],check=True)
-subprocess.run([str(out/'check'),str(out/'media-first-threads.bin'),str(out/'audio-owner.bin'),str(out/'media-dispatch.bin'),str(out/'media-first-native.bin')],check=True);print('EVIDENCE',out)
+subprocess.run([str(out/'check'),str(out/'media-first-threads.bin'),str(out/'audio-owner.bin'),str(out/'media-dispatch.bin'),str(out/'media-first-native.bin'),str(out/'media-selected.bin')],check=True);print('EVIDENCE',out)

@@ -1,4 +1,4 @@
-/* First installed media task's real pthread waits in ordinary syscall context.
+/* Selected executed-callback task's real pthread waits in syscall context.
  * Read only own map using bounded copyin before original blocking operations.
  * Capture eight distinct mutex waits, including the observed external callback
  * stage; never alter locks, return values or thread/signal policy. */
@@ -13,15 +13,10 @@ static void i9100_audio_wait_note(proc_t p,unsigned code,unsigned argument_error
     if(argument_error || (code!=301U && code!=302U) || !p || !state ||
        strcmp(p->p_comm,"mediaserverd") || (state->cpsr&0x1fU)!=0x10U ||
        ml_at_interrupt_context() || !ml_get_interrupts_enabled() || get_preemption_level()!=0 ||
-       i9100_audio_property_runtime[0]!=1 ||
-       i9100_audio_property_lock_history[0]<1 ||
-       i9100_audio_property_lock_history[2]!=(uint32_t)p->p_pid ||
-       i9100_audio_property_lock_history[3]!=(uint32_t)(uintptr_t)p->task ||
-       i9100_audio_property_runtime[1]!=(uint32_t)p->p_pid ||
-       i9100_audio_property_runtime[2]!=(uint32_t)(uintptr_t)p->task)return;
+       !i9100_audio_select_task((unsigned)p->p_pid,(unsigned)(uintptr_t)p->task))return;
     int enabled=0;
     if(!PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1)return;
-    unsigned address=i9100_audio_property_runtime[3];uint32_t runtime[16];
+    unsigned address=i9100_audio_observation_target[5];uint32_t runtime[16];
     if(address<4096 || address>0x3fffffc0U ||
        copyin((user_addr_t)address,runtime,sizeof(runtime)) || runtime[1]!=2U ||
        !OSCompareAndSwap(0U,1U,&i9100_audio_wait_guard))return;

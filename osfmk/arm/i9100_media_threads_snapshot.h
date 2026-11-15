@@ -42,10 +42,12 @@ void i9100_media_threads_note(unsigned pid,unsigned slide)
     if(!pid || pid!=(unsigned)proc_selfpid() || !task || task==kernel_task || real_ncpus!=1 ||
        ml_at_interrupt_context() || !ml_get_interrupts_enabled() || get_preemption_level()!=0 ||
        !PE_parse_boot_argn("i9100xpcdiag",&enabled,sizeof(enabled)) || enabled!=1 ||
-       (slide&4095U) || slide>=0x40000000U-0x392cc840U ||
-       !OSCompareAndSwap(0U,1U,&i9100_media_threads_once))return;
+       (slide&4095U) || slide>=0x40000000U-0x392cc840U)return;
+    int repaired=0;PE_parse_boot_argn("i9100audiolock",&repaired,sizeof(repaired));
+    if(repaired==1 && !i9100_audio_select_task(pid,(unsigned)(uintptr_t)task))return;
+    if(!OSCompareAndSwap(0U,1U,&i9100_media_threads_once))return;
     volatile uint32_t *out=i9100_media_threads;
-    out[1]=2;out[2]=pid;out[3]=(unsigned)(uintptr_t)task;out[6]=slide;
+    out[1]=2;out[2]=pid;out[3]=(unsigned)(uintptr_t)task;out[6]=slide;out[13]=repaired==1;
     unsigned count=0,mask;I9100_SNAPSHOT_MASK_GET(mask);out[7]=mask;
     /* No referenced object pointer escapes the raw exclusion. Saved scalar
      * values are evidence only; copyin later uses this still-current task. */
@@ -96,8 +98,12 @@ void i9100_media_threads_note(unsigned pid,unsigned slide)
             if(pair[0]<=frame)break;frame=pair[0];
         }
     }
-    unsigned runtime=i9100_audio_property_runtime[3];out[8]=runtime;out[9]=UINT32_MAX;
-    if(i9100_audio_property_runtime[1]==pid && i9100_audio_property_runtime[2]==(unsigned)(uintptr_t)task &&
+    unsigned runtime=repaired==1?i9100_audio_observation_target[5]:i9100_audio_property_runtime[3];
+    unsigned matches=repaired==1?(i9100_audio_observation_target[2]==pid &&
+        i9100_audio_observation_target[3]==(unsigned)(uintptr_t)task):
+        (i9100_audio_property_runtime[1]==pid && i9100_audio_property_runtime[2]==(unsigned)(uintptr_t)task);
+    out[8]=runtime;out[9]=UINT32_MAX;
+    if(matches &&
        runtime>=4096 && runtime<=0x3fffffc0U){
         uint32_t words[16];out[9]=copyin((user_addr_t)runtime,words,sizeof(words));
         if(!out[9]){out[10]=words[0];out[11]=words[1];out[12]=words[7];}
@@ -117,8 +123,8 @@ void i9100_audio_owner_note(unsigned sequence,unsigned pid,unsigned code,
     if(sequence<1 || sequence>I9100_AUDIO_OWNER_CAP || !pid || !task || task==kernel_task ||
        real_ncpus!=1 || ml_at_interrupt_context() || !ml_get_interrupts_enabled() ||
        get_preemption_level()!=0 || !owner_low || (owner_low==UINT32_MAX && owner_high==UINT32_MAX) ||
-       i9100_audio_property_lock_history[2]!=pid ||
-       i9100_audio_property_lock_history[3]!=(unsigned)(uintptr_t)task)return;
+       i9100_audio_observation_target[1]!=2 || i9100_audio_observation_target[2]!=pid ||
+       i9100_audio_observation_target[3]!=(unsigned)(uintptr_t)task)return;
     volatile uint32_t *r=&i9100_audio_owner_diag[4+(sequence-1)*I9100_AUDIO_OWNER_STRIDE];
     r[1]=pid;r[2]=(unsigned)(uintptr_t)task;r[3]=mutex;r[4]=code;
     r[5]=owner_low;r[6]=owner_high;r[9]=2;r[12]=UINT32_MAX;r[13]=1;

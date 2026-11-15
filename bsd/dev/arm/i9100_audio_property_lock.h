@@ -12,10 +12,10 @@ extern kern_return_t vm_map_enter(vm_map_t,vm_map_offset_t *,vm_map_size_t,
     vm_map_offset_t,int,vm_object_t,vm_object_offset_t,boolean_t,
     vm_prot_t,vm_prot_t,vm_inherit_t);
 /* Own-task runtime repair for the exact witnessed iOS6 CoreMedia callback.
- * Its external AudioObject query enters VirtualAudio while the global lock
+ * Its external AudioObjectSetPropertyData call enters VirtualAudio while the global lock
  * is held, reversing the initialization thread's plugin->global order.
  * Private COW code releases the actual recursive depth (at most16) around
- * the query and reacquires the same number of successfully released holds.
+ * the call and reacquires the same number of successfully released holds.
  * No API result is forged and the cached/SD image stays unchanged. */
 volatile uint32_t i9100_audio_property_lock_diag[12];
 volatile uint32_t i9100_audio_property_lock_history[1+8*12];

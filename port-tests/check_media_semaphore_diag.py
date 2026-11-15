@@ -31,6 +31,8 @@ static int OSCompareAndSwap(unsigned old,unsigned value,volatile unsigned*p){if(
 static int OSIncrementAtomic(volatile SInt32*p){return ++*p;}
 #define OSMemoryBarrier() __sync_synchronize()
 volatile uint32_t i9100_audio_property_lock_history[97];
+volatile uint32_t i9100_audio_observation_target[8];
+int i9100_audio_select_task(unsigned p,unsigned t){return i9100_audio_observation_target[1]==2&&p==i9100_audio_observation_target[2]&&t==i9100_audio_observation_target[3];}
 static int copyin(user_addr_t,void*,unsigned);
 ''' + f'#include "{repo}/pexpert/arm/i9100_media_semaphore_diag.h"\n' + r'''
 static int copyin(user_addr_t at,void*out,unsigned n){
@@ -49,6 +51,8 @@ static void reset(void){
  state.sp=0x30000;state.r[7]=0x30020;
  i9100_audio_property_lock_history[0]=1;i9100_audio_property_lock_history[2]=33;
  i9100_audio_property_lock_history[3]=(unsigned)(uintptr_t)&task;i9100_audio_property_lock_history[4]=0x100000;
+ i9100_audio_observation_target[0]=1;i9100_audio_observation_target[1]=2;i9100_audio_observation_target[2]=33;
+ i9100_audio_observation_target[3]=(unsigned)(uintptr_t)&task;i9100_audio_observation_target[4]=0x100000;
 }
 static volatile uint32_t*row(unsigned n){return &i9100_media_semaphore_diag[12+(n-1)*16];}
 int main(int argc,char**argv){
@@ -69,7 +73,7 @@ int main(int argc,char**argv){
  f=fopen(argv[2],"wb");assert(f);fwrite((const void*)i9100_media_dispatch_wait,1,sizeof(i9100_media_dispatch_wait),f);fclose(f);
  for(unsigned n=0;n<10;n++){
   reset();switch(n){case 0:real_ncpus=2;break;case 1:irq=1;break;case 2:interrupts=0;break;case 3:preemption=1;break;
-   case 4:pid=34;break;case 5:now_task=kernel_task;break;case 6:i9100_audio_property_lock_history[3]=0xdead;break;
+   case 4:pid=34;break;case 5:now_task=kernel_task;break;case 6:i9100_audio_observation_target[3]=0xdead;break;
    case 7:state.pc+=4;break;case 8:badframe=1;break;case 9:thread.machine.uss=NULL;break;}
   i9100_media_semaphore_begin(0x81234567,0xa203);assert(!i9100_media_semaphore_diag[0]&&!i9100_media_dispatch_wait[0]);
  }

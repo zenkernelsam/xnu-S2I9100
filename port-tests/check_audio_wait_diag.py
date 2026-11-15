@@ -18,6 +18,8 @@ struct proc {const char*p_comm;void*task;int p_pid;};typedef struct proc*proc_t;
 typedef struct {uint32_t r[13],sp,lr,pc,cpsr;} arm_saved_state_t;
 volatile uint32_t i9100_audio_property_runtime[4]={1,33,0x3333,0x20000};
 volatile uint32_t i9100_audio_property_lock_history[97]={1,2,33,0x3333};
+volatile uint32_t i9100_audio_observation_target[8]={1,2,33,0x3333,0x100000,0x20000,1,2};
+int i9100_audio_select_task(unsigned pid,unsigned task){return i9100_audio_observation_target[1]==2&&pid==i9100_audio_observation_target[2]&&task==i9100_audio_observation_target[3];}
 static unsigned irq,interrupts=1,preemption,enabled=1,thread=0x5555,calls;
 static uint32_t runtime[16]={1,2,0x12000,0x4d555458,0x12068,1,0,1};
 static unsigned current_thread(void){return thread;}

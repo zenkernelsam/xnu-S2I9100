@@ -113,6 +113,7 @@ extern const char *syscallnames[];
 #include "../../../pexpert/arm/i9100_mdns_observation.h"
 #include "../../../pexpert/arm/i9100_ls_files.h"
 #include "i9100_audio_property_lock.h"
+#include "i9100_audio_target_select.h"
 #include "i9100_audio_wait_diag.h"
 #include "i9100_early_process_diag.h"
 static void i9100_ls_file_note(struct proc *p,unsigned code,void *arguments,

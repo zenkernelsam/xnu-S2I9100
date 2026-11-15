@@ -5,6 +5,7 @@
  * task/thread/port locks, allocation, syscall result or signal change. */
 #ifndef I9100_MEDIA_THREADS_H
 #define I9100_MEDIA_THREADS_H
+#include "i9100_audio_observation_target.h"
 #define I9100_MEDIA_THREADS_CAP 16U
 #define I9100_MEDIA_THREADS_STRIDE 72U
 extern volatile uint32_t i9100_media_threads[16+16*72];

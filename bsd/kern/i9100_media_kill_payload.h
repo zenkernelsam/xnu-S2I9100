@@ -11,6 +11,7 @@ volatile uint32_t i9100_media_audio_runtime[8+16];
 #include "../../pexpert/arm/i9100_media_threads.h"
 static volatile UInt32 i9100_media_kill_guard;
 static volatile UInt32 i9100_springboard_kill_guard;
+static volatile UInt32 i9100_media_audio_guard;
 static void i9100_media_kill_note(proc_t p,const arm_saved_state_t *state,int signum,unsigned flavor)
 {
     int enabled=0;
@@ -22,22 +23,21 @@ static void i9100_media_kill_note(proc_t p,const arm_saved_state_t *state,int si
     unsigned springboard=!strcmp(p->p_comm,"SpringBoard");
     volatile UInt32 *guard=springboard?&i9100_springboard_kill_guard:&i9100_media_kill_guard;
     if((slide&4095U) || slide>=0x40000000U-0x392cc840U ||
-       state->pc!=0x392cc838U+slide || state->r[1]!=SIGKILL ||
-       !OSCompareAndSwap(0U,1U,guard))return;
-    volatile uint32_t *out=springboard?i9100_springboard_kill_payload:i9100_media_kill_payload;
+       state->pc!=0x392cc838U+slide || state->r[1]!=SIGKILL)return;
+    /* Keep the earliest failure payload, while allowing the shared target to
+     * select a later task whose callback actually ran. */
     if(!springboard)i9100_media_threads_note((unsigned)p->p_pid,slide);
-    /* Preserve the first actual callback stage before this owner exits.
-     * Installation alone cannot prove the new code ever executed. */
-    if(!springboard && i9100_audio_property_runtime[0]==1 &&
-       i9100_audio_property_runtime[1]==(uint32_t)p->p_pid &&
-       i9100_audio_property_runtime[2]==(uint32_t)(uintptr_t)p->task){
+    if(!springboard && !i9100_media_audio_runtime[0] && i9100_audio_observation_target[1]==2 &&
+       i9100_audio_observation_target[2]==(uint32_t)p->p_pid &&
+       i9100_audio_observation_target[3]==(uint32_t)(uintptr_t)p->task &&
+       OSCompareAndSwap(0U,1U,&i9100_media_audio_guard)){
         volatile uint32_t *audio=i9100_media_audio_runtime;
         audio[1]=p->p_pid;audio[2]=(uint32_t)(uintptr_t)p->task;
-        unsigned address=i9100_audio_property_runtime[3];audio[3]=address;
+        unsigned address=i9100_audio_observation_target[5];audio[3]=address;
         if(address>=4096U && address<=0x3fffffc0U)
             audio[4]=copyin((user_addr_t)address,(void *)&audio[8],64);
         else audio[4]=UINT32_MAX;
-        unsigned site=i9100_audio_property_lock_diag[4];audio[5]=site;
+        unsigned site=0x3169e848U+i9100_audio_observation_target[4];audio[5]=site;
         uint32_t branch[2]={0};
         if(site>=4096U && site<=0x3ffffff8U)
             audio[6]=copyin((user_addr_t)site,branch,8);
@@ -45,6 +45,8 @@ static void i9100_media_kill_note(proc_t p,const arm_saved_state_t *state,int si
         if(!audio[6])audio[7]=branch[1];
         OSMemoryBarrier();audio[0]=1;
     }
+    if(!OSCompareAndSwap(0U,1U,guard))return;
+    volatile uint32_t *out=springboard?i9100_springboard_kill_payload:i9100_media_kill_payload;
     out[1]=p->p_pid;out[2]=(uint32_t)(uintptr_t)p->task;out[3]=state->pc;
     out[4]=state->lr;out[5]=state->sp;out[6]=state->r[7];out[12]=slide;out[13]=1;
     out[14]=signum;out[15]=springboard?2U:1U;
