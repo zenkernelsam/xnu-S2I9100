@@ -207,6 +207,7 @@ extern struct savearea *get_user_regs(thread_t);
 #if BOARD_CONFIG_EXYNOS4210_I9100
 #include "../dev/arm/i9100_launchd_listener_guard.h"
 #include "../dev/arm/i9100_quiet_charge_feedback.h"
+#include "../dev/arm/i9100_hid_execution_trace.h"
 #endif
 
 
@@ -1105,6 +1106,7 @@ grade:
 #if BOARD_CONFIG_EXYNOS4210_I9100
 	i9100_launchd_listener_prepare(p,load_result.mach_header);
 	i9100_quiet_charge_record(p,load_result.mach_header);
+	i9100_hid_execution_record(p,load_result.mach_header);
 #endif
 
 #if !CONFIG_EMBEDDED
