@@ -59,6 +59,7 @@ static int copyin(user_addr_t at,void*out,unsigned n){
  if(at==0x392cd0fc&&n==16){uint32_t code[4]={0xe1a00000,0xe12fff1e,0x11223344,0x55667788};memcpy(out,code,n);return 0;}
  if(at==0x39594dd0&&n==4){uint32_t q=0x25000;memcpy(out,&q,n);return 0;}
  if(at==0x25000&&n==256){memset(out,0,n);strcpy((char*)out+64,"com.apple.coremedia.fixture");return 0;}
+ if(at==0x30710&&n==256){uint32_t w[64]={0};w[23]=1;w[25]=0x12000;w[26]=1;w[28]=7;w[62]=0x30818;w[63]=0x30f52055;memcpy(out,w,n);return 0;}
  return 14;
 }
 #define BOARD_CONFIG_EXYNOS4210_I9100 1
@@ -66,6 +67,7 @@ static int copyin(user_addr_t at,void*out,unsigned n){
 static void reset(unsigned count){
  memset((void*)i9100_media_threads,0,sizeof(i9100_media_threads));i9100_media_threads_once=0;reads=userreads=failread=0;masks=irq=preemption=0;interrupts=enable=real_ncpus=1;current_pid=33;
  memset((void*)i9100_media_identity,0,sizeof(i9100_media_identity));fail_source=NULL;fail_user=long_stack=0;
+ memset((void*)i9100_audio_owner_stack,0,sizeof(i9100_audio_owner_stack));i9100_audio_owner_stack_once=0;
  memset((void*)i9100_media_dispatch_diag,0,sizeof(i9100_media_dispatch_diag));
  repair=0;target_allowed=1;i9100_audio_observation_target[0]=1;i9100_audio_observation_target[1]=2;i9100_audio_observation_target[2]=33;i9100_audio_observation_target[3]=(unsigned)(uintptr_t)&task;i9100_audio_observation_target[4]=0x100000;i9100_audio_observation_target[5]=0x20000;
  task.threads.next=count?(queue_entry_t)&threads[0]:(queue_entry_t)&task.threads;
@@ -80,7 +82,7 @@ static void reset(unsigned count){
  i9100_audio_property_runtime[1]=33;i9100_audio_property_runtime[2]=(uint32_t)(uintptr_t)&task;i9100_audio_property_runtime[3]=0x20000;
 }
 int main(int argc,char**argv){
- assert(argc==8);reset(3);i9100_media_threads_note(33,0x100000);
+ assert(argc==9);reset(3);i9100_media_threads_note(33,0x100000);
  assert(i9100_media_threads[0]==1&&i9100_media_threads[1]==2&&i9100_media_threads[4]==3&&!i9100_media_threads[5]);
  volatile uint32_t*r=&i9100_media_threads[16];assert(r[2]==578&&!r[5]&&r[23]==1&&r[28]==0x4d555458&&r[36]==578&&r[42]==0x310fdd65&&r[60]==0x5500&&r[66]==1);
  assert(!r[67]&&r[68]==0xe1a00000&&r[71]==0x55667788);
@@ -128,9 +130,17 @@ int main(int argc,char**argv){
  reset(3);registers[0].r[12]=31;i9100_media_threads_note(33,0);assert(!id[5]&&id[7]==UINT32_MAX);
  reset(3);registers[0].r[0]=4096;i9100_media_threads_note(33,0);assert(id[7]==UINT32_MAX);
  reset(3);registers[0].r[0]=0x12001;i9100_media_threads_note(33,0);assert(id[7]==UINT32_MAX);
+ reset(3);uint32_t pair[2]={0x30818,0x30f52055};i9100_audio_owner_stack_note(1,33,578,0,0x30808,pair);
+ assert(i9100_audio_owner_stack[0]==1&&i9100_audio_owner_stack[14]==1&&!i9100_audio_owner_stack[9]&&i9100_audio_owner_stack[16+23]==1&&!masks);
+ f=fopen(argv[8],"wb");assert(f);fwrite((const void*)i9100_audio_owner_stack,1,sizeof(i9100_audio_owner_stack),f);fclose(f);
+ seen=userreads;i9100_audio_owner_stack_note(2,33,579,0,0x30808,pair);assert(userreads==seen&&i9100_audio_owner_stack[4]==1);
+ reset(3);fail_user=0x30710;i9100_audio_owner_stack_note(1,33,578,0,0x30808,pair);assert(i9100_audio_owner_stack[9]==14&&!i9100_audio_owner_stack[14]);
+ reset(3);pair[0]=0x30820;i9100_audio_owner_stack_note(1,33,578,0,0x30808,pair);assert(!i9100_audio_owner_stack[9]&&!i9100_audio_owner_stack[14]);
+ reset(3);pair[1]=0x310fdd65;i9100_audio_owner_stack_note(1,33,578,0,0x30808,pair);assert(!userreads&&!i9100_audio_owner_stack[0]);
+ reset(3);pair[1]=0x30f52055;i9100_audio_owner_stack_note(1,33,578,0,4096,pair);assert(!userreads&&!i9100_audio_owner_stack[0]);
  puts("PASS production first-media with repair ON/OFF, current PID, bounded slide, UP/raw masks, unlock-before-copyin, first retention, handler words, cap/failure; objects and paging modeled");
 }
 '''
 (out/'check.c').write_text(source)
 subprocess.run(['clang','-O1','-g','-fno-pie','-no-pie','-fsanitize=address,undefined','-fno-sanitize-recover=all',str(out/'check.c'),'-o',str(out/'check')],check=True)
-subprocess.run([str(out/'check'),str(out/'media-first-threads.bin'),str(out/'audio-owner.bin'),str(out/'media-dispatch.bin'),str(out/'media-first-native.bin'),str(out/'media-selected.bin'),str(out/'media-identity.bin'),str(out/'audio-owner-deep.bin')],check=True);print('EVIDENCE',out)
+subprocess.run([str(out/'check'),str(out/'media-first-threads.bin'),str(out/'audio-owner.bin'),str(out/'media-dispatch.bin'),str(out/'media-first-native.bin'),str(out/'media-selected.bin'),str(out/'media-identity.bin'),str(out/'audio-owner-deep.bin'),str(out/'audio-owner-stack.bin')],check=True);print('EVIDENCE',out)

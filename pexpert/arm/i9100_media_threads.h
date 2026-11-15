@@ -19,6 +19,7 @@ void i9100_media_threads_note(unsigned,unsigned);
 #define I9100_AUDIO_OWNER_STRIDE 96U
 #define I9100_AUDIO_OWNER_FRAMES 16U
 extern volatile uint32_t i9100_audio_owner_diag[4+8*96];
+extern volatile uint32_t i9100_audio_owner_stack[16+64];
 extern volatile uint32_t i9100_media_dispatch_diag[16+64];
 void i9100_audio_owner_note(unsigned,unsigned,unsigned,unsigned,unsigned,unsigned);
 #endif

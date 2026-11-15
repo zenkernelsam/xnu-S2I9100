@@ -16,6 +16,8 @@ extern volatile uint32_t i9100_audio_property_lock_history[1+8*12];
 volatile uint32_t i9100_media_threads[16+16*72];
 volatile uint32_t i9100_media_identity[8+16*8];
 volatile uint32_t i9100_audio_owner_diag[4+8*96];
+volatile uint32_t i9100_audio_owner_stack[16+64];
+static volatile UInt32 i9100_audio_owner_stack_once;
 volatile uint32_t i9100_media_dispatch_diag[16+64];
 static volatile UInt32 i9100_media_threads_once;
 static void i9100_media_dispatch_note(unsigned pid,unsigned slide)
@@ -137,6 +139,24 @@ void i9100_media_threads_note(unsigned pid,unsigned slide)
  * The first-kill peer list and the first wait may describe different times.
  * Only copied scalars survive the raw exclusion; all own-task user reads
  * follow mask restoration. Never retain/dereference a sampled thread later. */
+static void i9100_audio_owner_stack_note(unsigned sequence,unsigned pid,
+    unsigned owner_low,unsigned owner_high,unsigned frame,const uint32_t pair[2])
+{
+    /* This cache return site calls the witnessed VirtualAudio setter wrapper.
+     * Retain raw local bytes, not a guessed boolean: its own image mapping
+     * and prologue still need to agree before the host interprets the guard.
+     * Called only from the restored-mask own-task walk below. */
+    unsigned slide=i9100_audio_observation_target[4];
+    if(pair[1]!=0x30e52055U+slide || frame<4096U+248U || frame>0x3ffffff8U ||
+       (frame&3U) || !OSCompareAndSwap(0U,1U,&i9100_audio_owner_stack_once))return;
+    volatile uint32_t *d=i9100_audio_owner_stack;
+    d[1]=1;d[2]=pid;d[3]=(unsigned)(uintptr_t)current_task();d[4]=sequence;
+    d[5]=owner_low;d[6]=owner_high;d[7]=frame;d[8]=frame-248U;
+    d[10]=256;d[11]=pair[0];d[12]=pair[1];d[13]=slide;
+    d[9]=copyin((user_addr_t)d[8],(void *)&d[16],256);
+    if(!d[9])d[14]=d[78]==pair[0] && d[79]==pair[1];
+    OSMemoryBarrier();d[0]=1;
+}
 void i9100_audio_owner_note(unsigned sequence,unsigned pid,unsigned code,
     unsigned mutex,unsigned owner_low,unsigned owner_high)
 {
@@ -180,6 +200,7 @@ void i9100_audio_owner_note(unsigned sequence,unsigned pid,unsigned code,
             uint32_t pair[2];
             if((frame&3U) || frame<sp || frame>0x3ffffff8U || frame-sp>131072U){r[11]=1;break;}
             if(copyin((user_addr_t)frame,pair,8)){r[11]=2;break;}
+            i9100_audio_owner_stack_note(sequence,pid,owner_low,owner_high,frame,pair);
             r[46+n*3]=frame;r[47+n*3]=pair[0];r[48+n*3]=pair[1];r[10]=n+1;
             if(pair[0]<=frame)break;frame=pair[0];
         }
