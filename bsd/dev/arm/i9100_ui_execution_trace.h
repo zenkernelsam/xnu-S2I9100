@@ -8,19 +8,29 @@ extern kern_return_t vm_map_enter(vm_map_t,vm_map_offset_t *,vm_map_size_t,
     vm_map_offset_t,int,vm_object_t,vm_object_offset_t,boolean_t,
     vm_prot_t,vm_prot_t,vm_inherit_t);
 /* Observe original Setup UIKit execution; never replace an event or result. */
-volatile uint32_t i9100_ui_execution_diag[32]={1};
-volatile uint32_t i9100_ui_execution_rows[4+32*96];
+enum { I9100_UI_SITES=9, I9100_UI_CAPACITY=64 };
+volatile uint32_t i9100_ui_execution_diag[32]={2};
+volatile uint32_t i9100_ui_execution_rows[4+I9100_UI_CAPACITY*96];
 static volatile UInt32 i9100_ui_execution_guard;
 static uint32_t i9100_ui_execution_pending[4];
 static const uint8_t i9100_ui_execution_uuid[16]={
 0x58,0x0d,0xfd,0x1e,0xdb,0xd5,0x3d,0x33,0x84,0x4b,0xca,0x66,0x35,0xc0,0xb3,0xcd};
 static const uint8_t i9100_ui_execution_cache_uuid[16]={
 0xad,0x8b,0x3a,0xd2,0x3f,0x41,0x31,0x87,0xa1,0x78,0x17,0x9d,0xb3,0x9c,0xfa,0x6b};
-static const uint32_t i9100_ui_execution_sites[3]={0x32f3284c,0x32f439cc,0x32f44d58};
-static const uint8_t i9100_ui_execution_original[3][8]={
+/* The final entry is an offset from the UUID-verified Setup Mach header. */
+static const uint32_t i9100_ui_execution_sites[I9100_UI_SITES]={
+0x32f3284c,0x32f439cc,0x32f44d58,0x32f453e4,
+0x33074028,0x3307604c,0x33076ee4,0x330185c0,0x0000ef18};
+static const uint8_t i9100_ui_execution_original[I9100_UI_SITES][8]={
 {0xf0,0xb5,0x03,0xaf,0x2d,0xe9,0x00,0x0d},
 {0x4d,0xf2,0x6c,0x51,0xc0,0xf2,0x8a,0x61},
-{0xf0,0xb5,0x03,0xaf,0x4d,0xf8,0x04,0x8d}};
+{0xf0,0xb5,0x03,0xaf,0x4d,0xf8,0x04,0x8d},
+{0xf0,0xb5,0x03,0xaf,0x2d,0xe9,0x00,0x0d},
+{0xf0,0xb5,0x03,0xaf,0x2d,0xe9,0x00,0x0d},
+{0xf0,0xb5,0x03,0xaf,0x2d,0xe9,0x00,0x0d},
+{0xf0,0xb5,0x03,0xaf,0x4d,0xf8,0x04,0x8d},
+{0xf0,0xb5,0x49,0xf6,0xa6,0x26,0x04,0x46},
+{0xf0,0xb5,0x03,0xaf,0x2d,0xe9,0x00,0x0d}};
 static const uint8_t i9100_ui_execution_prefix[36]={
 0x2d,0xe9,0xff,0x5f,0xef,0xf3,0x00,0x8c,0x82,0xb0,0xcd,0xf8,0x00,0xc0,
 0x01,0x20,0x4f,0xf0,0x14,0x0c,0x80,0xdf,0xdd,0xf8,0x00,0xc0,0x02,0xb0,
@@ -65,8 +75,8 @@ int i9100_ui_execution_bootstrap(proc_t p,unsigned return_pc,unsigned return_cps
     unsigned header=i9100_ui_execution_pending[2];memset(i9100_ui_execution_pending,0,16);
     d[1]=1;d[2]=p->p_pid;d[3]=(uint32_t)(uintptr_t)p->task;d[4]=header;d[6]++;d[12]=p->p_idversion;
     d[7]=d[8]=d[9]=0;d[11]=1;
-    vm_map_t map=current_map();vm_map_offset_t address=4096,sites[3];
-    uint32_t mh[7],dyld[21];uint8_t original[3][8],code[192]={0};unsigned touched=0;
+    vm_map_t map=current_map();vm_map_offset_t address=4096,sites[I9100_UI_SITES];
+    uint32_t mh[7],dyld[21];uint8_t original[I9100_UI_SITES][8],code[I9100_UI_SITES*64]={0};unsigned touched=0;
     boolean_t allocated=FALSE;int error=0;
     if(memcmp(p->p_uuid,i9100_ui_execution_uuid,16) || header<4096 || header>0x3ff00000U ||
        (header&4095U) || copyin(header,mh,28) || mh[0]!=0xfeedfaceU || mh[1]!=12 || mh[3]!=2)goto failed;
@@ -79,15 +89,15 @@ int i9100_ui_execution_bootstrap(proc_t p,unsigned return_pc,unsigned return_cps
        (dyld[20]&4095U) || dyld[20]>0x0375b000U){d[8]=6;goto failed;}
     unsigned slide=dyld[20];d[31]=slide;
     if(!i9100_ui_execution_image_matches(0x32f2f000U+slide)){d[8]=7;goto failed;}
-    for(unsigned n=0;n<3;n++){
-        sites[n]=i9100_ui_execution_sites[n]+slide;
+    for(unsigned n=0;n<I9100_UI_SITES;n++){
+        sites[n]=i9100_ui_execution_sites[n]+(n==8?header:slide);
         if(copyin(sites[n],original[n],8) || memcmp(original[n],i9100_ui_execution_original[n],8)){d[8]=1;goto failed;}
     }d[11]=2;
     kern_return_t result=vm_map_enter(map,&address,4096,0,VM_FLAGS_ANYWHERE,VM_OBJECT_NULL,0,FALSE,
         VM_PROT_READ|VM_PROT_WRITE,VM_PROT_ALL,VM_INHERIT_COPY);d[7]=result;
     if(result!=KERN_SUCCESS)goto failed;allocated=TRUE;d[5]=address;
     if(address<4096 || address>0x3ffff000U)goto failed;
-    for(unsigned n=0;n<3;n++){
+    for(unsigned n=0;n<I9100_UI_SITES;n++){
         memcpy(code+n*64,i9100_ui_execution_prefix,36);code[n*64+14]=n+1;
         memcpy(code+n*64+36,original[n],8);uint32_t jump[2]={0xf000f8dfU,sites[n]+9U};memcpy(code+n*64+44,jump,8);
     }
@@ -95,7 +105,7 @@ int i9100_ui_execution_bootstrap(proc_t p,unsigned return_pc,unsigned return_cps
     flush_dcache(address,sizeof(code),FALSE);invalidate_icache(address,sizeof(code),FALSE);
     result=vm_map_protect(map,address,address+4096,VM_PROT_READ|VM_PROT_EXECUTE,FALSE);d[7]=result;
     if(result!=KERN_SUCCESS)goto failed;d[11]=3;
-    for(unsigned n=0;n<3;n++){
+    for(unsigned n=0;n<I9100_UI_SITES;n++){
         unsigned page=sites[n]&~4095U;
         result=vm_map_protect(map,page,page+4096,VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY,FALSE);d[7]=result;
         if(result!=KERN_SUCCESS)goto failed;
@@ -107,7 +117,7 @@ int i9100_ui_execution_bootstrap(proc_t p,unsigned return_pc,unsigned return_cps
     }
     d[10]++;d[11]=4;d[30]=sites[0];OSMemoryBarrier();d[1]=2;i9100_ui_execution_guard=0;return 0;
 failed:
-    for(unsigned n=0;n<3;n++)if(touched&(1U<<n)){
+    for(unsigned n=0;n<I9100_UI_SITES;n++)if(touched&(1U<<n)){
         unsigned page=sites[n]&~4095U;
         kern_return_t restore=vm_map_protect(map,page,page+4096,VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY,FALSE);
         if(restore==KERN_SUCCESS)restore=copyout(original[n],sites[n],8);
@@ -122,24 +132,39 @@ failed:
 void i9100_ui_execution_note(proc_t p,unsigned pc,unsigned sp,unsigned phase)
 {
     volatile uint32_t *d=i9100_ui_execution_diag;
-    if(!p || d[1]!=2 || phase<1 || phase>3 || strcmp(p->p_comm,"Setup") ||
+    if(!p || d[1]!=2 || phase<1 || phase>I9100_UI_SITES || strcmp(p->p_comm,"Setup") ||
        d[2]!=(unsigned)p->p_pid || d[3]!=(unsigned)(uintptr_t)current_task() || d[12]!=(unsigned)p->p_idversion ||
        p->task!=current_task() || current_map()!=get_task_map(p->task) || memcmp(p->p_uuid,i9100_ui_execution_uuid,16) ||
        pc!=d[5]+(phase-1)*64+22 || sp<4096 || sp>0x3fffffc0 || (sp&3) ||
        ml_at_interrupt_context() || !ml_get_interrupts_enabled() || get_preemption_level()!=0)return;
     uint32_t saved[16]={0};uint8_t actor[192]={0},event[128]={0};unsigned se=copyin(sp,saved,64);
-    unsigned actor_len=phase==1?116:phase==2?80:192,event_len=phase==2?0:phase==1?128:32;
+    unsigned actor_len=phase==1?116:phase==2?80:phase==8?55:192;
+    unsigned event_len=(phase==2 || phase==8)?0:(phase==1 || (phase>=5 && phase<=7))?128:32;
     unsigned ae=UINT32_MAX,ee=event_len?UINT32_MAX:0;
     if(!se && saved[2]>=4096 && saved[2]<=0x40000000U-actor_len)ae=copyin(saved[2],actor,actor_len);
-    if(!se && event_len && saved[4]>=4096 && saved[4]<=0x40000000U-event_len)ee=copyin(saved[4],event,event_len);
+    if(!se && phase>=5 && phase<=7){
+        /* Keep the event/index-path and selection state at the execution site.
+         * This is an observation payload, not an in-place UIKit structure. */
+        unsigned arg=phase==7?saved[4]:saved[5];ee=UINT32_MAX;
+        if(arg>=4096 && arg<=0x3fffffe0U)ee=copyin(arg,event,32);
+        if(!ee && saved[2]>=4096 && saved[2]<=0x40000000U-784U){
+            ee=copyin(saved[2]+728,event+32,4);
+            if(!ee)ee=copyin(saved[2]+756,event+36,28);
+            if(!ee)ee=copyin(saved[2]+564,event+64,32);
+            if(!ee && phase!=7 && saved[4]>=4096 && saved[4]<=0x3fffffe0U)
+                ee=copyin(saved[4],event+96,32);
+        }else if(!ee)ee=UINT32_MAX;
+    }else if(!se && event_len && saved[4]>=4096 && saved[4]<=0x40000000U-event_len)
+        ee=copyin(saved[4],event,event_len);
     if(!OSCompareAndSwap(0,1,&i9100_ui_execution_guard))return;
     if(d[1]!=2 || d[2]!=(unsigned)p->p_pid || d[12]!=(unsigned)p->p_idversion){i9100_ui_execution_guard=0;return;}
-    unsigned seq=d[19]+1;if(!seq)seq=1;volatile uint32_t *r=&i9100_ui_execution_rows[4+((seq-1)&31)*96];
+    unsigned seq=d[19]+1;if(!seq)seq=1;volatile uint32_t *r=&i9100_ui_execution_rows[4+((seq-1)&(I9100_UI_CAPACITY-1))*96];
     memset((void*)r,0,384);r[1]=p->p_pid;r[2]=p->p_idversion;r[3]=d[3];r[4]=phase;r[5]=pc;r[6]=sp;r[7]=se;
     memcpy((void*)&r[8],saved+2,16);r[12]=ae;r[13]=actor_len;r[14]=ee;r[15]=event_len;
     memcpy((void*)&r[16],actor,192);memcpy((void*)&r[64],event,128);
-    if(d[15+phase]!=UINT32_MAX)d[15+phase]++;
-    i9100_ui_execution_rows[1]=1;i9100_ui_execution_rows[2]=32;i9100_ui_execution_rows[3]=96;
+    unsigned counter=phase<=3?15+phase:16+phase;
+    if(d[counter]!=UINT32_MAX)d[counter]++;
+    i9100_ui_execution_rows[1]=2;i9100_ui_execution_rows[2]=I9100_UI_CAPACITY;i9100_ui_execution_rows[3]=96;
     OSMemoryBarrier();r[0]=seq;i9100_ui_execution_rows[0]=seq;d[19]=seq;i9100_ui_execution_guard=0;
 }
 #endif
