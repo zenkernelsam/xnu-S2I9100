@@ -21,6 +21,7 @@ C_SOURCES = [
     "i9100_mc1n2.c", "i9100_sdio.c", "i9100_bcm4330.c", "i9100_bluetooth_h4.c",
     "i9100_camera_protocol.c", "i9100_mfc.c", "i9100_video_layout.c",
     "i9100_sysmmu.c", "i9100_modem_sipc4.c", "i9100_emmc.c", "i9100_emmc_layout.c",
+    "i9100_uart_bluetooth.c", "i9100_pwm_haptic.c",
 ]
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
                "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp"]
@@ -33,6 +34,7 @@ TESTS = [
     ("i9100_wifi_bluetooth_test.c", ["i9100_sdio.c", "i9100_bcm4330.c", "i9100_bluetooth_h4.c"]),
     ("i9100_camera_mfc_test.c", ["i9100_camera_protocol.c", "i9100_mfc.c", "i9100_video_layout.c", "i9100_sysmmu.c", "i9100_dma_guard.c"]),
     ("i9100_modem_test.c", ["i9100_modem_sipc4.c"]),
+    ("i9100_uart_pwm_test.c", ["i9100_uart_bluetooth.c", "i9100_pwm_haptic.c"]),
 ]
 
 
