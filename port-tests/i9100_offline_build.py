@@ -35,8 +35,7 @@ def idle():
         if (name.startswith(("clang", "gcc", "cc1", "ld64", "make", "ninja", "qemu"))
                 or name.startswith("python") and any(x in args for x in (
                     "prepare-automation.py", "rebuild-i9100.py", "package-oneshot.py",
-                    "check_i9100_peripheral", "check_i9100_audio", "check_i9100_sensors",
-                    "check_i9100_wifi", "check_i9100_camera", "check_i9100_modem"))):
+                    "check_i9100_"))):
             jobs.append((entry.name, name))
     if jobs:
         raise RuntimeError("Other heavy job active; this offline build deferred: " + repr(jobs))
