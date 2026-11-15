@@ -111,7 +111,7 @@ void i9100_hid_execution_note(proc_t p,unsigned pc,unsigned sp,unsigned phase)
        sp<4096 || sp>0x3fffffc0U || (sp&3U) || ml_at_interrupt_context() ||
        !ml_get_interrupts_enabled() || get_preemption_level()!=0)return;
     uint32_t saved[16]={0};uint8_t bytes[136]={0};unsigned stack_error=copyin(sp,saved,64);
-    unsigned pointer=phase==1?saved[5]:saved[2],data_error=UINT32_MAX,length=0;
+    unsigned pointer=phase==1?saved[4]:saved[2],data_error=UINT32_MAX,length=0;
     if(!stack_error && pointer>=4096 && pointer<=0x3fffff00U){
         if(phase==3){length=116;data_error=copyin(pointer,bytes,length);}
         else{

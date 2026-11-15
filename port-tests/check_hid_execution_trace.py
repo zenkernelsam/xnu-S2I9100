@@ -100,7 +100,7 @@ int main(int argc,char**argv){
  reset();i9100_hid_execution_record(&p,0x65000);image[0x5094]^=1;assert(!i9100_hid_execution_bootstrap(&p)&&!ops);
  reset();install();
  for(unsigned phase=1;phase<=3;phase++){
-  memset(saved,0,64);saved[0]=0xb80f0000;saved[2]=phase==3?0x40000:0x20000;saved[5]=0x20000;
+  memset(saved,0,64);saved[0]=0xb80f0000;saved[2]=phase==3?0x40000:0x20000;saved[4]=0x20000;saved[5]=0x55;
   i9100_hid_execution_note(&p,0x1000+(phase-1)*64+22,0x30000,phase);
   volatile uint32_t*r=&i9100_hid_execution_rows[4+(phase-1)*64];assert(r[0]==phase&&r[4]==phase&&!r[7]&&!r[13]&&r[14]==(phase==3?116:136));
   if(phase<3)assert(r[24]==104&&r[25]==11);
