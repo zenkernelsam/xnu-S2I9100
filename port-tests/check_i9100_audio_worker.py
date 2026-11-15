@@ -8,7 +8,7 @@ p.add_argument("--cross-compile", action="store_true")
 a = p.parse_args()
 sources = ["i9100_audio_power.c", "i9100_audss.c", "i9100_mc1n2.c", "i9100_dma_guard.c",
            "i9100_pl330.c", "i9100_i2s.c", "i9100_pcm_stream.c", "i9100_gpio_broker.c",
-           "i9100_clock_gates.c", "i9100_peripheral_board.c", "i9100_irq_registry.c", "i9100_irq_router.c"]
+           "i9100_clock_gates.c", "i9100_peripheral_board.c", "i9100_irq_registry.c", "i9100_irq_router.c", "i9100_pcm_ring.c"]
 cpp = ["i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp"]
 e = Evidence("audio-worker-offline")
 e.model_cpp("i9100_audio_worker_test.cpp", sources, cpp)

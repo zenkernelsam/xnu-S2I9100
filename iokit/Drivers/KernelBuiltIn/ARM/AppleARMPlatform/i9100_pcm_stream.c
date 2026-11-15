@@ -123,6 +123,7 @@ int i9100_pcm_stream_prepare(struct i9100_pcm_stream *s,uint32_t rate,
  memset((void *)s->period[1]->cpu,0,s->period_bytes);
  s->ready_mask=s->next_index=0;s->in_flight=2;
  s->queued_frames=s->completed_frames=s->completed_periods=s->zero_periods=0;
+ memset(&s->i2s_fault,0,sizeof(s->i2s_fault));s->i2s_fault_valid=s->fifo_errors=0;
  s->last_error=s->cleanup_error=0;
 done:
  s->io.unlock(s->io.cookie);return e;
@@ -172,6 +173,10 @@ int i9100_pcm_stream_start(struct i9100_pcm_stream *s)
  if(s->started||!s->i2s_owned||s->in_flight<2U||s->i2s->active||
     s->i2s->sample_rate!=s->sample_rate){e=I9100_PCM_BUSY;goto done;}
  e=s->io.ensure_muted(s->io.cookie);if(e){e=mute_fault(s,e);goto done;}
+ struct i9100_i2s_snapshot initial;e=i9100_i2s_snapshot(s->i2s,&initial);
+ if(e==I9100_I2S_BUSY){e=I9100_PCM_BUSY;goto done;}
+ if(e){e=fail(s,e,1);goto done;}
+ if(initial.errors){s->i2s_fault=initial;s->i2s_fault_valid=1;s->fifo_errors=1;e=fail(s,I9100_I2S_STALE,1);goto done;}
  s->started=1;
  e=submit_next(s);if(e){e=fail(s,e,1);goto done;}
  /* The finite DMA waits for peripheral requests; I2S starts only afterward. */
@@ -187,14 +192,19 @@ int i9100_pcm_stream_service(struct i9100_pcm_stream *s,uint32_t *completed)
  if(!s->enabled||!s->started){e=I9100_PCM_DISABLED;goto done;}
  if(s->in_flight>=2U||!our_job(s)){e=fail(s,I9100_PCM_OWNER,1);goto done;}
  if(!s->dma->active&&!s->dma->completed){e=fail(s,I9100_PCM_IO,1);goto done;}
+ struct i9100_i2s_snapshot live;e=i9100_i2s_snapshot(s->i2s,&live);
+ if(e==I9100_I2S_BUSY){e=I9100_PCM_BUSY;goto done;}
+ if(e){e=fail(s,e,1);goto done;}
+ if(live.errors){s->i2s_fault=live;s->i2s_fault_valid=1;if(s->fifo_errors!=0xffffffffU)s->fifo_errors++;}
  uint32_t bytes=0;e=i9100_pl330_poll(s->dma,&bytes);
- if(e==I9100_PL330_BUSY){e=I9100_PCM_BUSY;goto done;}
+ if(e==I9100_PL330_BUSY){e=live.errors?fail(s,I9100_I2S_FIFO,1):I9100_PCM_BUSY;goto done;}
  if(e){e=fail(s,e,1);goto done;}
  if(bytes!=s->period_bytes||s->dma->active||!cpu_buffer(s->period[s->in_flight],s->period_bytes)||!cpu_buffer(s->code,64))
   {e=fail(s,I9100_PCM_OWNER,1);goto done;}
  if(s->completed_periods==UINT64_MAX||s->completed_frames>UINT64_MAX-s->period_frames)
   {e=fail(s,I9100_PCM_OVERFLOW,1);goto done;}
  s->in_flight=2;s->completed_periods++;s->completed_frames+=s->period_frames;*completed=1;
+ if(live.errors){e=fail(s,I9100_I2S_FIFO,1);goto done;}
  e=submit_next(s);if(e)e=fail(s,e,1);
 done:
  s->io.unlock(s->io.cookie);return e;
@@ -218,5 +228,6 @@ int i9100_pcm_stream_status(struct i9100_pcm_stream *s,struct i9100_pcm_status *
  value.held_mask=s->held_mask;value.ready_mask=s->ready_mask;value.in_flight=s->in_flight;
  value.sample_rate=s->sample_rate;value.period_frames=s->period_frames;
  value.last_error=s->last_error;value.cleanup_error=s->cleanup_error;*out=value;
+ out->i2s_fault=s->i2s_fault;out->i2s_fault_valid=s->i2s_fault_valid;out->fifo_errors=s->fifo_errors;
  s->io.unlock(s->io.cookie);return 0;
 }

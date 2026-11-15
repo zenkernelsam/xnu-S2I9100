@@ -86,6 +86,19 @@ int i9100_i2s_stop(struct i9100_i2s *s)
 done:
  s->io.unlock(s->io.cookie);return e;
 }
+int i9100_i2s_snapshot(struct i9100_i2s *s,struct i9100_i2s_snapshot *out)
+{
+ if(!s||!s->initialized||!out)return I9100_I2S_ARGUMENT;
+ if(s->io.lock(s->io.cookie))return I9100_I2S_BUSY;
+ int e=0;
+ if(!s->enabled||!s->prepared){e=I9100_I2S_DISABLED;goto done;}
+ struct i9100_i2s_snapshot value;
+ value.control=rd(s,CONTROL);value.mode=rd(s,MODE);value.fifo=rd(s,FIFO);value.prescaler=rd(s,PRESCALER);
+ value.errors=value.control&I9100_I2S_FIFO_ERRORS;
+ value.tx_count_encoded=(value.fifo>>8)&15U;value.rx_count_encoded=value.fifo&15U;*out=value;
+done:
+ s->io.unlock(s->io.cookie);return e;
+}
 void i9100_pcm_attenuate_30db(int16_t *destination,const int16_t *source,unsigned samples)
 {
  if(!destination||!source||samples>131072U)return;

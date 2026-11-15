@@ -6,7 +6,11 @@
 extern "C" {
 #endif
 enum i9100_i2s_error {I9100_I2S_ARGUMENT=-600,I9100_I2S_DISABLED=-601,
- I9100_I2S_BUSY=-602,I9100_I2S_IO=-603,I9100_I2S_CLOCK=-604};
+ I9100_I2S_BUSY=-602,I9100_I2S_IO=-603,I9100_I2S_CLOCK=-604,I9100_I2S_FIFO=-605,I9100_I2S_STALE=-606};
+#define I9100_I2S_FIFO_ERRORS ((1U<<17)|(1U<<24)|(1U<<26))
+struct i9100_i2s_snapshot {
+ uint32_t control,mode,fifo,prescaler,errors,tx_count_encoded,rx_count_encoded;
+};
 struct i9100_i2s_io {
  void *cookie;uint32_t (*read32)(void *,unsigned);
  void (*write32)(void *,unsigned,uint32_t);
@@ -24,6 +28,9 @@ int i9100_i2s_configure(struct i9100_i2s *,uint32_t sample_rate,uint32_t measure
 int i9100_i2s_start(struct i9100_i2s *,int capture,int muted);
 int i9100_i2s_quiesce(struct i9100_i2s *); /* suppress and verify requests, retain configuration/lease */
 int i9100_i2s_stop(struct i9100_i2s *);
+int i9100_i2s_snapshot(struct i9100_i2s *,struct i9100_i2s_snapshot *);
+/* Read-only powered/leased snapshot; no FIFO data read, ACK, flush or error
+ * clearing. Count fields retain hardware encoding, not playback positions. */
 void i9100_pcm_attenuate_30db(int16_t *destination,const int16_t *source,unsigned samples);
 /* I2S0 main FIFO, codec-master/slave-AP, stereo16/BCLK32fs. Configure while
  * idle; no secondary/IDMA/FIFO sharing or arbitrary clock inference.

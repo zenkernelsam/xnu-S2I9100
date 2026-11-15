@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause; execute real worker with a serial work-loop facade. */
 #include "i9100_audio_worker.h"
+#include "i9100_pcm_ring.h"
 #include "i9100_irq_router.h"
 #include "offline-native-sdk/IOKit/i9100_model_events.h"
 #define I9100_BOARD_MODEL_ONLY
@@ -60,6 +61,8 @@ static void finish(i9100_audio_worker **w,i9100_audio_board_native **b)
  assert(!i9100_audio_worker_destroy(w)&&!(*w)&&!event_objects);m.extra_contexts=0;
  assert(!i9100_audio_board_close(b));board_released();
 }
+static void prepare_worker(i9100_audio_worker *w)
+{assert(!i9100_audio_worker_prepare(w,1536000));m.extra_contexts=2;}
 int main()
 {
  i9100_audio_board_native *b=nullptr;i9100_irq_registry r;i9100_audio_worker *w=nullptr;
@@ -68,7 +71,7 @@ int main()
  assert(i9100_audio_worker_create(1,b,&r,1,0,250,&w)==I9100_AP_ARGUMENT);
  m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,1,1,250,&w));
  assert(!(m.gic[0x108/4]&(1U<<3)));assert(i9100_audio_board_close(&b)==I9100_AP_BUSY&&b);
- assert(!i9100_audio_worker_prepare(w,1536000));assert(!i9100_audio_worker_start(w));
+ prepare_worker(w);assert(!i9100_audio_worker_start(w));
  assert(m.gic[0x108/4]&(1U<<3));m.pdma[0x100/4]=1;
  m.interrupts=false;assert(i9100_irq_route(67U|(2U<<10))==1);m.interrupts=true;
  assert(!(m.gic[0x108/4]&(1U<<3)));last_loop->pump();
@@ -78,6 +81,7 @@ int main()
  assert(!i9100_audio_worker_status(w,&status)&&status.completed_periods==1&&!status.fault);
  assert(m.gic[0x108/4]&(1U<<3));
  assert(!i9100_audio_worker_stop(w));unsigned before=status.completed_periods;last_loop->tick();last_loop->pump();
+ assert(i9100_audio_worker_enqueue(w,nullptr,0)==I9100_AP_DISABLED);
  assert(!i9100_audio_worker_status(w,&status)&&status.completed_periods==before&&!status.running);
  finish(&w,&b);
  assert(!i9100_irq_route(67U)); /* detached worker cannot receive a stale token */
@@ -92,19 +96,38 @@ int main()
   m.extra_contexts=0;assert(!i9100_audio_board_close(&b));board_released();
  }
  setup_worker(&b,&r);m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));
- assert(!i9100_audio_worker_prepare(w,1536000));timer_fail=1;assert(i9100_audio_worker_start(w)==I9100_AP_IO);
+ prepare_worker(w);timer_fail=1;assert(i9100_audio_worker_start(w)==I9100_AP_IO);
  assert(!i9100_audio_worker_status(w,&status)&&status.fault&&!status.running);timer_fail=0;finish(&w,&b);
  setup_worker(&b,&r);m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,1,1,250,&w));
- assert(!i9100_audio_worker_prepare(w,1536000));assert(!i9100_audio_worker_start(w));irq_mask_fail=1;
+ prepare_worker(w);assert(!i9100_audio_worker_start(w));irq_mask_fail=1;
  assert(i9100_audio_worker_destroy(&w)==I9100_IRQ_IO&&w&&event_objects&&b);
  assert(i9100_audio_board_close(&b)==I9100_AP_BUSY);irq_mask_fail=0;finish(&w,&b);
  setup_worker(&b,&r);m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,1,1,250,&w));remove_fail=1;
  assert(i9100_audio_worker_destroy(&w)!=0&&w&&event_objects);assert(i9100_audio_board_close(&b)==I9100_AP_BUSY);
  remove_fail=0;finish(&w,&b);
  setup_worker(&b,&r);m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));
- assert(!i9100_audio_worker_prepare(w,1536000));assert(!i9100_audio_worker_start(w));m.pdma[0x100/4]=1;m.kill_stuck=1;
+ prepare_worker(w);assert(!i9100_audio_worker_start(w));m.pdma[0x100/4]=1;m.kill_stuck=1;
  assert(i9100_audio_worker_stop(w)!=0&&w);assert(i9100_audio_board_close(&b)==I9100_AP_BUSY);
  m.kill_stuck=0;m.pdma[0x100/4]=0;finish(&w,&b);
+ setup_worker(&b,&r);m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));prepare_worker(w);
+ int16_t samples[1024];for(unsigned n=0;n<1024;n++)samples[n]=(int16_t)(n*401U);
+ assert(!i9100_audio_worker_enqueue(w,samples,512));assert(!i9100_audio_worker_status(w,&status));
+ assert(status.enqueued_frames==512&&status.staged_consumed==128&&status.staged_frames==384&&status.staging_capacity==512);
+ assert(i9100_audio_worker_enqueue(w,samples,256)==I9100_RING_FULL);
+ assert(!i9100_audio_worker_start(w));
+ for(unsigned turn=0;turn<6U;turn++){m.pdma[0x100/4]=0;m.pdma[0x24/4]|=1U<<3;last_loop->tick();}
+ assert(!i9100_audio_worker_status(w,&status)&&status.completed_periods==6&&status.staged_frames==0&&status.staged_consumed==512);
+ finish(&w,&b);
+ setup_worker(&b,&r);m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));prepare_worker(w);
+ samples[0]=32767;samples[1]=-32768;assert(!i9100_audio_worker_enqueue(w,samples,1));assert(!i9100_audio_worker_flush(w));
+ assert(!i9100_audio_worker_status(w,&status)&&status.staged_frames==0&&status.staged_consumed==1);
+ assert(((int16_t *)allocation_bytes[0])[0]==1035&&((int16_t *)allocation_bytes[0])[1]==-1036);
+ assert(!i9100_audio_worker_start(w));m.pdma[0x100/4]=0;m.pdma[0x24/4]|=1U<<3;board_i2s[0]|=1U<<17;
+ last_loop->tick();assert(!i9100_audio_worker_status(w,&status));
+ assert(status.fault&&!status.running&&status.completed_periods==1&&status.last_pcm_valid&&status.last_pcm.i2s_fault.errors==(1U<<17));
+ assert(status.last_pcm.completed_frames==64&&status.last_pcm.last_error==I9100_I2S_FIFO);
+ assert(!i9100_audio_worker_stop(w));assert(!i9100_audio_worker_status(w,&status)&&status.last_pcm.i2s_fault_valid);
+ finish(&w,&b);
  assert(!mprotect(board_audss,4096,PROT_READ|PROT_WRITE)&&!mprotect(board_i2s,4096,PROT_READ|PROT_WRITE));
  setup_worker(&b,&r);dispatch_registry=&r;i9100_irq_lease lease={};
  assert(!i9100_irq_register_masked(&r,67,0,busy_detach,nullptr,&lease));assert(!i9100_irq_router_attach(&r));

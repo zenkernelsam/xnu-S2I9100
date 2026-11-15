@@ -156,6 +156,10 @@ static void i2s(void)
  assert(!i9100_i2s_configure(&s,48000,1536000,1));
  assert(m.i2s[1]==0xe0001c00U);assert(i9100_i2s_start(&s,0,0)==I9100_I2S_ARGUMENT);
  assert(!i9100_i2s_start(&s,0,1));assert(!m.reset_missing&&m.i2s[0]==0x8000002dU);
+ struct i9100_i2s_snapshot snapshot;m.i2s[0]|=1U<<17;m.i2s[2]=(5U<<8)|3U;unsigned writes=m.i2s_writes;
+ assert(!i9100_i2s_snapshot(&s,&snapshot)&&snapshot.errors==(1U<<17)&&snapshot.tx_count_encoded==5&&snapshot.rx_count_encoded==3);
+ assert(m.i2s_writes==writes&&(m.i2s[0]&(1U<<17))); /* a snapshot never clears/ACKs the hardware status */
+ m.i2s[0]&=~(1U<<17);
  m.dma_busy=m.dma_stop_fail=1;assert(i9100_i2s_stop(&s)==I9100_I2S_IO&&s.fault&&s.prepared);
  assert(!(m.i2s[0]&7U)&&!m.pads_calls);m.dma_stop_fail=0;m.pads_fail=1;
  assert(i9100_i2s_stop(&s)==I9100_I2S_IO&&s.prepared&&s.fault&&m.i2s[1]==0xe0001c00U);
@@ -490,6 +494,17 @@ static void stream_faults(void)
  prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_start(&s));p.job.source=&dst_buffer.b;
  assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_OWNER&&s.held_mask==7&&!m.kills);
  p.job.source=&src_buffer.b;assert(!i9100_pcm_stream_stop(&s));assert_stream_released(&s,&p,&i);
+ prepare_stream(&s,&p,&i);m.i2s[0]|=1U<<17;
+ assert(i9100_pcm_stream_start(&s)==I9100_PCM_IO&&s.last_error==I9100_I2S_STALE&&!s.completed_periods&&s.i2s_fault_valid);
+ assert(!i9100_pcm_stream_stop(&s));
+ prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_start(&s));execute(p.program_bytes);m.i2s[0]|=1U<<17;m.i2s[2]=(7U<<8)|2U;
+ assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_IO&&completed==1&&s.completed_frames==64&&s.last_error==I9100_I2S_FIFO);
+ struct i9100_pcm_status stats;assert(!i9100_pcm_stream_status(&s,&stats));
+ assert(stats.i2s_fault_valid&&stats.i2s_fault.errors==(1U<<17)&&stats.i2s_fault.tx_count_encoded==7&&stats.fifo_errors==1);
+ assert(!i9100_pcm_stream_stop(&s));
+ prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_start(&s));m.i2s[0]|=(1U<<26)|(1U<<24);
+ assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_IO&&!completed&&!s.completed_frames&&s.i2s_fault_valid);
+ assert(s.i2s_fault.errors==((1U<<26)|(1U<<24))&&!(m.i2s[0]&7U));assert(!i9100_pcm_stream_stop(&s));
 }
 int main(void)
 {pl330();i2s();codec();codec_cold();codec_clock();pcm();stream_periods();stream_rejects();stream_faults();

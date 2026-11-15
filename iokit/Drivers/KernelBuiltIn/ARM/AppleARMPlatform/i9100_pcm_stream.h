@@ -20,6 +20,8 @@ struct i9100_pcm_status {
  uint32_t enabled,prepared,started,fault,held_mask,ready_mask,in_flight;
  uint32_t sample_rate,period_frames;
  int32_t last_error,cleanup_error;
+ struct i9100_i2s_snapshot i2s_fault;
+ uint32_t i2s_fault_valid,fifo_errors;
 };
 struct i9100_pcm_stream {
  struct i9100_pcm_io io;
@@ -30,6 +32,8 @@ struct i9100_pcm_stream {
  uint32_t initialized,enabled,prepared,started,fault,i2s_owned,held_mask;
  uint32_t ready_mask,in_flight,next_index,sample_rate,period_frames,period_bytes,timeout_ms;
  int32_t last_error,cleanup_error;
+ struct i9100_i2s_snapshot i2s_fault;
+ uint32_t i2s_fault_valid,fifo_errors;
 };
 int i9100_pcm_stream_init(struct i9100_pcm_stream *,const struct i9100_pcm_io *,
  struct i9100_pl330 *,struct i9100_i2s *,struct i9100_dma_buffer *period0,
@@ -54,8 +58,9 @@ int i9100_pcm_stream_status(struct i9100_pcm_stream *,struct i9100_pcm_status *)
  * always <=-30dB, padding with actual zeros. Missing queued periods are zero
  * filled and counted; queued silence is not counted as producer starvation.
  * Service processes at most one completed finite job and arms the next; no
- * indefinite hardware loop or seamless timing guarantee. A real workloop,
- * FIFO underrun detection, codec clocks/output sequencing and HAL remain.
+ * indefinite hardware loop or seamless timing guarantee. FIFO faults are
+ * captured independently of DMA completion; old flags refuse a fresh start.
+ * Hardware workloop timing, output sequencing and HAL remain unvalidated.
  * Position counts confirmed DMA words copied to the I2S FIFO, not acoustic
  * playback position. A stuck/faulted stop retains pins and never auto-retries.
  * The provider keeps physical outputs muted throughout, with no unmute API.
