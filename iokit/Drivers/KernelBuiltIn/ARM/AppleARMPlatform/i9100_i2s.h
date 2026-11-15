@@ -21,6 +21,7 @@ int i9100_i2s_init(struct i9100_i2s *,const struct i9100_i2s_io *);
 int i9100_i2s_enable(struct i9100_i2s *,int enabled);
 int i9100_i2s_configure(struct i9100_i2s *,uint32_t sample_rate,uint32_t measured_bclk,int gpio_clock_lease_verified);
 int i9100_i2s_start(struct i9100_i2s *,int capture,int muted);
+int i9100_i2s_quiesce(struct i9100_i2s *); /* suppress and verify requests, retain configuration/lease */
 int i9100_i2s_stop(struct i9100_i2s *);
 void i9100_pcm_attenuate_30db(int16_t *destination,const int16_t *source,unsigned samples);
 /* I2S0 main FIFO, codec-master/slave-AP, stereo16/BCLK32fs. Configure while

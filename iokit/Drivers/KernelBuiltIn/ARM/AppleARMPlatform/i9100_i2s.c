@@ -55,18 +55,32 @@ int i9100_i2s_start(struct i9100_i2s *s,int capture,int muted)
 done:
  s->io.unlock(s->io.cookie);return e;
 }
+static int quiesce_locked(struct i9100_i2s *s)
+{
+ if(!s->prepared)return I9100_I2S_DISABLED;
+ wr(s,CONTROL,RESET_CLEAR|0x78U);
+ if(rd(s,CONTROL)&(ACTIVE|RXDMA|TXDMA|SECONDARY_DMA)){s->fault=1;return I9100_I2S_IO;}
+ s->active=0;return 0;
+}
+int i9100_i2s_quiesce(struct i9100_i2s *s)
+{
+ if(!s||!s->initialized)return I9100_I2S_ARGUMENT;
+ if(s->io.lock(s->io.cookie))return I9100_I2S_BUSY;
+ int e=quiesce_locked(s);s->io.unlock(s->io.cookie);return e;
+}
 int i9100_i2s_stop(struct i9100_i2s *s)
 {
  if(!s||!s->initialized)return I9100_I2S_ARGUMENT;
  if(s->io.lock(s->io.cookie))return I9100_I2S_BUSY;
  int e=0;
  if(!s->prepared){e=I9100_I2S_DISABLED;goto done;}
- wr(s,CONTROL,RESET_CLEAR|0x78U);
- if(s->io.dma_stop(s->io.cookie)||s->io.dma_idle(s->io.cookie)||(rd(s,CONTROL)&7U))
+ e=quiesce_locked(s);if(e)goto done;
+ if(s->io.dma_stop(s->io.cookie)||s->io.dma_idle(s->io.cookie))
   {e=I9100_I2S_IO;s->fault=1;goto done;}
  wr(s,FIFO,(1U<<15)|(1U<<7));wr(s,FIFO,0);
  wr(s,MODE,s->saved[1]);wr(s,PRESCALER,s->saved[2]);wr(s,CONTROL,s->saved[0]);
- if(rd(s,MODE)!=s->saved[1]||rd(s,PRESCALER)!=s->saved[2]){e=I9100_I2S_IO;s->fault=1;}
+ if(rd(s,MODE)!=s->saved[1]||rd(s,PRESCALER)!=s->saved[2]||
+    (rd(s,CONTROL)&(RESET_CLEAR|0x7fU|SECONDARY_DMA))!=s->saved[0]){e=I9100_I2S_IO;s->fault=1;}
  else s->prepared=s->active=s->fault=0;
 done:
  s->io.unlock(s->io.cookie);return e;

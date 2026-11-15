@@ -6,9 +6,11 @@
 #include "i9100_pl330.h"
 #include "i9100_i2s.h"
 #include "i9100_mc1n2.h"
+#include "i9100_pcm_stream.h"
 static uint8_t source[262144] __attribute__((aligned(64)));
 static uint8_t destination[262144] __attribute__((aligned(64)));
 static uint8_t program[4096] __attribute__((aligned(64)));
+static uint32_t transmitted[131072];
 struct model {
  uint32_t regs[1024],locked,reads,writes,fail_write,go_busy,kill_stuck,freeze_time;
  uint32_t code_pa,src_pa,dst_pa,program_size,fifo_words,manager_status;
@@ -18,9 +20,12 @@ struct model {
  unsigned bus_locked,transactions,fail_transaction,partial,busy_codec;
  unsigned stall_ready,sticky_codec_error,unsafe_amplifier_writes,codec_delays;
  uint64_t vref_started;
+ unsigned stream_locked,i2s_locked,i2s_writes,i2s_fail_write,reject_quiesce,sticky_event;
+ unsigned require_quiesce,kills,mute_calls,mute_fail;
+ struct i9100_pl330 *stream_dma;
 };
 static struct model m;
-struct buffer_cookie {struct i9100_dma_buffer b;unsigned locked,fail_sync,sync_count,released;};
+struct buffer_cookie {struct i9100_dma_buffer b;unsigned locked,fail_sync,sync_count,released,lock_calls,fail_lock;};
 static struct buffer_cookie code_buffer,src_buffer,dst_buffer;
 static uint32_t le32(const uint8_t *b){return b[0]|((uint32_t)b[1]<<8)|((uint32_t)b[2]<<16)|((uint32_t)b[3]<<24);}
 static uint8_t *memory(uint32_t pa,unsigned bytes)
@@ -46,7 +51,8 @@ static void execute(unsigned used)
    else{word=le32(memory(sar,4));pc++;}if(ccr&1U)sar+=4;loaded=1;
   }else if(op==8||op==0x2b){
    assert(loaded);assert(((ccr>>15)&7U)==2U&&((ccr>>18)&15U)==0U);
-   if(op==0x2b){assert(dar==0x03830010U&&program[pc+1]==12U<<3);m.fifo_words++;pc+=2;}
+   if(op==0x2b){assert(dar==0x03830010U&&program[pc+1]==12U<<3);
+    assert(m.fifo_words<sizeof(transmitted)/sizeof(transmitted[0]));transmitted[m.fifo_words++]=word;pc+=2;}
    else{uint8_t *out=memory(dar,4);for(unsigned n=0;n<4;n++)out[n]=(uint8_t)(word>>(n*8));pc++;}
    if(ccr&(1U<<14))dar+=4;loaded=0;
   }else if(op==0x32||op==0x35){assert(pc+2<=used);unsigned request=program[pc+1]>>3;assert(request==11U||request==12U);pc+=2;}
@@ -65,16 +71,17 @@ static uint32_t read(void *c,unsigned off){struct model *p=c;assert(off<4096U);p
 static void write(void *c,unsigned off,uint32_t value)
 {
  struct model *p=c;assert(p->locked&&off<4096);p->writes++;if(p->fail_write==p->writes)return;
- if(off==0x2c){p->regs[0x24/4]&=~value;return;}
+ if(off==0x2c){if(!p->sticky_event)p->regs[0x24/4]&=~value;return;}
  p->regs[off/4]=value;
  if(off==0xd04){uint32_t instruction=p->regs[0xd08/4];unsigned op=(instruction>>16)&255U;
   if(op==0xa2){assert(((instruction>>24)&7U)==0);assert(p->regs[0xd0c/4]==p->code_pa);p->regs[0x100/4]=1;
    if(p->go_busy)p->regs[0xd00/4]=1;}
-  else if(op==1){assert(instruction&1U);if(!p->kill_stuck){p->regs[0x100/4]=0;p->regs[0x34/4]=0;}}
+  else if(op==1){assert(instruction&1U);if(p->require_quiesce)assert(!(p->i2s[0]&7U));
+   p->kills++;if(!p->kill_stuck){p->regs[0x100/4]=0;p->regs[0x34/4]=0;}}
   else assert(0);
  }
 }
-static int block_lock(void *c){struct buffer_cookie *b=c;if(b->locked)return -1;b->locked=1;return 0;}
+static int block_lock(void *c){struct buffer_cookie *b=c;b->lock_calls++;if(b->locked||b->lock_calls==b->fail_lock)return -1;b->locked=1;return 0;}
 static void block_unlock(void *c){struct buffer_cookie *b=c;assert(b->locked);b->locked=0;}
 static int sync(void *c,uintptr_t cpu,uint32_t pa,uint32_t bytes,unsigned action)
 {struct buffer_cookie *b=c;assert(b->locked&&cpu==b->b.cpu&&pa==b->b.physical&&bytes==b->b.bytes);assert(action>=1&&action<=4);return ++b->sync_count==b->fail_sync?-1:0;}
@@ -128,9 +135,12 @@ static void pl330(void)
  assert(!p.active&&code_buffer.b.state==I9100_DMA_CPU&&src_buffer.b.state==I9100_DMA_CPU);
  unsigned used=99;assert(i9100_pl330_encode(2,m.src_pa,0x13800000,4,3,program,sizeof(program),&used)==I9100_PL330_ARGUMENT&&!used);
 }
-static uint32_t i2s_read(void *c,unsigned off){struct model *p=c;assert(p->locked&&off<=12);return p->i2s[off/4];}
+static uint32_t i2s_read(void *c,unsigned off){struct model *p=c;assert((p->locked||p->i2s_locked)&&off<=12);return p->i2s[off/4];}
 static void i2s_write(void *c,unsigned off,uint32_t value)
-{struct model *p=c;assert(p->locked&&off<=12);if(off==0&&!(value&0x80000000U)&&(value&7U))p->reset_missing=1;
+{struct model *p=c;assert((p->locked||p->i2s_locked)&&off<=12);
+ if(++p->i2s_writes==p->i2s_fail_write||(off==0&&!(value&7U)&&p->reject_quiesce))return;
+ if(off==0&&!(value&0x80000000U)&&(value&7U))p->reset_missing=1;
+ if(off==0&&(value&7U)&&p->require_quiesce)assert(p->regs[0x100/4]);
  p->i2s[off/4]=value;if(off==0&&!(value&7U))p->stopped_requests=1;}
 static int dma_idle(void *c){return ((struct model *)c)->dma_busy?-1:0;}
 static int dma_stop(void *c){struct model *p=c;assert(p->stopped_requests);if(p->dma_stop_fail)return -1;p->dma_busy=0;return 0;}
@@ -255,5 +265,168 @@ static void pcm(void)
  i9100_pcm_attenuate_30db(pcm_out,pcm_in,65536);
  for(unsigned n=0;n<65536;n++){assert(pcm_out[n]>=-1036&&pcm_out[n]<=1036);assert(pcm_out[n]==(int32_t)pcm_in[n]*1036/32768);}
 }
+static int stream_lock(void *c){struct model *p=c;if(p->stream_locked)return -1;p->stream_locked=1;return 0;}
+static void stream_unlock(void *c){struct model *p=c;assert(p->stream_locked);p->stream_locked=0;}
+static int live_i2s_lock(void *c){struct model *p=c;if(p->i2s_locked)return -1;p->i2s_locked=1;return 0;}
+static void live_i2s_unlock(void *c){struct model *p=c;assert(p->i2s_locked);p->i2s_locked=0;}
+static int live_dma_idle(void *c){return i9100_pl330_idle(((struct model *)c)->stream_dma);}
+static int live_dma_stop(void *c){struct model *p=c;assert(!(p->i2s[0]&7U));return i9100_pl330_stop(p->stream_dma);}
+static int ensure_muted(void *c){struct model *p=c;assert(p->stream_locked);p->mute_calls++;return p->mute_fail?-99:0;}
+static void init_stream(struct i9100_pcm_stream *s,struct i9100_pl330 *p,struct i9100_i2s *i)
+{
+ init_pl(p);memset(i,0,sizeof(*i));memset(s,0,sizeof(*s));m.stream_dma=p;m.require_quiesce=1;m.i2s[1]=0x20000000U;
+ struct i9100_i2s_io ii={&m,i2s_read,i2s_write,live_i2s_lock,live_i2s_unlock,live_dma_idle,live_dma_stop};
+ assert(!i9100_i2s_init(i,&ii));assert(!i9100_i2s_enable(i,1));
+ struct i9100_pcm_io io={&m,stream_lock,stream_unlock,ensure_muted};
+ unsigned reads=m.reads,writes=m.writes;
+ assert(!i9100_pcm_stream_init(s,&io,p,i,&src_buffer.b,&dst_buffer.b,&code_buffer.b));
+ assert(m.reads==reads&&m.writes==writes&&!m.mute_calls&&!s->enabled);
+}
+static void prepare_stream(struct i9100_pcm_stream *s,struct i9100_pl330 *p,struct i9100_i2s *i)
+{
+ init_stream(s,p,i);assert(!i9100_pcm_stream_enable(s,1));
+ assert(!i9100_pcm_stream_prepare(s,48000,64,1536000,1));
+ assert(s->held_mask==7&&src_buffer.b.holds==1&&dst_buffer.b.holds==1&&code_buffer.b.holds==1);
+}
+static uint32_t scaled_word(const int16_t *input,unsigned word)
+{
+ return (uint16_t)((int32_t)input[word*2]*1036/32768)|
+  ((uint32_t)(uint16_t)((int32_t)input[word*2+1]*1036/32768)<<16);
+}
+static void assert_stream_released(struct i9100_pcm_stream *s,struct i9100_pl330 *p,struct i9100_i2s *i)
+{
+ assert(!s->held_mask&&!s->prepared&&!s->started&&!p->active&&!i->prepared&&!(m.i2s[0]&7U));
+ assert(!src_buffer.b.holds&&!dst_buffer.b.holds&&!code_buffer.b.holds);
+ assert(src_buffer.b.state==I9100_DMA_CPU&&dst_buffer.b.state==I9100_DMA_CPU&&code_buffer.b.state==I9100_DMA_CPU);
+}
+static void stream_periods(void)
+{
+ struct i9100_pcm_stream s;struct i9100_pl330 p;struct i9100_i2s i;uint32_t completed;
+ const unsigned frames[]={16,64,257,4096};
+ for(unsigned rate=44100;rate<=48000;rate+=3900)for(unsigned test=0;test<4;test++){
+  init_stream(&s,&p,&i);unsigned writes=m.writes;
+  assert(i9100_pcm_stream_prepare(&s,rate,frames[test],rate*32,1)==I9100_PCM_DISABLED&&m.writes==writes&&!m.mute_calls);
+  assert(!i9100_pcm_stream_enable(&s,1));assert(!i9100_pcm_stream_prepare(&s,rate,frames[test],rate*32,1));
+  for(unsigned n=0;n<frames[test]*2U;n++)pcm_in[n]=(int16_t)((n*509U+7001U)&65535U);
+  assert(!i9100_pcm_stream_queue(&s,pcm_in,frames[test]));assert(!i9100_pcm_stream_queue(&s,pcm_in,frames[test]));
+  assert(i9100_pcm_stream_queue(&s,pcm_in,frames[test])==I9100_PCM_BUSY);
+  assert(!i9100_pcm_stream_start(&s)&&p.active&&s.in_flight==0&&s.ready_mask==2);
+  completed=77;assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_BUSY&&!completed&&!s.completed_frames);
+  execute(p.program_bytes);assert(!i9100_pcm_stream_service(&s,&completed)&&completed==1);
+  assert(s.completed_frames==frames[test]&&s.completed_periods==1&&s.in_flight==1&&!s.zero_periods);
+  for(unsigned n=0;n<frames[test];n++)assert(transmitted[n]==scaled_word(pcm_in,n));
+  assert(i9100_dma_release(&src_buffer.b)==I9100_DMA_BUSY); /* CPU again, but still pinned */
+  assert(!i9100_pcm_stream_queue(&s,pcm_in,frames[test]));
+  for(unsigned retry=0;retry<3;retry++)assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_BUSY&&!completed&&s.completed_periods==1);
+  execute(p.program_bytes);assert(!i9100_pcm_stream_service(&s,&completed)&&completed==1&&s.completed_periods==2);
+  for(unsigned n=0;n<frames[test];n++)assert(transmitted[frames[test]+n]==scaled_word(pcm_in,n));
+  struct i9100_pcm_status status;assert(!i9100_pcm_stream_status(&s,&status));
+  assert(status.completed_frames==frames[test]*2U&&status.queued_frames==frames[test]*3U&&status.held_mask==7);
+  assert(!i9100_pcm_stream_stop(&s));assert_stream_released(&s,&p,&i);
+  assert(!i9100_pcm_stream_enable(&s,0));
+ }
+ prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_start(&s)&&s.zero_periods==1);
+ execute(p.program_bytes);assert(!i9100_pcm_stream_service(&s,&completed)&&s.zero_periods==2);
+ for(unsigned n=0;n<64;n++)assert(!transmitted[n]);assert(!i9100_pcm_stream_stop(&s));
+ prepare_stream(&s,&p,&i);pcm_in[0]=32767;pcm_in[1]=-32768;
+ memset(source,0xcc,256);assert(!i9100_pcm_stream_queue(&s,pcm_in,1));assert(!i9100_pcm_stream_start(&s));
+ execute(p.program_bytes);assert(transmitted[0]==scaled_word(pcm_in,0));
+ for(unsigned n=1;n<64;n++)assert(!transmitted[n]);assert(!i9100_pcm_stream_stop(&s));
+ prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_queue(&s,0,0));assert(!i9100_pcm_stream_start(&s)&&!s.zero_periods);
+ assert(!i9100_pcm_stream_stop(&s));
+ /* A long alternating producer run uses the actual finite-program VM, not
+  * a fake completion counter. The final next job is cancelled, not counted. */
+ prepare_stream(&s,&p,&i);for(unsigned n=0;n<128;n++)pcm_in[n]=(int16_t)(n*431U);
+ assert(!i9100_pcm_stream_queue(&s,pcm_in,64));assert(!i9100_pcm_stream_start(&s));
+ for(unsigned n=0;n<512;n++){
+  if(n<511)assert(!i9100_pcm_stream_queue(&s,pcm_in,64));
+  execute(p.program_bytes);assert(!i9100_pcm_stream_service(&s,&completed)&&completed==1);
+  assert(s.completed_frames==(uint64_t)(n+1)*64&&s.completed_periods==n+1);
+ }
+ assert(m.fifo_words==32768&&s.zero_periods==1);
+ for(unsigned n=0;n<32768;n++)assert(transmitted[n]==scaled_word(pcm_in,n%64));
+ assert(!i9100_pcm_stream_stop(&s)&&s.completed_periods==512);assert_stream_released(&s,&p,&i);
+}
+static void stream_rejects(void)
+{
+ struct i9100_pcm_stream s;struct i9100_pl330 p;struct i9100_i2s i;prepare_stream(&s,&p,&i);
+ assert(i9100_pcm_stream_queue(&s,0,1)==I9100_PCM_ARGUMENT);
+ assert(i9100_pcm_stream_queue(&s,pcm_in,65)==I9100_PCM_ARGUMENT);
+ assert(i9100_pcm_stream_queue(&s,(const int16_t *)(UINTPTR_MAX-1U),1)==I9100_PCM_ARGUMENT);
+ assert(i9100_pcm_stream_queue(&s,(const int16_t *)source,1)==I9100_PCM_OWNER);
+ assert(i9100_pcm_stream_queue(&s,(const int16_t *)destination,1)==I9100_PCM_OWNER);
+ assert(i9100_pcm_stream_queue(&s,(const int16_t *)program,1)==I9100_PCM_OWNER);
+ s.queued_frames=UINT64_MAX;assert(i9100_pcm_stream_queue(&s,pcm_in,1)==I9100_PCM_OVERFLOW&&!s.ready_mask);
+ struct i9100_pcm_stream copy=s;assert(i9100_pcm_stream_start(&copy)==I9100_PCM_OWNER);
+ m.stream_locked=1;assert(i9100_pcm_stream_queue(&s,pcm_in,1)==I9100_PCM_BUSY&&!s.fault);m.stream_locked=0;
+ assert(!i9100_pcm_stream_stop(&s));
+ init_stream(&s,&p,&i);assert(!i9100_pcm_stream_enable(&s,1));unsigned reads=m.reads,writes=m.writes;
+ assert(i9100_pcm_stream_prepare(&s,48000,15,1536000,1)==I9100_PCM_ARGUMENT);
+ assert(i9100_pcm_stream_prepare(&s,48000,4097,1536000,1)==I9100_PCM_ARGUMENT);
+ assert(i9100_pcm_stream_prepare(&s,48000,64,1536001,1)==I9100_PCM_ARGUMENT);
+ assert(i9100_pcm_stream_prepare(&s,48000,64,1536000,0)==I9100_PCM_ARGUMENT);
+ assert(m.reads==reads&&m.writes==writes&&!m.mute_calls);
+ dst_buffer.b.physical=src_buffer.b.physical;
+ assert(i9100_pcm_stream_prepare(&s,48000,64,1536000,1)==I9100_PCM_OWNER&&!s.held_mask);
+ dst_buffer.b.physical=m.dst_pa;dst_buffer.b.cpu=(uintptr_t)source;
+ assert(i9100_pcm_stream_prepare(&s,48000,64,1536000,1)==I9100_PCM_OWNER&&!s.held_mask);
+ dst_buffer.b.cpu=(uintptr_t)destination;assert(!i9100_dma_hold(&dst_buffer.b));
+ assert(i9100_pcm_stream_prepare(&s,48000,64,1536000,1)==I9100_PCM_OWNER&&!s.held_mask);assert(!i9100_dma_unhold(&dst_buffer.b));
+ struct i9100_pcm_stream other={0};struct i9100_pcm_io wrong={&m,lock,unlock,ensure_muted};
+ assert(i9100_pcm_stream_init(&other,&wrong,&p,&i,&src_buffer.b,&dst_buffer.b,&code_buffer.b)==I9100_PCM_ARGUMENT);
+ code_buffer.fail_lock=code_buffer.lock_calls+1;
+ assert(i9100_pcm_stream_prepare(&s,48000,64,1536000,1)==I9100_PCM_IO&&s.fault&&!s.held_mask);
+ assert(!src_buffer.b.holds&&!dst_buffer.b.holds);assert(!i9100_pcm_stream_stop(&s));
+}
+static void stream_faults(void)
+{
+ struct i9100_pcm_stream s;struct i9100_pl330 p;struct i9100_i2s i;uint32_t completed;
+ prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_start(&s));m.reject_quiesce=1;
+ assert(i9100_pcm_stream_stop(&s)==I9100_PCM_IO&&s.fault&&s.started&&s.held_mask==7&&!m.kills);
+ assert(p.active&&src_buffer.b.state==I9100_DMA_DEVICE);unsigned reads=m.reads,writes=m.writes;
+ assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_FAULT&&!completed);
+ assert(i9100_pcm_stream_queue(&s,pcm_in,64)==I9100_PCM_FAULT&&m.reads==reads&&m.writes==writes);
+ m.reject_quiesce=0;assert(!i9100_pcm_stream_stop(&s)&&m.kills==1);assert_stream_released(&s,&p,&i);
+ prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_start(&s));m.ns=1000000000ULL;m.kill_stuck=m.freeze_time=1;
+ assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_IO&&!completed&&s.last_error==I9100_PL330_TIMEOUT);
+ assert(m.kills==1&&s.fault&&s.started&&s.held_mask==7&&p.active&&code_buffer.b.state==I9100_DMA_QUARANTINED&&!(m.i2s[0]&7U));
+ writes=m.writes;assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_FAULT&&m.writes==writes);
+ assert(i9100_dma_release(&src_buffer.b)==I9100_DMA_BUSY);
+ m.kill_stuck=m.freeze_time=0;assert(!i9100_pcm_stream_stop(&s));assert_stream_released(&s,&p,&i);
+ prepare_stream(&s,&p,&i);code_buffer.fail_sync=code_buffer.sync_count+1;
+ assert(i9100_pcm_stream_start(&s)==I9100_PCM_IO&&s.fault&&!s.completed_frames);assert_stream_released(&s,&p,&i);
+ assert(!i9100_pcm_stream_stop(&s)&&!s.fault);
+ prepare_stream(&s,&p,&i);m.go_busy=1;assert(i9100_pcm_stream_start(&s)==I9100_PCM_IO&&s.fault&&s.held_mask==7);
+ assert(!(m.i2s[0]&7U)&&p.active);m.go_busy=0;m.regs[0xd00/4]=0;assert(!i9100_pcm_stream_stop(&s));
+ prepare_stream(&s,&p,&i);m.i2s_fail_write=m.i2s_writes+2;
+ assert(i9100_pcm_stream_start(&s)==I9100_PCM_IO&&s.fault&&m.kills==1);assert_stream_released(&s,&p,&i);
+ prepare_stream(&s,&p,&i);m.mute_fail=1;writes=m.writes;
+ assert(i9100_pcm_stream_start(&s)==I9100_PCM_IO&&s.fault&&s.held_mask==7&&!s.started&&m.writes==writes);
+ assert(i9100_pcm_stream_stop(&s)==I9100_PCM_IO&&s.held_mask==7&&!p.active&&!i.prepared);
+ m.mute_fail=0;assert(!i9100_pcm_stream_stop(&s));assert_stream_released(&s,&p,&i);
+ prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_start(&s));m.i2s_fail_write=m.i2s_writes+5;
+ assert(i9100_pcm_stream_stop(&s)==I9100_PCM_IO&&s.held_mask==7&&s.i2s_owned&&!p.active&&i.prepared);
+ assert(!i9100_pcm_stream_stop(&s));assert_stream_released(&s,&p,&i);
+ prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_start(&s));execute(p.program_bytes);m.sticky_event=1;
+ assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_IO&&!completed&&s.fault&&s.held_mask==7&&p.active);
+ assert(!s.completed_frames);m.sticky_event=0;assert(!i9100_pcm_stream_stop(&s));
+ prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_start(&s));execute(p.program_bytes);dst_buffer.fail_sync=dst_buffer.sync_count+1;
+ assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_IO&&completed==1&&s.completed_frames==64&&m.kills==1);
+ assert(s.fault&&!p.active);assert_stream_released(&s,&p,&i);assert(!i9100_pcm_stream_stop(&s));
+ prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_start(&s));m.regs[0x34/4]=1;m.regs[0x40/4]=0x99;
+ assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_IO&&s.last_error==I9100_PL330_FAULT&&p.error_status==0x99&&!completed&&m.kills==1);
+ assert_stream_released(&s,&p,&i);assert(!i9100_pcm_stream_stop(&s));
+ prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_start(&s));code_buffer.fail_lock=code_buffer.lock_calls+2;
+ assert(i9100_pcm_stream_stop(&s)==I9100_PCM_IO&&s.held_mask==4&&code_buffer.b.holds==1&&!src_buffer.b.holds&&!dst_buffer.b.holds);
+ assert(!p.active&&!s.i2s_owned);assert(!i9100_pcm_stream_stop(&s));assert_stream_released(&s,&p,&i);
+ prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_start(&s));s.completed_frames=UINT64_MAX-63;execute(p.program_bytes);
+ assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_IO&&!completed&&s.last_error==I9100_PCM_OVERFLOW);
+ assert(!i9100_pcm_stream_stop(&s));
+ /* An unrelated job cannot be killed even if a caller violated ownership. */
+ prepare_stream(&s,&p,&i);assert(!i9100_pcm_stream_start(&s));p.job.source=&dst_buffer.b;
+ assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_OWNER&&s.held_mask==7&&!m.kills);
+ p.job.source=&src_buffer.b;assert(!i9100_pcm_stream_stop(&s));assert_stream_released(&s,&p,&i);
+}
 int main(void)
-{pl330();i2s();codec();codec_cold();pcm();puts("PASS finite DMA/I2S; MC1N2 AB24MHz reset/PLL/LDO/VREF/DIO/muted-ready/all transaction faults/stalled ready/power-off ownership; PCM <=-30dB");return 0;}
+{pl330();i2s();codec();codec_cold();pcm();stream_periods();stream_rejects();stream_faults();
+ puts("PASS finite DMA/I2S/MC1N2 cold/mute; PCM periods/512 alternating VM jobs/zero fill/-30dB/exact positions/pins/no kill before quiesce/stop faults/explicit recovery/no fault retries");return 0;}

@@ -123,9 +123,19 @@ static int take_buffers(struct i9100_pl330 *p,int aborted)
  if(!e){p->active=0;memset(&p->job,0,sizeof(p->job));}
  return e;
 }
+static int clear_event(struct i9100_pl330 *p)
+{
+ wr(p,INTCLR,1U<<p->event);
+ return rd(p,EVENT_STATUS)&(1U<<p->event)?I9100_PL330_IO:0;
+}
 static int stop_locked(struct i9100_pl330 *p)
 {
- if(!p->active)return state(p)?I9100_PL330_BUSY:0;
+ if(!p->active){
+  if(i9100_pl330_idle(p))return I9100_PL330_BUSY;
+  if(rd(p,MANAGER_FAULT)||(rd(p,CHANNEL_FAULT)&(1U<<p->channel)))return I9100_PL330_FAULT;
+  int error=clear_event(p);if(error){p->fault=1;return error;}
+  p->fault=p->completed=0;return 0;
+ }
  int e=debug(p,1,0);
  if(!e){uint64_t start=p->io.now_ns(p->io.cookie);
   for(unsigned n=0;n<25000U;n++){
@@ -143,7 +153,7 @@ static int stop_locked(struct i9100_pl330 *p)
    (void)i9100_dma_abort(buffers[n]);
   p->fault=1;return e;
  }
- wr(p,INTCLR,1U<<p->event);e=take_buffers(p,1);
+ e=clear_event(p);if(!e)e=take_buffers(p,1);
  if(rd(p,MANAGER_FAULT)||(rd(p,CHANNEL_FAULT)&(1U<<p->channel)))e=I9100_PL330_FAULT;
  p->fault=e?1U:0U;return e;
 }
@@ -171,10 +181,13 @@ int i9100_pl330_submit(struct i9100_pl330 *p,const struct i9100_pl330_job *job)
  e=i9100_dma_prepare(job->code,I9100_DMA_TO_DEVICE);
  if(!e&&job->source)e=i9100_dma_prepare(job->source,I9100_DMA_TO_DEVICE);
  if(!e&&job->destination)e=i9100_dma_prepare(job->destination,I9100_DMA_FROM_DEVICE);
- if(e){e=I9100_PL330_IO;(void)stop_locked(p);goto done;}
- wr(p,INTCLR,1U<<p->event);p->started=p->io.now_ns(p->io.cookie);
+ if(e){e=I9100_PL330_IO;p->fault=1;
+  if(job->mode==I9100_PL330_MEMORY)(void)stop_locked(p);goto done;}
+ e=clear_event(p);
+ if(e){p->fault=1;if(job->mode==I9100_PL330_MEMORY)(void)stop_locked(p);goto done;}
+ p->started=p->io.now_ns(p->io.cookie);
  e=debug(p,0,job->code->physical);
- if(e)(void)stop_locked(p);
+ if(e){p->fault=1;if(job->mode==I9100_PL330_MEMORY)(void)stop_locked(p);}
 done:
  p->io.unlock(p->io.cookie);return e;
 }
@@ -186,14 +199,17 @@ int i9100_pl330_poll(struct i9100_pl330 *p,uint32_t *completed)
  int e=0;
  if(!p->enabled)e=I9100_PL330_DISABLED;
  else if(!p->active){e=p->completed?0:I9100_PL330_BUSY;*completed=p->completed;}
+ else if(p->fault)e=I9100_PL330_FAULT;
  else if(rd(p,MANAGER_FAULT)||(rd(p,CHANNEL_FAULT)&(1U<<p->channel))){
-  p->error_status=rd(p,0x40U+p->channel*4U);e=I9100_PL330_FAULT;(void)stop_locked(p);
+  p->error_status=rd(p,0x40U+p->channel*4U);e=I9100_PL330_FAULT;p->fault=1;
+  if(p->job.mode==I9100_PL330_MEMORY)(void)stop_locked(p);
  }else if((rd(p,EVENT_STATUS)&(1U<<p->event))&&!state(p)){
-  uint32_t bytes=p->job.bytes;wr(p,INTCLR,1U<<p->event);e=take_buffers(p,0);
+  uint32_t bytes=p->job.bytes;e=clear_event(p);if(!e)e=take_buffers(p,0);
   if(!e){p->completed=bytes;*completed=bytes;}else p->fault=1;
  }else {
   uint64_t now=p->io.now_ns(p->io.cookie);
-  if(now<p->started||now-p->started>(uint64_t)p->job.timeout_ms*1000000ULL){e=I9100_PL330_TIMEOUT;(void)stop_locked(p);}
+  if(now<p->started||now-p->started>(uint64_t)p->job.timeout_ms*1000000ULL){e=I9100_PL330_TIMEOUT;p->fault=1;
+   if(p->job.mode==I9100_PL330_MEMORY)(void)stop_locked(p);}
   else e=I9100_PL330_BUSY;
  }
  p->io.unlock(p->io.cookie);return e;

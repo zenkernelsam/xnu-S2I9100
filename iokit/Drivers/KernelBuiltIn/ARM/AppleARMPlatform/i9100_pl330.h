@@ -38,6 +38,8 @@ int i9100_pl330_idle(void *); /* DMA guard callback, reads only; no recursive en
 /* Provider exclusively claims this PDMA0 channel/event and request11/12 for
  * I2S RX/TX; controller debug mutex is shared across all channels. No global
  * reset, arbitrary firmware microcode, user addresses or indefinite cycles.
+ * I2S submit/poll errors retain the active job: the I2S owner must quiesce
+ * requests before explicit stop. Memory jobs may abort immediately.
  * A failed stop retains references to/quarantines all handed buffers. */
 #ifdef __cplusplus
 }
