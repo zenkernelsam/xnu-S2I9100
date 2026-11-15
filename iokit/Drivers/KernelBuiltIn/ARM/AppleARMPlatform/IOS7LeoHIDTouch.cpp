@@ -398,7 +398,18 @@ bool IOHIDEventService::publishProperties(void)
  setProperty("Manufacturer","HD2 legacy lab");
 #endif
  setProperty("VendorID",(unsigned long long)0,32);
- setProperty("ProductID",1,32);setProperty("ReportInterval",20000,32);setProperty("QueueSize",4096,32);
+ setProperty("ProductID",1,32);setProperty("QueueSize",4096,32);
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+ /* This fixed20ms workloop has no ReportInterval setProperties contract.
+  * iOS6 interprets that advertised property as per-client rate control;
+  * it then drops contact transitions when the requested interval is0 or
+  * longer than the gesture. Let its original no-rate-control path deliver
+  * complete Down/Move/Up. Keep the inherited iOS7 metadata unchanged. */
+ if(ios6Wire)removeProperty("ReportInterval");
+ else setProperty("ReportInterval",20000,32);
+#else
+ setProperty("ReportInterval",20000,32);
+#endif
  OSDictionary *pair=OSDictionary::withCapacity(2);OSArray *pairs=OSArray::withCapacity(1);
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
  /* Keep the advertised usage pair with the primary usage that the iOS6
