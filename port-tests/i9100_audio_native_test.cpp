@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 struct i9100_peripheral_native {i9100_gpio_broker gpio;i9100_clock_gates clocks;};
 struct i9100_dma_native {
  i9100_dma_buffer buffer;unsigned index,locked;
@@ -22,7 +23,13 @@ static struct {
  uint8_t codec[5][256],address[5];uint64_t ns;bool interrupts;
  uint32_t previous_debug;
  uint32_t previous_mode;
+ unsigned board_mode,board_bus_owned,board_bus_fail,board_close_fail,board_tx_fail,board_stall_power;
+ unsigned check_mclk_silence;uint32_t previous_mclk;
+ uint32_t pmu[4096],chip[1024],previous_power;uint64_t power_ready_at,vref_started;
 } m;
+static uint32_t board_audss[1024] __attribute__((aligned(4096)));
+static uint32_t board_i2s[1024] __attribute__((aligned(4096)));
+static uint32_t *i2s_regs(){return m.board_mode?board_i2s:m.i2s;}
 static i9100_peripheral_native parent;
 static i9100_audss audss;
 static i9100_mc1n2 codec;
@@ -35,12 +42,16 @@ void IOLockFree(IOLock *p){assert(!p->held&&m.locks);m.locks--;delete p;}
 bool IOLockTryLock(IOLock *p){assert(p);if(p->held)return false;p->held=true;return true;}
 void IOLockUnlock(IOLock *p){assert(p->held);p->held=false;}
 IOMemoryDescriptor *IOMemoryDescriptor::withPhysicalAddress(uint32_t pa,size_t bytes,unsigned direction)
-{assert(bytes==4096&&direction==kIODirectionInOut);if(allocation_fails())return 0;m.descriptors++;return new IOMemoryDescriptor{pa,bytes};}
+{assert((bytes==4096||(m.board_mode&&pa==0x10020000U&&bytes==16384))&&direction==kIODirectionInOut);if(allocation_fails())return 0;m.descriptors++;return new IOMemoryDescriptor{pa,bytes};}
 IOMemoryMap *IOMemoryDescriptor::map(unsigned flags)
 {
  assert(flags==kIOMapInhibitCache);if(allocation_fails())return 0;uint32_t *regs=0;
- if(physical==0x12680000U)regs=m.pdma;else if(physical==0x03830000U)regs=m.i2s;
- else if(physical==0x10490000U)regs=m.gic;else assert(!"unexpected native physical map");
+ if(physical==0x12680000U)regs=m.pdma;else if(physical==0x03830000U)regs=i2s_regs();
+ else if(physical==0x10490000U)regs=m.gic;
+ else if(m.board_mode&&physical==0x10020000U)regs=m.pmu;
+ else if(m.board_mode&&physical==0x10000000U)regs=m.chip;
+ else if(m.board_mode&&physical==0x03810000U)regs=board_audss;
+ else assert(!"unexpected native physical map");
  m.maps++;return new IOMemoryMap{(uintptr_t)regs};
 }
 void IOMemoryDescriptor::release(){assert(m.descriptors);m.descriptors--;delete this;}
@@ -48,14 +59,25 @@ uintptr_t IOMemoryMap::getAddress(){return address;}
 void IOMemoryMap::release(){assert(m.maps);m.maps--;delete this;}
 void OSSynchronizeIO()
 {
- if((m.previous_mode&0x1800U)==0x1800U&&(m.i2s[1]&0x1800U)!=0x1800U)
+ if(m.board_mode){
+  if(m.check_mclk_silence&&(m.previous_mclk&1U)&&!(m.pmu[0xa00/4]&1U))
+   assert((m.codec[3][78]&2U)&&(m.codec[2][3]&0x3fU)==0x3fU&&m.transactions>0);
+  m.previous_mclk=m.pmu[0xa00/4];
+  if(m.pmu[0x3cc0/4]!=m.previous_power){m.previous_power=m.pmu[0x3cc0/4];m.power_ready_at=m.ns+10000ULL;}
+  if(!m.board_stall_power&&m.ns>=m.power_ready_at)m.pmu[0x3cc4/4]=(m.pmu[0x3cc4/4]&~7U)|(m.previous_power&7U);
+  int access=(m.pmu[0x3cc4/4]&7U)==7U?PROT_READ|PROT_WRITE:PROT_NONE;
+  assert(!mprotect(board_audss,4096,access)&&!mprotect(board_i2s,4096,access));
+  if((m.pmu[0x3cc4/4]&7U)!=7U)return; /* GPIO/AUDSS/I2S are inaccessible while off. */
+ }
+ uint32_t *port=i2s_regs();
+ if((m.previous_mode&0x1800U)==0x1800U&&(port[1]&0x1800U)!=0x1800U)
   for(unsigned n=0;n<3;n++)assert(((m.gpio[2][0]>>(n*4U))&15U)!=2U);
- m.previous_mode=m.i2s[1];
+ m.previous_mode=port[1];
  /* Memory-backed facade: acknowledge W1C and an observed KILL request. GO
   * completion is deliberately harness-driven, not a second encoder oracle. */
  if(m.pdma[0x2c/4]){m.pdma[0x24/4]&=~m.pdma[0x2c/4];m.pdma[0x2c/4]=0;}
  if(m.pdma[0xd08/4]!=m.previous_debug){m.previous_debug=m.pdma[0xd08/4];
-  if(((m.previous_debug>>16)&255U)==1U){assert(!(m.i2s[0]&7U));m.commands++;
+  if(((m.previous_debug>>16)&255U)==1U){assert(!(port[0]&7U));m.commands++;
    if(!m.kill_stuck)m.pdma[0x100/4]=0;}}
 }
 void IODelay(unsigned us){m.ns+=(uint64_t)us*1000;}
@@ -69,8 +91,8 @@ static int buffer_sync(void *c,uintptr_t cpu,uint32_t pa,uint32_t bytes,unsigned
 {i9100_dma_native *n=(i9100_dma_native *)c;assert(n->locked&&cpu==n->buffer.cpu&&pa==n->buffer.physical&&bytes==n->buffer.bytes&&action>=1&&action<=4);
  return ++m.sync_calls==m.fail_sync?-1:0;}
 static void buffer_release(void *c,uintptr_t,uint32_t,uint32_t)
-{i9100_dma_native *n=(i9100_dma_native *)c;assert(!n->locked&&!m.pdma[0x100/4]&&!(m.i2s[0]&7U));
- assert(m.cmu[0xc940/4]&1U);assert(m.maps==3&&m.contexts==1);m.dma_releases++;}
+{i9100_dma_native *n=(i9100_dma_native *)c;assert(!n->locked&&!m.pdma[0x100/4]&&!(i2s_regs()[0]&7U));
+ assert(m.cmu[0xc940/4]&1U);assert(m.maps==(m.board_mode?8U:3U)&&m.contexts==(m.board_mode?2U:1U));m.dma_releases++;}
 int i9100_dma_native_allocate(int enabled,uint32_t bytes,void *engine,int (*idle)(void *),i9100_dma_native **out)
 {
  assert(enabled==1&&bytes>=4096&&bytes<=16384&&!(*out));if(allocation_fails())return I9100_DMA_IO;
@@ -86,10 +108,12 @@ i9100_gpio_broker *i9100_peripheral_native_gpio(i9100_peripheral_native *p){retu
 i9100_clock_gates *i9100_peripheral_native_clocks(i9100_peripheral_native *p){return &p->clocks;}
 static int gpio_lock(void *){if(m.gpio_locked)return -1;m.gpio_locked=1;return 0;}
 static void gpio_unlock(void *){assert(m.gpio_locked);m.gpio_locked=0;}
-static uint32_t gpio_read(void *,unsigned region,unsigned off){assert(m.gpio_locked&&region<3&&off<4096);return m.gpio[region][off/4];}
+static uint32_t gpio_read(void *,unsigned region,unsigned off){assert(m.gpio_locked&&region<3&&off<4096);
+ if(m.board_mode&&region==2U)assert((m.pmu[0x3cc4/4]&7U)==7U);return m.gpio[region][off/4];}
 static void gpio_write(void *,unsigned region,unsigned off,uint32_t value)
-{assert(m.gpio_locked&&region<3&&off<4096);if(++m.broker_writes==m.fail_broker_write||m.sticky_gpio)return;
- if(region==2U&&!off)for(unsigned n=0;n<3;n++)if(((value>>(n*4U))&15U)==2U)assert((m.i2s[1]&0x1800U)==0x1800U);
+{assert(m.gpio_locked&&region<3&&off<4096);if(m.board_mode&&region==2U)assert((m.pmu[0x3cc4/4]&7U)==7U);
+ if(++m.broker_writes==m.fail_broker_write||m.sticky_gpio)return;
+ if(region==2U&&!off)for(unsigned n=0;n<3;n++)if(((value>>(n*4U))&15U)==2U)assert((i2s_regs()[1]&0x1800U)==0x1800U);
  m.gpio[region][off/4]=value;}
 static int clock_lock(void *){if(m.clock_locked)return -1;m.clock_locked=1;return 0;}
 static void clock_unlock(void *){assert(m.clock_locked);m.clock_locked=0;}
@@ -101,9 +125,36 @@ static int bus_lock(void *){if(m.bus_locked)return -1;m.bus_locked=1;return 0;}
 static void bus_unlock(void *){assert(m.bus_locked);m.bus_locked=0;}
 static uint64_t bus_now(void *){return m.ns;}
 static int bus_delay(void *,uint32_t us){IODelay(us);return 0;}
+static void board_codec_write(unsigned reg,uint8_t value)
+{
+ if(reg==0U&&value==1U){uint8_t id=m.codec[0][8];memset(m.codec,0,sizeof(m.codec));m.codec[0][8]=id;
+  m.codec[1][0]=0x10;m.codec[1][1]=6;m.codec[1][3]=0x1f;m.codec[3][15]=1;
+  m.codec[2][2]=15;m.codec[2][3]=m.codec[2][4]=0xff;m.codec[3][78]=2;}
+ unsigned index=bank(reg);
+ if(index)m.address[index]=value;
+ else if((index=bank(reg-1U))){unsigned address=m.address[index];
+  if(index==2U&&address==2U&&(m.codec[2][2]&1U)&&!(value&1U))m.vref_started=m.ns;
+  m.codec[index][address]=value;
+ }else m.codec[0][reg]=value;
+}
+static uint8_t board_codec_read(unsigned reg)
+{
+ unsigned index=bank(reg-1U);if(!index)return m.codec[0][reg];
+ if(index==2U&&m.address[index]==47U){uint8_t ready=0;
+  if(!(m.codec[2][2]&8U))ready|=0x80U;
+  if(!(m.codec[2][2]&1U)&&m.ns>=m.vref_started+15000000ULL)ready|=0x40U;
+  return ready;}
+ return m.codec[index][m.address[index]];
+}
 static int bus_transfer(void *,const i9100_i2c_message *msgs,unsigned count,unsigned *done)
 {
  assert(m.bus_locked&&msgs[0].address==0x3a);m.transactions++;*done=0;if(m.mute_fail&&m.transactions>6U)return -1;
+ if(m.board_mode){
+  assert(m.board_bus_owned);
+  if(count==1){for(unsigned n=0;n<msgs[0].length;n+=2)board_codec_write(msgs[0].bytes[n]>>1,msgs[0].bytes[n+1]);}
+  else{assert(count==2&&msgs[1].read);msgs[1].bytes[0]=board_codec_read(msgs[0].bytes[0]>>1);}
+  if(m.transactions==m.board_tx_fail)return -1;*done=count;return 0;
+ }
  if(count==1){for(unsigned n=0;n<msgs[0].length;n+=2){unsigned reg=msgs[0].bytes[n]>>1,index=bank(reg);
    if(index)m.address[index]=msgs[0].bytes[n+1];else if((index=bank(reg-1)))m.codec[index][m.address[index]]=msgs[0].bytes[n+1];
    else m.codec[0][reg]=msgs[0].bytes[n+1];}}
@@ -198,5 +249,9 @@ int main()
  for(unsigned point=1;point<=8U;point++){
   setup();m.fail_broker_write=point;assert(open(&a)!=0&&!a);released();
  }
+ setup();i9100_gpio_lease board_pins={};assert(!i9100_gpio_claim(&parent.gpio,I9100_GPZ,0x7fU,&board_pins));
+ assert(!i9100_audio_native_open_with_pins(1,&parent,&audss,&codec,&board_pins,48000,64,1536000,1,&a));
+ assert(!i9100_audio_native_close(&a)&&board_pins.active&&parent.gpio.banks[I9100_GPZ].owners[0]&&m.gpio[2][0]==0);
+ assert(!i9100_mc1n2_clock_stop(&codec));assert(!i9100_gpio_release(&board_pins,I9100_GPIO_RESTORE));released();
  puts("PASS real native audio/host IOKit: clock4c+FS/AP pad directions/busy port/slave-before-mux/input-before-restore/14 allocation failures/foreign channel/borrowed providers/late close faults/explicit recovery");return 0;
 }

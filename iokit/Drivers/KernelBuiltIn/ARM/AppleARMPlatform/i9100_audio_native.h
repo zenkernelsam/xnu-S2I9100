@@ -12,6 +12,9 @@ struct i9100_audio_native;
 int i9100_audio_native_open(int enabled,struct i9100_peripheral_native *,
  struct i9100_audss *,struct i9100_mc1n2 *,uint32_t rate,uint32_t period_frames,
  uint32_t measured_bclk,int exclusive_board_clocks_verified,struct i9100_audio_native **);
+int i9100_audio_native_open_with_pins(int enabled,struct i9100_peripheral_native *,
+ struct i9100_audss *,struct i9100_mc1n2 *,struct i9100_gpio_lease *owned_board_pins,
+ uint32_t rate,uint32_t period_frames,uint32_t measured_bclk,int verified,struct i9100_audio_native **);
 int i9100_audio_native_queue(struct i9100_audio_native *,const int16_t *kernel_samples,uint32_t frames);
 int i9100_audio_native_start(struct i9100_audio_native *);
 int i9100_audio_native_service(struct i9100_audio_native *,uint32_t *completed_periods);
@@ -33,6 +36,9 @@ int i9100_audio_native_close(struct i9100_audio_native **);
  * or explicit close is allowed; never destroy borrowed providers on failure.
  * Owner serializes pointer lifetime/close with API calls. Worker calls only;
  * no automatic thread/IRQ scheduling or user clients. No raw stream pointers.
+ * open_with_pins borrows a live whole-GPZ lease from its board owner. Stop
+ * leaves those pads as inputs; only the board owner restores/releases them
+ * after codec clocks have stopped. The lease remains live through close.
  */
 #ifdef __cplusplus
 }

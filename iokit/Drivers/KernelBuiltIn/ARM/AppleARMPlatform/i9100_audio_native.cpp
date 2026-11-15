@@ -17,6 +17,7 @@ struct i9100_audio_native {
  IOMemoryDescriptor *memory[MAPS];IOMemoryMap *mapping[MAPS];volatile uint8_t *regs[MAPS];
  IOLock *lifecycle,*stream_lock,*i2s_lock,*engine_lock;
  i9100_clock_lease gate;i9100_gpio_lease pins;
+ i9100_gpio_lease *borrowed_pins;
  i9100_pl330 dma;i9100_i2s i2s;i9100_pcm_stream pcm;
  i9100_dma_native *allocation[3];unsigned phase;
 };
@@ -41,10 +42,12 @@ static int delay(void *,uint32_t us){if(!ml_get_interrupts_enabled()||us>100000U
 static int dma_idle(void *c){return i9100_pl330_idle(&((i9100_audio_native *)c)->dma);}
 static int dma_stop(void *c){return i9100_pl330_stop(&((i9100_audio_native *)c)->dma);}
 static int muted(void *c){return i9100_mc1n2_mute(((i9100_audio_native *)c)->codec);}
+static i9100_gpio_lease *pin_lease(i9100_audio_native *a)
+{return a->borrowed_pins?a->borrowed_pins:&a->pins;}
 static int pads_idle(void *c)
 {
- i9100_audio_native *a=(i9100_audio_native *)c;if(!a->pins.active)return 0;
- for(unsigned n=0;n<7U;n++){int e=i9100_gpio_input(&a->pins,n);if(e)return e;}
+ i9100_audio_native *a=(i9100_audio_native *)c;i9100_gpio_lease *pins=pin_lease(a);if(!pins->active)return 0;
+ for(unsigned n=0;n<7U;n++){int e=i9100_gpio_input(pins,n);if(e)return e;}
  return 0;
 }
 static int initial_clock_pads(i9100_audio_native *a,i9100_gpio_broker *gpio)
@@ -100,12 +103,12 @@ static int cleanup(i9100_audio_native *a)
   if(b&&b->state==I9100_DMA_QUARANTINED){e=i9100_dma_abort(b);if(e)return e;}
   e=i9100_dma_native_destroy(&a->allocation[n]);if(e)return e;
  }
- if(a->pins.active){e=i9100_gpio_release(&a->pins,I9100_GPIO_RESTORE);if(e)return e;}
+ if(!a->borrowed_pins&&a->pins.active){e=i9100_gpio_release(&a->pins,I9100_GPIO_RESTORE);if(e)return e;}
  if(a->gate.active){e=i9100_clock_release(&a->gate);if(e)return e;}
  return 0;
 }
-int i9100_audio_native_open(int enabled,i9100_peripheral_native *parent,i9100_audss *audss,
- i9100_mc1n2 *codec,uint32_t rate,uint32_t frames,uint32_t bclk,int verified,i9100_audio_native **out)
+static int open_impl(int enabled,i9100_peripheral_native *parent,i9100_audss *audss,
+ i9100_mc1n2 *codec,i9100_gpio_lease *borrowed,uint32_t rate,uint32_t frames,uint32_t bclk,int verified,i9100_audio_native **out)
 {
  if(!out)return I9100_PCM_ARGUMENT;if(*out)return I9100_PCM_BUSY;if(enabled!=1)return I9100_PCM_DISABLED;
  if(!ml_get_interrupts_enabled()||!parent||!audss||!codec||verified!=1||
@@ -118,8 +121,14 @@ int i9100_audio_native_open(int enabled,i9100_peripheral_native *parent,i9100_au
  i9100_clock_gates *clocks=i9100_peripheral_native_clocks(parent);
  if(!gpio||!clocks||!gpio->enabled||!clocks->enabled||gpio->count!=I9100_BANK_COUNT||clocks->count!=I9100_GATE_COUNT)
   return I9100_PCM_DISABLED;
+ if(borrowed){
+  if(!borrowed->active||borrowed->broker!=gpio||borrowed->bank!=I9100_GPZ||borrowed->mask!=0x7fU)return I9100_PCM_OWNER;
+  if(gpio->io.lock(gpio->io.cookie))return I9100_PCM_BUSY;
+  bool owned=true;for(unsigned n=0;n<7U;n++)if(gpio->banks[I9100_GPZ].owners[n]!=borrowed->generation)owned=false;
+  gpio->io.unlock(gpio->io.cookie);if(!owned)return I9100_PCM_OWNER;
+ }
  i9100_audio_native *a=(i9100_audio_native *)IOMalloc(sizeof(*a));if(!a)return I9100_PCM_IO;
- memset(a,0,sizeof(*a));a->parent=parent;a->audss=audss;a->codec=codec;a->phase=BUILDING;
+ memset(a,0,sizeof(*a));a->parent=parent;a->audss=audss;a->codec=codec;a->phase=BUILDING;a->borrowed_pins=borrowed;
  a->lifecycle=IOLockAlloc();a->stream_lock=IOLockAlloc();a->i2s_lock=IOLockAlloc();a->engine_lock=IOLockAlloc();
  if(!a->lifecycle||!a->stream_lock||!a->i2s_lock||!a->engine_lock){dispose(a);return I9100_PCM_IO;}
  const uint32_t addresses[MAPS]={0x12680000U,0x03830000U,0x10490000U};
@@ -139,7 +148,7 @@ int i9100_audio_native_open(int enabled,i9100_peripheral_native *parent,i9100_au
  e=i9100_pl330_init(&a->dma,&di,0,3);if(!e)e=i9100_i2s_init(&a->i2s,&ii);
  if(!e)e=i9100_clock_acquire(clocks,I9100_GATE_PDMA0,&a->gate);
  if(!e&&(clocks->gates[I9100_GATE_PDMA0].refs!=1U||controller_idle(a)))e=I9100_PCM_BUSY;
- if(!e)e=i9100_gpio_claim(gpio,I9100_GPZ,0x7fU,&a->pins);
+ if(!e&&!borrowed)e=i9100_gpio_claim(gpio,I9100_GPZ,0x7fU,&a->pins);
  if(!e)e=i9100_pl330_enable(&a->dma,1);
  if(!e)e=i9100_i2s_enable(&a->i2s,1);
  unsigned bytes=((frames*4U+4095U)/4096U)*4096U;
@@ -152,10 +161,16 @@ int i9100_audio_native_open(int enabled,i9100_peripheral_native *parent,i9100_au
  if(!e)e=i9100_pcm_stream_enable(&a->pcm,1);
  if(!e)e=i9100_pcm_stream_prepare(&a->pcm,rate,frames,bclk,verified);
  /* Configure slave/CDCLK-input mode before connecting codec clock pads. */
- for(unsigned n=0;n<7U&&!e;n++)e=i9100_gpio_function(&a->pins,n,2);
+ for(unsigned n=0;n<7U&&!e;n++)e=i9100_gpio_function(pin_lease(a),n,2);
  if(e){int off=cleanup(a);if(off)*out=a;else dispose(a);return e;}
  a->phase=READY;*out=a;return 0;
 }
+int i9100_audio_native_open(int enabled,i9100_peripheral_native *parent,i9100_audss *audss,
+ i9100_mc1n2 *codec,uint32_t rate,uint32_t frames,uint32_t bclk,int verified,i9100_audio_native **out)
+{return open_impl(enabled,parent,audss,codec,0,rate,frames,bclk,verified,out);}
+int i9100_audio_native_open_with_pins(int enabled,i9100_peripheral_native *parent,i9100_audss *audss,
+ i9100_mc1n2 *codec,i9100_gpio_lease *pins,uint32_t rate,uint32_t frames,uint32_t bclk,int verified,i9100_audio_native **out)
+{if(!pins)return I9100_PCM_ARGUMENT;return open_impl(enabled,parent,audss,codec,pins,rate,frames,bclk,verified,out);}
 int i9100_audio_native_queue(i9100_audio_native *a,const int16_t *samples,uint32_t frames)
 {
  if(!a)return I9100_PCM_ARGUMENT;if(take(a->lifecycle))return I9100_PCM_BUSY;

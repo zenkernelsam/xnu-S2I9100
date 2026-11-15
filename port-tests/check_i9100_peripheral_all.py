@@ -25,7 +25,7 @@ C_SOURCES = [
     "i9100_bcm_f2.c", "i9100_audio_power.c",
 ]
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
-               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp"]
+               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp"]
 TESTS = [
     ("i9100_peripheral_bus_test.c", C_SOURCES[:5]),
     ("i9100_peripheral_platform_test.c", ["i9100_gpio_broker.c", "i9100_clock_gates.c",
@@ -41,6 +41,10 @@ TESTS = [
         "i9100_pcm_stream.c", "i9100_mc1n2.c", "i9100_gpio_broker.c", "i9100_clock_gates.c",
         "i9100_peripheral_board.c", "i9100_audio_native.cpp"]),
     ("i9100_audio_power_test.c", ["i9100_audio_power.c"]),
+    ("i9100_audio_board_test.cpp", ["i9100_audio_power.c", "i9100_audss.c", "i9100_mc1n2.c",
+        "i9100_dma_guard.c", "i9100_pl330.c", "i9100_i2s.c", "i9100_pcm_stream.c",
+        "i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_peripheral_board.c",
+        "i9100_audio_native.cpp", "i9100_audio_board_native.cpp"]),
 ]
 
 
