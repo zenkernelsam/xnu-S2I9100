@@ -38,8 +38,9 @@ static void i9100_setup_native_layout(struct image_params *imgp,
      * malformed input keep the original process environment unchanged. */
     for(int n=0;n<imgp->ip_envc;n++){
         if(cursor>=end){i9100_setup_native_count(7);return;}
-        char *zero=memchr(cursor,0,(size_t)(end-cursor));
-        if(!zero){i9100_setup_native_count(7);return;}
+        char *zero=cursor;
+        while(zero<end && *zero)zero++;
+        if(zero==end){i9100_setup_native_count(7);return;}
         size_t length=(size_t)(zero-cursor);
         if(length>=8 && !memcmp(cursor,"CLASSIC=",8)){
             count++;entry=cursor;entry_length=length;i9100_setup_native_count(2);

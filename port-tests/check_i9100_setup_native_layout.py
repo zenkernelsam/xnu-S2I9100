@@ -63,7 +63,8 @@ int main(void){
     (out/'production.c').write_text(source)
     compile=subprocess.run(['clang','-O1','-g','-fsanitize=address,undefined','-I'+str(out/'include'),'-I'+str(repo),out/'production.c','-o',out/'production'],text=True,capture_output=True,check=True)
     (out/'compiler.txt').write_text(compile.stdout+compile.stderr)
-    test=subprocess.run([out/'production'],text=True,capture_output=True,check=True);(out/'production.txt').write_text(test.stdout+test.stderr)
+    test=subprocess.run([out/'production'],text=True,capture_output=True);(out/'production.txt').write_text(test.stdout+test.stderr)
+    test.check_returncode()
     sys.path.insert(0,str(root/'assets/py-native-hid'))
     from unicorn import Uc,UC_ARCH_ARM,UC_MODE_THUMB,UC_HOOK_CODE
     from unicorn.arm_const import UC_CPU_ARM_CORTEX_A9,UC_ARM_REG_R0,UC_ARM_REG_R1,UC_ARM_REG_R2,UC_ARM_REG_R6,UC_ARM_REG_SP,UC_ARM_REG_LR
