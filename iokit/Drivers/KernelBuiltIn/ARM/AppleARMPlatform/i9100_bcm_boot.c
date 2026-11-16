@@ -5,7 +5,8 @@
 #include "i9100_bcm_firmware_private.h"
 #include "i9100_bcm_f2_private.h"
 #include <string.h>
-enum {INTSTATUS=0x20,TOSBMAILBOX=0x40,TOSBVERSION=0x48,TOHOSTDATA=0x4c,HMB_MASK=0xf0,HMB_EVENT=0x20};
+/* bcmsdpcm.h allocates SW1 to FC_CHANGE and SW3 to HOST_INT. */
+enum {INTSTATUS=0x20,TOSBMAILBOX=0x40,TOSBVERSION=0x48,TOHOSTDATA=0x4c,HMB_MASK=0xf0,HMB_EVENT=0x80};
 static int overlap(uintptr_t a,unsigned an,uintptr_t b,unsigned bn)
 {return a>UINTPTR_MAX-an||b>UINTPTR_MAX-bn||(a+an>b&&b+bn>a);}
 static struct i9100_bcm4330 *bus(struct i9100_bcm_boot *t){return t->firmware->chip->bus;}
@@ -70,7 +71,7 @@ int i9100_bcm_boot_init(struct i9100_bcm_boot *t,int enabled,struct i9100_bcm_fi
     overlap((uintptr_t)t,sizeof(*t),(uintptr_t)f2->card,sizeof(*f2->card)))return I9100_BCM_BOOT_ARGUMENT;
  if(b->io.claim(b->io.cookie))return I9100_BCM_BOOT_BUSY;
  int e=0;uint32_t base=0;
- if(fw->boot_holds||b->boot_owner||b->protocol_ready||b->pending||b->fault)e=I9100_BCM_BOOT_BUSY;
+ if(fw->boot_holds||b->boot_owner||b->control_owner||b->protocol_ready||b->pending||b->fault||generation<=b->protocol_generation)e=I9100_BCM_BOOT_BUSY;
  for(unsigned n=0;n<fw->chip->topology.count&&!e;n++)if(fw->chip->topology.cores[n].id==0x829U){
   if(base)e=I9100_BCM_BOOT_ARGUMENT;else base=fw->chip->topology.cores[n].base;
  }
@@ -109,6 +110,7 @@ int i9100_bcm_boot_start(struct i9100_bcm_boot *t)
   e=i9100_bcm_core_start_cm3_locked(t->firmware->chip);if(e)e=I9100_BCM_BOOT_IO;}
  if(!e){t->stage=6;t->io_enable_owned=1;e=checked_cfg(t,0,2U,t->saved_enable|4U,0xffU);}
  if(!e){
+  bus(t)->flow_mask=0;
   t->started=bus(t)->io.now_ns(bus(t)->io.cookie);e=I9100_BCM_BOOT_TIMEOUT;
   for(unsigned n=0;n<2000U;n++){
    uint8_t ready=0;int r=cfg(t,0,0,3U,&ready);if(r){e=r;break;}
@@ -116,9 +118,14 @@ int i9100_bcm_boot_start(struct i9100_bcm_boot *t)
    if((ready&6U)==6U&&(t->interrupt_status&HMB_EVENT)){
     r=read32(t,TOHOSTDATA,&t->mailbox);if(r){e=r;break;}
     if(t->mailbox&0x10U){e=I9100_BCM_BOOT_HALTED;break;}
+    if(t->mailbox&~0xffff001fU){e=I9100_BCM_BOOT_PROTOCOL;break;}
+    /* Clear only the observed misc indication BEFORE mailbox ACK; ACK may
+     * immediately allow a new firmware notification to be posted. */
+    r=write32(t,INTSTATUS,HMB_EVENT);if(!r)r=write32(t,TOSBMAILBOX,2U);if(r){e=r;break;}
+    if(t->mailbox&4U)bus(t)->flow_mask=(uint8_t)(t->mailbox>>24);
     if(t->mailbox&0x0aU){
      if(((t->mailbox>>16)&255U)!=4U){e=I9100_BCM_BOOT_PROTOCOL;break;}
-     e=write32(t,TOSBMAILBOX,2U);if(!e)e=write32(t,INTSTATUS,t->interrupt_status&HMB_MASK);break;
+     e=0;break;
     }
    }
    if(timed_out(t,2000000000ULL))break;if((r=pause(t,1000U))){e=r;break;}
@@ -126,7 +133,7 @@ int i9100_bcm_boot_start(struct i9100_bcm_boot *t)
  }
  if(!e){t->stage=7;e=i9100_bcm_f2_enable_locked(t->packets,1,t->generation);if(e)e=I9100_BCM_BOOT_IO;}
  if(!e){
-  struct i9100_bcm4330 *b=bus(t);b->protocol_ready=1;b->rx_sequence=b->rx_seen=b->flow_mask=0;b->tx_sequence=255U;b->tx_max=0;
+  struct i9100_bcm4330 *b=bus(t);b->protocol_generation=t->generation;b->protocol_ready=1;b->rx_sequence=b->rx_seen=0;b->tx_sequence=255U;b->tx_max=0;
   t->ready=1;t->stage=8;
  }else t->fault=1;
  t->error=e;drop(t);return e;
@@ -134,6 +141,7 @@ int i9100_bcm_boot_start(struct i9100_bcm_boot *t)
 int i9100_bcm_boot_stop(struct i9100_bcm_boot *t)
 {
  int e=take(t,1);if(e)return e;struct i9100_bcm4330 *b=bus(t);
+ if(b->control_owner){drop(t);return I9100_BCM_BOOT_BUSY;}
  t->ready=0;b->protocol_ready=0;t->packets->enabled=0;t->packets->cleanup_f1=1;
  e=i9100_bcm_bp_restore_locked(b)?I9100_BCM_BOOT_IO:0;
  if(!e&&t->owned){int r=i9100_bcm_core_quiesce_locked(t->firmware->chip);if(r)e=I9100_BCM_BOOT_IO;

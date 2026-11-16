@@ -1,17 +1,17 @@
 --- a/iokit/conf/files.arm
 +++ b/iokit/conf/files.arm
-@@ -58,6 +58,11 @@
- # i9100 Exynos4210 SDMMC (SDHCI PIO) block device
- iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100SDMMC.cpp optional iokitcpp
- iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_sdmmc.c standard
+@@ -62,6 +62,11 @@
+ # GT-I9100 Atmel mXT224/mXT224E physical touch
+ iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_touch.c standard
+ iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_touch_gpio.c standard
 +# Explicit read-only eMMC/GPT/PIT inspection
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100EMMC.cpp optional iokitcpp
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100GPT.cpp optional iokitcpp
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_emmc.c standard
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_emmc_layout.c standard
  
- # GT-I9100 Atmel mXT224/mXT224E physical touch
- iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_touch.c standard
+ # GT-I9100 battery telemetry and revision-selected charger control
+ iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100Power.cpp optional iokitcpp
 --- a/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp
 +++ b/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp
 @@ -37,6 +37,7 @@

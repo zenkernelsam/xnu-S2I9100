@@ -4,6 +4,7 @@
 #include <string.h>
 enum {STAGE_IDLE=0,STAGE_HEADER=1,STAGE_BODY=2,STAGE_TX=3,STAGE_DONE=4};
 static uint16_t le16(const uint8_t *p){return (uint16_t)(p[0]|((uint16_t)p[1]<<8));}
+static void wipe(void *buffer,unsigned bytes){volatile uint8_t *p=buffer;while(bytes--)*p++=0;}
 static int take(void *cookie)
 {struct i9100_bcm_f2 *t=cookie;return t->io.lock(t->io.cookie);}
 static void drop(void *cookie)
@@ -50,8 +51,10 @@ static int send(void *cookie,const uint8_t *frame,uint32_t bytes)
  uint32_t wire=rounded(bytes);if(wire>sizeof(t->scratch))return I9100_F2_ARGUMENT;
  memset(t->scratch,0,wire);memcpy(t->scratch,frame,bytes);
  t->stage=STAGE_TX;t->logical_bytes=length;t->wire_bytes=wire;
- memset(t->last_header,0,sizeof(t->last_header));memcpy(t->last_header,frame,bytes<32U?bytes:32U);
+ /* Keep transport diagnostics, never the caller's control/data payload. */
+ memset(t->last_header,0,sizeof(t->last_header));memcpy(t->last_header,frame,12U);
  int e=fifo(t,1,t->scratch,wire);
+ wipe(t->scratch,wire);
  if(!e){if(t->tx_frames!=UINT32_MAX)t->tx_frames++;t->stage=STAGE_DONE;t->last_error=0;}
  return e;
 }
@@ -100,7 +103,7 @@ int i9100_bcm_f2_receive(struct i9100_bcm_f2 *t,uint8_t *frame,unsigned capacity
  if(!t->enabled){e=I9100_F2_DISABLED;goto done;}if(!alive(t)){e=I9100_F2_IO;goto done;}
  t->stage=STAGE_HEADER;t->logical_bytes=t->wire_bytes=0;
  e=fifo(t,0,t->scratch,32);if(e)goto done;
- memcpy(t->last_header,t->scratch,32);
+ memset(t->last_header,0,sizeof(t->last_header));memcpy(t->last_header,t->scratch,12);
  uint32_t length=le16(t->scratch),inverse=le16(t->scratch+2);
  if(!(length|inverse)){if(t->empty_reads!=UINT32_MAX)t->empty_reads++;t->stage=STAGE_IDLE;goto done;}
  if((uint16_t)(length^inverse)!=0xffffU||length<12U||length>I9100_F2_FRAME_MAX||
@@ -114,5 +117,6 @@ int i9100_bcm_f2_receive(struct i9100_bcm_f2 *t,uint8_t *frame,unsigned capacity
  memcpy(frame,t->scratch,length);*bytes=length;t->stage=STAGE_DONE;t->last_error=0;
  if(t->rx_frames!=UINT32_MAX)t->rx_frames++;
 done:
+ wipe(t->scratch,sizeof(t->scratch));
  drop(t);return e;
 }

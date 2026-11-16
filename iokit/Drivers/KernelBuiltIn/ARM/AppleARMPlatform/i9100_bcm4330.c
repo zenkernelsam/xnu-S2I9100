@@ -5,6 +5,7 @@
 static uint16_t le16(const uint8_t *b){return (uint16_t)(b[0]|((uint16_t)b[1]<<8));}
 static uint32_t le32(const uint8_t *b){return b[0]|((uint32_t)b[1]<<8)|((uint32_t)b[2]<<16)|((uint32_t)b[3]<<24);}
 static void put32(uint8_t *b,uint32_t v){for(unsigned n=0;n<4;n++)b[n]=(uint8_t)(v>>(n*8U));}
+static void secret_clear(void *buffer,unsigned n){volatile uint8_t *p=(volatile uint8_t *)buffer;while(n--)*p++=0;}
 static const uint32_t bp_ports[3]={0x1000a,0x1000b,0x1000c};
 static int bp_window_write(struct i9100_bcm4330 *b,unsigned n,uint8_t value)
 {
@@ -70,7 +71,7 @@ int i9100_bcm_enable(struct i9100_bcm4330 *b,int enabled,uint16_t vendor,uint16_
  int e=0;
  if(!enabled){
   if(!b->enabled){e=I9100_BCM_DISABLED;goto done;}
-  if(b->chip_holds){e=I9100_BCM_BUSY;goto done;}
+  if(b->chip_holds||b->boot_owner||b->control_owner){e=I9100_BCM_BUSY;goto done;}
   if(i9100_bcm_bp_restore_locked(b)){e=I9100_BCM_IO;goto done;}
   uint8_t saved=b->saved_clock;
   if(b->io.cmd52(b->io.cookie,1,1,0x1000e,&saved)){e=I9100_BCM_IO;b->fault=1;}
@@ -113,8 +114,8 @@ int i9100_bcm_protocol_start(struct i9100_bcm4330 *b,unsigned version,unsigned c
 {
  if(!b||!b->initialized||version!=4U||credit>127U)return I9100_BCM_ARGUMENT;
  if(b->io.claim(b->io.cookie))return I9100_BCM_BUSY;
- int e=0;if(!b->enabled)e=I9100_BCM_DISABLED;else if(b->fault||b->protocol_ready||b->chip_holds||b->boot_owner)e=I9100_BCM_BUSY;
- else {b->protocol_ready=1;b->tx_sequence=b->rx_sequence=b->rx_seen=b->flow_mask=0;b->tx_max=(uint8_t)credit;}
+ int e=0;if(!b->enabled)e=I9100_BCM_DISABLED;else if(b->fault||b->protocol_ready||b->chip_holds||b->boot_owner||b->control_owner||b->protocol_generation==UINT32_MAX)e=I9100_BCM_BUSY;
+ else {b->protocol_generation++;b->protocol_ready=1;b->tx_sequence=b->rx_sequence=b->rx_seen=b->flow_mask=0;b->tx_max=(uint8_t)credit;}
  b->io.release(b->io.cookie);return e;
 }
 static int send(struct i9100_bcm4330 *b,unsigned channel,const uint8_t *payload,unsigned bytes,unsigned priority)
@@ -130,27 +131,59 @@ static int send(struct i9100_bcm4330 *b,unsigned channel,const uint8_t *payload,
  frame[4]=b->tx_sequence;frame[5]=(uint8_t)channel;frame[7]=12U;
  if(channel==2U){frame[12]=0x20;frame[13]=(uint8_t)priority;}
  memcpy(frame+header,payload,bytes);
- if(b->io.send_frame(b->io.cookie,frame,padded)){b->fault=1;return I9100_BCM_IO;}
+ int failed=b->io.send_frame(b->io.cookie,frame,padded);secret_clear(frame,padded);
+ if(failed){b->fault=1;return I9100_BCM_IO;}
  b->tx_sequence++;return 0;
 }
-int i9100_bcm_send_data(struct i9100_bcm4330 *b,const uint8_t *ethernet,unsigned bytes,unsigned priority)
+static int send_data_for(struct i9100_bcm4330 *b,void *owner,const uint8_t *ethernet,unsigned bytes,unsigned priority)
 {
  if(!b||!b->initialized||!ethernet||bytes<14U||bytes>1518U||priority>7U)return I9100_BCM_ARGUMENT;
  if(b->io.claim(b->io.cookie))return I9100_BCM_BUSY;
- int e=send(b,2,ethernet,bytes,priority);b->io.release(b->io.cookie);return e;
+ int e=b->control_owner!=owner?I9100_BCM_BUSY:send(b,2,ethernet,bytes,priority);b->io.release(b->io.cookie);return e;
 }
-int i9100_bcm_ioctl(struct i9100_bcm4330 *b,uint32_t command,int set,const uint8_t *input,unsigned bytes)
+int i9100_bcm_send_data(struct i9100_bcm4330 *b,const uint8_t *ethernet,unsigned bytes,unsigned priority)
+{return send_data_for(b,0,ethernet,bytes,priority);}
+int i9100_bcm_send_data_owned(struct i9100_bcm4330 *b,void *owner,const uint8_t *ethernet,unsigned bytes,unsigned priority)
+{return owner?send_data_for(b,owner,ethernet,bytes,priority):I9100_BCM_ARGUMENT;}
+static int ioctl_for(struct i9100_bcm4330 *b,void *owner,uint32_t command,int set,const uint8_t *input,unsigned bytes,uint16_t *submitted)
 {
  if(!b||!b->initialized||(set!=0&&set!=1)||bytes>1536U||(bytes&&!input))return I9100_BCM_ARGUMENT;
  if(b->io.claim(b->io.cookie))return I9100_BCM_BUSY;
- int e=0;if(b->pending){e=I9100_BCM_BUSY;goto done;}
+ int e=0;if(b->pending||b->control_owner!=owner){e=I9100_BCM_BUSY;goto done;}
  if(b->next_request==UINT16_MAX){e=I9100_BCM_BUSY;goto done;}
  uint8_t payload[1552];uint16_t id=(uint16_t)(b->next_request+1U);
  memset(payload,0,16);put32(payload,command);put32(payload+4,bytes);put32(payload+8,((uint32_t)id<<16)|(set?2U:0U));
- if(bytes)memcpy(payload+16,input,bytes);e=send(b,0,payload,bytes+16U,0);
+ if(bytes)memcpy(payload+16,input,bytes);e=send(b,0,payload,bytes+16U,0);secret_clear(payload,bytes+16U);
  if(!e){b->next_request=b->request_id=id;b->request_command=command;b->request_length=bytes;
-  b->request_started=b->io.now_ns(b->io.cookie);b->pending=1;b->firmware_status=0;}
+  b->request_started=b->io.now_ns(b->io.cookie);b->pending=1;b->firmware_status=0;if(submitted)*submitted=id;}
 done:
+ b->io.release(b->io.cookie);return e;
+}
+int i9100_bcm_ioctl(struct i9100_bcm4330 *b,uint32_t command,int set,const uint8_t *input,unsigned bytes)
+{return ioctl_for(b,0,command,set,input,bytes,0);}
+int i9100_bcm_ioctl_owned(struct i9100_bcm4330 *b,void *owner,uint32_t command,int set,const uint8_t *input,unsigned bytes,uint16_t *submitted)
+{return owner&&submitted?ioctl_for(b,owner,command,set,input,bytes,submitted):I9100_BCM_ARGUMENT;}
+int i9100_bcm_control_bind(struct i9100_bcm4330 *b,void *owner,uint32_t generation)
+{
+ if(!b||!b->initialized||!owner||!generation)return I9100_BCM_ARGUMENT;if(b->io.claim(b->io.cookie))return I9100_BCM_BUSY;
+ int e=!b->enabled||!b->protocol_ready?I9100_BCM_DISABLED:
+  generation!=b->protocol_generation||generation<=b->control_generation?I9100_BCM_ARGUMENT:
+  b->control_owner||b->pending||b->fault?I9100_BCM_BUSY:0;
+ if(!e){b->control_owner=owner;b->control_generation=generation;}b->io.release(b->io.cookie);return e;
+}
+int i9100_bcm_control_unbind(struct i9100_bcm4330 *b,void *owner,int cancel)
+{
+ if(!b||!b->initialized||!owner||(cancel!=0&&cancel!=1))return I9100_BCM_ARGUMENT;if(b->io.claim(b->io.cookie))return I9100_BCM_BUSY;
+ int e=b->control_owner!=owner?I9100_BCM_BUSY:b->pending&&!cancel?I9100_BCM_BUSY:0;
+ if(!e){if(cancel){b->pending=0;b->fault=1;}b->control_owner=0;}
+ b->io.release(b->io.cookie);return e;
+}
+int i9100_bcm_control_check(struct i9100_bcm4330 *b,void *owner,uint32_t generation)
+{
+ if(!b||!b->initialized||!owner||!generation)return I9100_BCM_ARGUMENT;
+ if(b->io.claim(b->io.cookie))return I9100_BCM_BUSY;
+ int e=b->control_owner!=owner||b->protocol_generation!=generation?I9100_BCM_ARGUMENT:
+  !b->enabled||!b->protocol_ready?I9100_BCM_DISABLED:b->fault?I9100_BCM_IO:0;
  b->io.release(b->io.cookie);return e;
 }
 int i9100_bcm_receive(struct i9100_bcm4330 *b,const uint8_t *frame,unsigned bytes,struct i9100_bcm_frame *out)
@@ -165,21 +198,28 @@ int i9100_bcm_receive(struct i9100_bcm4330 *b,const uint8_t *frame,unsigned byte
  if(channel>2U){e=I9100_BCM_UNSUPPORTED;goto fail;}
  if(b->rx_seen&&frame[4]!=b->rx_sequence){e=I9100_BCM_FRAME;goto fail;}
  unsigned credit=(uint8_t)(frame[9]-b->tx_sequence);if(credit&128U){e=I9100_BCM_CREDIT;goto fail;}
- struct i9100_bcm_frame parsed;memset(&parsed,0,sizeof(parsed));parsed.channel=(uint8_t)channel;
+ struct i9100_bcm_frame parsed;memset(&parsed,0,sizeof(parsed));parsed.channel=(uint8_t)channel;parsed.generation=b->protocol_generation;
  parsed.payload=frame+offset;parsed.bytes=length-offset;
- if(channel==2U){
+ /* Vendor deliver path calls dhd_prot_hdrpull for both EVENT and DATA. */
+ if(channel==1U||channel==2U){
   if(parsed.bytes<18U||(parsed.payload[0]>>4)!=2U||(parsed.payload[1]&~7U)||parsed.payload[2]){e=I9100_BCM_FRAME;goto fail;}
   unsigned extra=(unsigned)parsed.payload[3]*4U;
   if(extra>parsed.bytes-18U){e=I9100_BCM_FRAME;goto fail;}
   parsed.priority=parsed.payload[1]&7U;parsed.payload+=4U+extra;parsed.bytes-=4U+extra;
  }else if(channel==0U){
   if(parsed.bytes<16U){e=I9100_BCM_FRAME;goto fail;}
+  uint64_t now=b->io.now_ns(b->io.cookie);
+  if(b->pending&&(now<b->request_started||now-b->request_started>500000000ULL)){e=I9100_BCM_TIMEOUT;goto fail;}
   uint32_t flags=le32(parsed.payload+8),command=le32(parsed.payload),size=le32(parsed.payload+4);
-  if(!b->pending||(flags>>16)!=b->request_id||command!=b->request_command||size>parsed.bytes-16U||
+  if(!b->pending||(flags>>16)!=b->request_id||command!=b->request_command||
      (flags&0xfffcU)){e=I9100_BCM_FRAME;goto fail;}
-  uint32_t status=le32(parsed.payload+12);b->firmware_status=(int32_t)status;
-  if((flags&1U)||status)e=I9100_BCM_FIRMWARE;
-  parsed.payload+=16;parsed.bytes=size;b->pending=0;
+  uint32_t status=le32(parsed.payload+12);
+  if(!(flags&1U)&&!status&&(size>parsed.bytes-16U||size>b->request_length)){e=I9100_BCM_FRAME;goto fail;}
+  b->firmware_status=status?(int32_t)status:(flags&1U)?I9100_BCM_FIRMWARE:0;
+  if(b->firmware_status)e=I9100_BCM_FIRMWARE;
+  parsed.request_id=b->request_id;parsed.command=command;parsed.status=status?(int32_t)status:(flags&1U)?I9100_BCM_FIRMWARE:0;
+  parsed.needed_bytes=size;parsed.payload+=16;parsed.bytes=parsed.status?0U:size;
+  if(parsed.status)parsed.payload=0;b->pending=0;
  }
  b->tx_max=frame[9];b->flow_mask=frame[8];b->rx_seen=1;b->rx_sequence=(uint8_t)(frame[4]+1U);*out=parsed;goto done;
 fail:

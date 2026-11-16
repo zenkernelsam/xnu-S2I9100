@@ -28,6 +28,7 @@ C_SOURCES = [
     "i9100_bcm_core_download.c",
     "i9100_radio_power.c",
     "i9100_bcm_boot.c",
+    "i9100_wlan_control.c",
 ]
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
                "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_radio_native.cpp"]
@@ -64,6 +65,7 @@ TESTS = [
     ("i9100_radio_native_test.cpp", ["i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_irq_registry.c", "i9100_peripheral_board.c",
         "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c", "i9100_radio_power.c", "i9100_radio_native.cpp"]),
     ("i9100_bcm_boot_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c", "i9100_bcm_core_download.c", "i9100_bcm_firmware.c", "i9100_bcm_f2.c", "i9100_bcm_boot.c"]),
+    ("i9100_wlan_control_test.c", ["i9100_bcm4330.c", "i9100_bcm_f2.c", "i9100_wlan_control.c"]),
 ]
 
 
@@ -75,6 +77,7 @@ def main():
     p.add_argument("--wait-idle", type=int, default=0, choices=range(0, 61), metavar="0..60")
     args = p.parse_args()
     e = Evidence("peripheral-all-offline")
+    e.wait_idle_seconds = args.wait_idle
     deadline = time.monotonic() + args.wait_idle
     while True:
         try:

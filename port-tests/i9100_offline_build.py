@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -48,9 +49,29 @@ class Evidence:
         self.out.mkdir()
         self.result = dict(result="INCOMPLETE", hardware_tested=False, sources={})
         self.commands = []
+        self.wait_idle_seconds = 0
 
     def run(self, command, label, env=None, cwd=None):
-        idle()
+        # Stop between subprocesses while the shared main checkout builds.
+        # The caller may wait briefly here instead of repeating passed suites;
+        # never start a child while another heavy process is observed.
+        if not 0 <= self.wait_idle_seconds <= 60:
+            raise ValueError("Idle wait must stay within 0..60 seconds")
+        deadline = time.monotonic() + self.wait_idle_seconds
+        deferred = False
+        while True:
+            try:
+                idle()
+                break
+            except RuntimeError:
+                if time.monotonic() >= deadline:
+                    raise
+                if not deferred:
+                    print("DEFERRED " + label + "; waiting for the shared build to finish", flush=True)
+                    deferred = True
+                time.sleep(min(2, max(0, deadline - time.monotonic())))
+        if deferred:
+            print("RESUMED " + label + "; no other heavy job observed", flush=True)
         proc = subprocess.run(command, cwd=cwd or PLATFORM, env=env, text=True, capture_output=True)
         (self.out / (label + ".log")).write_text(proc.stdout + proc.stderr)
         if proc.returncode:

@@ -18,7 +18,8 @@ struct model {
  uint8_t *mutate_source;
  unsigned core_actions_allowed,core_writes,drop_core_control,reset_stall,reset_status_busy,freeze_time,defer_reset_reads;
  uint32_t cm3_control,d11_control,pending_value[3];unsigned pending_reads[3];
- unsigned boot_model,ht_ready,f2_ready,no_mailbox,mailbox_delay,event_raised;
+ unsigned boot_model,ht_ready,f2_ready,no_mailbox,mailbox_delay,event_raised,mailbox_interrupt,mailbox_ack_count;
+ uint32_t mailbox_pre_data;
  uint32_t sdio_regs[32],firmware_mailbox,expected_token;
  uint8_t function_enable,fbr_low,fbr_high;
 };
@@ -62,7 +63,9 @@ static uint32_t word_read(struct model *p,uint32_t address)
  if(p->boot_model&&address>=0x18011000U&&address<0x18011080U){
   if(address==0x18011020U&&!(p->arm_reset&1U)&&(p->function_enable&4U)&&p->f2_ready&&!p->event_raised&&!p->no_mailbox){
    if(p->mailbox_delay)p->mailbox_delay--;
-   else{p->sdio_regs[0x20U/4U]|=0x20U;p->sdio_regs[0x4cU/4U]=p->firmware_mailbox;p->event_raised=1;p->d11_reset&=~1U;}
+   else{p->sdio_regs[0x20U/4U]|=p->mailbox_interrupt?p->mailbox_interrupt:0x80U;
+    p->sdio_regs[0x4cU/4U]=p->mailbox_pre_data&&!p->mailbox_ack_count?p->mailbox_pre_data:p->firmware_mailbox;
+    p->event_raised=1;p->d11_reset&=~1U;}
   }
   return p->sdio_regs[(address-0x18011000U)/4U];
  }
@@ -93,7 +96,12 @@ static int cmd53(void *cookie,int write,unsigned fn,uint32_t offset,int incremen
   else if(p->boot_model&&address>=0x18011000U&&address<0x18011080U){
    unsigned off=address-0x18011000U;assert(off==0x20U||off==0x40U||off==0x48U);
    if(off==0x20U)p->sdio_regs[off/4U]&=~v;
-   else if(off==0x40U){assert(v==2U);p->sdio_regs[0x20U/4U]&=~0x20U;}
+   else if(off==0x40U){assert(v==2U);p->sdio_regs[0x20U/4U]&=~0x80U;p->mailbox_ack_count++;
+    if(p->mailbox_pre_data&&p->mailbox_ack_count==1U){
+     /* A real producer can post the next mailbox as soon as ACK is written. */
+     p->sdio_regs[0x4cU/4U]=p->firmware_mailbox;p->sdio_regs[0x20U/4U]|=0x80U;
+    }
+   }
    else p->sdio_regs[off/4U]=v;
   }
   else{

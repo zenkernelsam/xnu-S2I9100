@@ -76,7 +76,8 @@ static void startup_transport(void)
  assert(!i9100_bcm_boot_start(&boot)&&boot.ready&&boot.running&&firmware.execution_possible&&bus.protocol_ready&&packets.enabled);
  assert(bus.tx_sequence==255U&&bus.tx_max==0U&&!(m.arm_reset&1U));
  uint8_t ethernet[64]={0};assert(i9100_bcm_send_data(&bus,ethernet,sizeof(ethernet),0)==I9100_BCM_CREDIT);
- assert(!i9100_bcm_ioctl(&bus,1,0,0,0)&&bus.pending&&tx[4]==255U&&bus.tx_sequence==0U);
+ const uint8_t query_buffer[4]={0};
+ assert(!i9100_bcm_ioctl(&bus,1,0,query_buffer,4)&&bus.pending&&tx[4]==255U&&bus.tx_sequence==0U);
  memset(rx,0,sizeof(rx));put16(rx,32);put16(rx+2,(uint16_t)~32U);rx[4]=7;rx[5]=0;rx[7]=12;rx[9]=4;
  put32(rx+12,1);put32(rx+16,4);put32(rx+20,(uint32_t)bus.request_id<<16);memcpy(rx+28,"OKAY",4);rx_bytes=32;
  uint8_t output[2048];unsigned bytes=0;assert(!i9100_bcm_f2_receive(&packets,output,sizeof(output),&bytes)&&bytes==32U);
@@ -89,6 +90,13 @@ static void failures(void)
 {
  setup_boot();m.no_mailbox=1;
  assert(i9100_bcm_boot_start(&boot)==I9100_BCM_BOOT_TIMEOUT&&boot.owned&&!boot.ready&&m.event_raised==0U);close_boot();
+ /* Independent vendor allocation:SW1=FC change,SW3=HOST_INT. */
+ setup_boot();m.mailbox_interrupt=0x20U;
+ assert(i9100_bcm_boot_start(&boot)==I9100_BCM_BOOT_TIMEOUT&&m.event_raised&&!boot.ready);close_boot();
+ setup_boot();m.sdio_regs[0x20U/4U]=0x80U;m.no_mailbox=1;
+ assert(i9100_bcm_boot_start(&boot)==I9100_BCM_BOOT_TIMEOUT&&!boot.ready);close_boot();
+ setup_boot();m.mailbox_pre_data=0x40000004U;
+ assert(!i9100_bcm_boot_start(&boot)&&boot.ready&&m.mailbox_ack_count==2U&&bus.flow_mask==0x40U);close_boot();
  setup_boot();m.ht_ready=0;m.freeze_time=1;
  assert(i9100_bcm_boot_start(&boot)==I9100_BCM_BOOT_TIMEOUT&&!boot.ready&&!boot.running);m.freeze_time=0;close_boot();
  setup_boot();m.f2_ready=0;
