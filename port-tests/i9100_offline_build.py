@@ -130,10 +130,13 @@ class Evidence:
         (self.out / "compile-commands.json").write_text(json.dumps(self.commands, indent=2) + "\n")
         self.result["cross_compiled"] = True
 
-    def model_cpp(self, test_file, c_sources, cpp_sources, libraries=(), source_overrides=None):
+    def model_cpp(self, test_file, c_sources, cpp_sources, libraries=(), source_overrides=None,
+                  wrapped_functions=()):
         """Run native bridge logic with a host-only IOKit facade, not an ARM SDK."""
         sdk = REPO / "port-tests/offline-native-sdk"
         source_overrides = source_overrides or {}
+        if any(not name.isascii() or not name.isidentifier() for name in wrapped_functions):
+            raise ValueError("Linker wrapping requires plain C symbol names")
         common = ["-O1", "-Wall", "-Wextra", "-Werror", "-fno-pie",
                   "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
                   "-I" + str(sdk), "-I" + str(PLATFORM)]
@@ -149,12 +152,15 @@ class Evidence:
             objects.append(str(destination))
         self.run(["clang++", "-std=c++11", *common, "-no-pie",
                   str(REPO / "port-tests" / test_file), *objects, "-o", str(self.out / "models"),
+                  *["-Wl,--wrap=" + name for name in wrapped_functions],
                   *["-l" + name for name in libraries]], "compile-native-models")
         self.run([str(self.out / "models")], "native-model-tests")
         self.result.update(native_model=test_file, native_iokit_facade=True,
                            native_model_sha256=hashlib.sha256((REPO / "port-tests" / test_file).read_bytes()).hexdigest(),
                            facade_headers={str(path.relative_to(sdk)): hashlib.sha256(path.read_bytes()).hexdigest()
                                            for path in sorted(sdk.rglob("*.h"))})
+        if wrapped_functions:
+            self.result.setdefault("native_wrapped_functions", {})[test_file] = list(wrapped_functions)
 
     def finish(self, sources, scope):
         for name in sources:
