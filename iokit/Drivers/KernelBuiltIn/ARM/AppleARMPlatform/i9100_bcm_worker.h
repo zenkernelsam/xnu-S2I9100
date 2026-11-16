@@ -13,6 +13,7 @@ struct i9100_bcm_notify {
 struct i9100_bcm_output {
  void *cookie;int (*ethernet)(void *,const uint8_t *,unsigned,unsigned);
 };
+struct i9100_bcm_irq_ops {void *cookie;int (*rearm)(void *);int (*mask)(void *);}; /* rearm:0 armed,1 disabled,<0 fault */
 struct i9100_bcm_worker_status {
  uint32_t running,fault,stopping,ready,timer_wakes,notifier_wakes,notifiers,pending,worker_hold,control_state;
  uint32_t rx_frames,data_frames,dropped_frames,empty_reads,budget_yields,interrupt_status,mailbox;
@@ -30,6 +31,8 @@ int i9100_bcm_worker_destroy(struct i9100_bcm_worker **);
 int i9100_bcm_worker_notifier_get(struct i9100_bcm_worker *,struct i9100_bcm_notify *);
 int i9100_bcm_worker_signal(struct i9100_bcm_notify *); /* short IRQ-safe deferred signal, no SDIO */
 int i9100_bcm_worker_notifier_put(struct i9100_bcm_notify *);
+int i9100_bcm_worker_irq_attach(struct i9100_bcm_worker *,const struct i9100_bcm_irq_ops *,struct i9100_bcm_notify *);
+int i9100_bcm_worker_irq_detach(struct i9100_bcm_worker *,void *irq_cookie);
 /* Default OFF. Real OSObject owner/IOWorkLoop/event/timer and native lease
  * APIs, not a raw heap pointer cast as OSObject. Pump and controller are
  * private to this serial gate; one native session hold lasts until FW halt,
@@ -40,6 +43,10 @@ int i9100_bcm_worker_notifier_put(struct i9100_bcm_notify *);
  * Notifier tokens retain the worker; signal only marks+wakes. The board IRQ
  * provider still masks/acks/rearms GPX2.5/EINT21/GIC64 and unregisters/syncs
  * before notifier_put. This module does NOT install that physical IRQ hook.
+ * The optional IRQ hook is tied to one held notifier. After a successful
+ * drain rearm is followed by a fresh F1 pending check; new work is masked
+ * and rescheduled to avoid a lost falling edge. Detach masks under the gate
+ * before removing the hook; its notifier cannot be put while attached.
  * Destroy refuses live notifiers, JOINING/UP/DISCONNECTING state and callback
  * thread. Disconnect+mask-restore or explicit abort first; then disable and
  * remove event sources, close pump/control, put worker hold, release object.

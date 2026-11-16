@@ -27,7 +27,7 @@ int i9100_irq_registry_enable(struct i9100_irq_registry *r,int enabled)
 }
 static int register_source(struct i9100_irq_registry *r,unsigned irq,int edge,i9100_irq_handler handler,void *cookie,struct i9100_irq_lease *l,int enabled)
 {
- if(!r||!l||l->active||!handler||irq<32U||irq>=256U||(edge!=0&&edge!=1)||!(r->allowed[irq/32]&(1U<<(irq&31U))))return I9100_IRQ_ARGUMENT;
+ if(!r||!l||l->active||(l->self&&l->self!=(uintptr_t)l)||!handler||irq<32U||irq>=256U||(edge!=0&&edge!=1)||!(r->allowed[irq/32]&(1U<<(irq&31U))))return I9100_IRQ_ARGUMENT;
  uint32_t saved=enter(r);if(!r->enabled){leave(r,saved);return I9100_IRQ_DISABLED;}
  for(unsigned n=0;n<I9100_IRQ_SLOTS;n++)if(r->slots[n].token&&r->slots[n].irq==irq){leave(r,saved);return I9100_IRQ_BUSY;}
  if(read(r,ENABLE_SET+irq/32U*4U)&(1U<<(irq&31U))){leave(r,saved);return I9100_IRQ_BUSY;}
@@ -36,18 +36,23 @@ static int register_source(struct i9100_irq_registry *r,unsigned irq,int edge,i9
  struct i9100_irq_slot *s=&r->slots[slot];memset(s,0,sizeof(*s));s->irq=irq;
  unsigned byte=(irq&3U)*8U,bits=(irq&15U)*2U;
  s->priority=(read(r,PRIORITY+irq/4U*4U)>>byte)&255U;s->target=(read(r,TARGET+irq/4U*4U)>>byte)&255U;
- s->config=(read(r,CONFIG+irq/16U*4U)>>bits)&3U;
+ s->config=(read(r,CONFIG+irq/16U*4U)>>bits)&2U;
+ s->handler=handler;s->cookie=cookie;s->token=++r->generation;s->lease=(uintptr_t)l;
+ l->registry=r;l->slot=slot;l->token=s->token;l->active=1;l->self=(uintptr_t)l;
  write(r,ENABLE_CLEAR+irq/32U*4U,1U<<(irq&31U));
  field(r,PRIORITY+irq/4U*4U,byte,255,0x80);field(r,TARGET+irq/4U*4U,byte,255,1);
- field(r,CONFIG+irq/16U*4U,bits,3,edge?2U:0U);
- s->handler=handler;s->cookie=cookie;s->token=++r->generation;
- if(!enabled){l->registry=r;l->slot=slot;l->token=s->token;l->active=1;leave(r,saved);return 0;}
- write(r,ENABLE_SET+irq/32U*4U,1U<<(irq&31U));
- if(!(read(r,ENABLE_SET+irq/32U*4U)&(1U<<(irq&31U)))){
-  field(r,PRIORITY+irq/4U*4U,byte,255,s->priority);field(r,TARGET+irq/4U*4U,byte,255,s->target);
-  field(r,CONFIG+irq/16U*4U,bits,3,s->config);s->token=0;leave(r,saved);return I9100_IRQ_IO;
+ field(r,CONFIG+irq/16U*4U,bits,2,edge?2U:0U);
+ if((read(r,ENABLE_SET+irq/32U*4U)&(1U<<(irq&31U)))||
+    ((read(r,PRIORITY+irq/4U*4U)>>byte)&255U)!=0x80U||
+    ((read(r,TARGET+irq/4U*4U)>>byte)&255U)!=1U||
+    ((read(r,CONFIG+irq/16U*4U)>>bits)&2U)!=(edge?2U:0U)){
+  s->fault=1;leave(r,saved);return I9100_IRQ_IO;
  }
- s->enabled=1;l->registry=r;l->slot=slot;l->token=s->token;l->active=1;leave(r,saved);return 0;
+ if(enabled)write(r,ENABLE_SET+irq/32U*4U,1U<<(irq&31U));
+ s->ready=1;
+ s->enabled=!!(read(r,ENABLE_SET+irq/32U*4U)&(1U<<(irq&31U)));
+ if(s->enabled!=(unsigned)enabled){s->fault=1;leave(r,saved);return I9100_IRQ_IO;}
+ leave(r,saved);return 0;
 }
 int i9100_irq_register(struct i9100_irq_registry *r,unsigned irq,int edge,i9100_irq_handler h,void *c,struct i9100_irq_lease *l)
 {return register_source(r,irq,edge,h,c,l,1);}
@@ -55,9 +60,10 @@ int i9100_irq_register_masked(struct i9100_irq_registry *r,unsigned irq,int edge
 {return register_source(r,irq,edge,h,c,l,0);}
 static int set_mask(struct i9100_irq_lease *l,int enabled)
 {
- if(!l||!l->active||!l->registry||l->slot>=I9100_IRQ_SLOTS)return I9100_IRQ_OWNER;
+ if(!l||!l->active||l->self!=(uintptr_t)l||!l->registry||l->slot>=I9100_IRQ_SLOTS)return I9100_IRQ_OWNER;
  struct i9100_irq_registry *r=l->registry;uint32_t saved=enter(r);struct i9100_irq_slot *s=&r->slots[l->slot];
- int e=0;if(s->token!=l->token||!r->enabled){e=I9100_IRQ_OWNER;goto done;}
+ int e=0;if(s->token!=l->token||s->lease!=(uintptr_t)l||!r->enabled){e=I9100_IRQ_OWNER;goto done;}
+ if(enabled&&(!s->ready||s->restoring)){e=I9100_IRQ_IO;goto done;}
  write(r,(enabled?ENABLE_SET:ENABLE_CLEAR)+s->irq/32U*4U,1U<<(s->irq&31U));
  unsigned actual=!!(read(r,ENABLE_SET+s->irq/32U*4U)&(1U<<(s->irq&31U)));s->enabled=actual;
  if(actual!=(unsigned)enabled){s->fault=1;e=I9100_IRQ_IO;}
@@ -69,18 +75,19 @@ int i9100_irq_mask(struct i9100_irq_lease *l){return set_mask(l,0);}
 int i9100_irq_unmask(struct i9100_irq_lease *l){return set_mask(l,1);}
 int i9100_irq_unregister(struct i9100_irq_lease *l)
 {
- if(!l||!l->active||!l->registry||l->slot>=I9100_IRQ_SLOTS)return I9100_IRQ_OWNER;
+ if(!l||!l->active||l->self!=(uintptr_t)l||!l->registry||l->slot>=I9100_IRQ_SLOTS)return I9100_IRQ_OWNER;
  struct i9100_irq_registry *r=l->registry;uint32_t saved=enter(r);struct i9100_irq_slot *s=&r->slots[l->slot];
- if(s->token!=l->token){leave(r,saved);return I9100_IRQ_OWNER;}
+ if(s->token!=l->token||s->lease!=(uintptr_t)l){leave(r,saved);return I9100_IRQ_OWNER;}
  if(s->busy){leave(r,saved);return I9100_IRQ_BUSY;}
+ s->restoring=1;s->ready=0;
  write(r,ENABLE_CLEAR+s->irq/32U*4U,1U<<(s->irq&31U));
  if(read(r,ENABLE_SET+s->irq/32U*4U)&(1U<<(s->irq&31U))){s->fault=1;leave(r,saved);return I9100_IRQ_IO;}
  unsigned byte=(s->irq&3U)*8U,bits=(s->irq&15U)*2U;
  field(r,PRIORITY+s->irq/4U*4U,byte,255,s->priority);field(r,TARGET+s->irq/4U*4U,byte,255,s->target);
- field(r,CONFIG+s->irq/16U*4U,bits,3,s->config);
+ field(r,CONFIG+s->irq/16U*4U,bits,2,s->config);
  if(((read(r,PRIORITY+s->irq/4U*4U)>>byte)&255U)!=s->priority||
     ((read(r,TARGET+s->irq/4U*4U)>>byte)&255U)!=s->target||
-    ((read(r,CONFIG+s->irq/16U*4U)>>bits)&3U)!=s->config){s->fault=1;leave(r,saved);return I9100_IRQ_IO;}
+    ((read(r,CONFIG+s->irq/16U*4U)>>bits)&2U)!=s->config){s->fault=1;leave(r,saved);return I9100_IRQ_IO;}
  memset(s,0,sizeof(*s));l->active=0;leave(r,saved);return 0;
 }
 int i9100_irq_dispatch(struct i9100_irq_registry *r,uint32_t acknowledge)

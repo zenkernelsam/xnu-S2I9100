@@ -33,6 +33,7 @@ struct i9100_peripheral_native {
  volatile uint8_t *regs[MAP_COUNT];
  IOLock *gpio_lock,*clock_lock;IOSimpleLock *irq_lock;
  i9100_gpio_broker gpio;i9100_clock_gates clocks;i9100_irq_registry irqs;
+ i9100_irq_cascade eint;
  native_i2c buses[3];
  native_uart uart;
  native_sdio sdio;
@@ -59,6 +60,10 @@ static uint32_t irq_enter(void *cookie)
 {return (uint32_t)IOSimpleLockLockDisableInterrupt(((i9100_peripheral_native *)cookie)->irq_lock);}
 static void irq_leave(void *cookie,uint32_t saved)
 {IOSimpleLockUnlockEnableInterrupt(((i9100_peripheral_native *)cookie)->irq_lock,(IOInterruptState)saved);}
+static uint32_t eint_read(void *cookie,unsigned region,unsigned off)
+{return region?0:read_mmio((i9100_peripheral_native *)cookie,MAP_GPIO1,off);}
+static void eint_write(void *cookie,unsigned region,unsigned off,uint32_t value)
+{if(!region)write_mmio((i9100_peripheral_native *)cookie,MAP_GPIO1,off,value);}
 static uint64_t time_ns(void *){uint64_t result=0;absolutetime_to_nanoseconds(mach_absolute_time(),&result);return result;}
 static int pause_us(void *,uint32_t microseconds)
 {if(!ml_get_interrupts_enabled()||microseconds>100000U)return -1;IODelay(microseconds);return 0;}
@@ -164,9 +169,11 @@ int i9100_peripheral_native_create(int enabled,i9100_peripheral_native **result)
  i9100_gpio_io gpio={c,gpio_read,gpio_write,gpio_lock,gpio_unlock};
  i9100_clock_io clocks={c,clock_read,clock_write,clock_lock,clock_unlock};
  i9100_irq_io irqs={c,irq_read,irq_write,irq_enter,irq_leave};uint32_t allowed[8];i9100_u1_irq_whitelist(allowed);
+ i9100_cascade_io eint={c,eint_read,eint_write,irq_enter,irq_leave};
  if(i9100_gpio_broker_init(&c->gpio,&gpio,i9100_u1_banks,I9100_BANK_COUNT)||
     i9100_clock_init(&c->clocks,&clocks,i9100_u1_gates,I9100_GATE_COUNT)||
-    i9100_irq_registry_init(&c->irqs,&irqs,allowed)){dispose(c);return I9100_GPIO_ARGUMENT;}
+    i9100_irq_registry_init(&c->irqs,&irqs,allowed)||
+    i9100_cascade_init(&c->eint,&eint,I9100_CASCADE_EINT,0,(1U<<21)|(1U<<22))){dispose(c);return I9100_GPIO_ARGUMENT;}
  for(unsigned n=0;n<3;n++){
   native_i2c *b=&c->buses[n];b->context=c;b->index=n;b->outer=IOLockAlloc();b->controller=IOLockAlloc();
   if(!b->outer||!b->controller){dispose(c);return I9100_GPIO_BUSY;}
@@ -175,7 +182,7 @@ int i9100_peripheral_native_create(int enabled,i9100_peripheral_native **result)
  if(!c->uart.outer||!c->uart.controller){dispose(c);return I9100_GPIO_BUSY;}
  c->sdio.context=c;c->sdio.outer=IOLockAlloc();c->sdio.controller=IOLockAlloc();
  if(!c->sdio.outer||!c->sdio.controller){dispose(c);return I9100_GPIO_BUSY;}
- if(i9100_gpio_broker_enable(&c->gpio,1)||i9100_clock_enable(&c->clocks,1)||i9100_irq_registry_enable(&c->irqs,1))
+ if(i9100_gpio_broker_enable(&c->gpio,1)||i9100_clock_enable(&c->clocks,1)||i9100_irq_registry_enable(&c->irqs,1)||i9100_cascade_enable(&c->eint,1))
   {dispose(c);return I9100_GPIO_BUSY;}
  *result=c;return 0;
 }
@@ -185,14 +192,16 @@ int i9100_peripheral_native_destroy(i9100_peripheral_native **owner)
  if(c->uart.live||c->uart.allowed_owner)return I9100_GPIO_BUSY;
  if(c->sdio.live||c->sdio.allowed_owner)return I9100_GPIO_BUSY;
  for(unsigned n=0;n<3;n++)if(c->buses[n].live)return I9100_GPIO_BUSY;
- int e=i9100_irq_registry_enable(&c->irqs,0);if(e)return e;
+ int e=i9100_cascade_enable(&c->eint,0);if(e)return e;
+ e=i9100_irq_registry_enable(&c->irqs,0);if(e){(void)i9100_cascade_enable(&c->eint,1);return e;}
  e=i9100_gpio_broker_enable(&c->gpio,0);if(!e)e=i9100_clock_enable(&c->clocks,0);
- if(e){(void)i9100_irq_registry_enable(&c->irqs,1);(void)i9100_gpio_broker_enable(&c->gpio,1);return e;}
+ if(e){(void)i9100_cascade_enable(&c->eint,1);(void)i9100_irq_registry_enable(&c->irqs,1);(void)i9100_gpio_broker_enable(&c->gpio,1);return e;}
  dispose(c);*owner=0;return 0;
 }
 struct i9100_gpio_broker *i9100_peripheral_native_gpio(i9100_peripheral_native *c){return c?&c->gpio:0;}
 struct i9100_clock_gates *i9100_peripheral_native_clocks(i9100_peripheral_native *c){return c?&c->clocks:0;}
 struct i9100_irq_registry *i9100_peripheral_native_irqs(i9100_peripheral_native *c){return c?&c->irqs:0;}
+struct i9100_irq_cascade *i9100_peripheral_native_eint(i9100_peripheral_native *c){return c?&c->eint:0;}
 int i9100_peripheral_native_i2c_close(i9100_peripheral_native *c,unsigned index)
 {
  if(!c||index>=3U)return I9100_I2C_ARGUMENT;native_i2c *b=&c->buses[index];

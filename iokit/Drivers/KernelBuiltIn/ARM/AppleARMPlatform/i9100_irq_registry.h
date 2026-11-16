@@ -19,12 +19,13 @@ typedef int (*i9100_irq_handler)(void *,uint32_t acknowledge); /* 0=source handl
 struct i9100_irq_slot {
  i9100_irq_handler handler;void *cookie;
  uint32_t irq,token,busy,enabled,fault,delivered,priority,target,config;
+ uintptr_t lease;uint32_t ready,restoring;
 };
 struct i9100_irq_registry {
  struct i9100_irq_io io;struct i9100_irq_slot slots[I9100_IRQ_SLOTS];
  uint32_t allowed[8],enabled,generation;
 };
-struct i9100_irq_lease {struct i9100_irq_registry *registry;uint32_t slot,token,active;};
+struct i9100_irq_lease {struct i9100_irq_registry *registry;uint32_t slot,token,active;uintptr_t self;};
 int i9100_irq_registry_init(struct i9100_irq_registry *,const struct i9100_irq_io *,const uint32_t allowed[8]);
 int i9100_irq_registry_enable(struct i9100_irq_registry *,int);
 int i9100_irq_register(struct i9100_irq_registry *,unsigned irq,int edge,i9100_irq_handler,void *,struct i9100_irq_lease *);
@@ -36,6 +37,9 @@ int i9100_irq_dispatch(struct i9100_irq_registry *,uint32_t acknowledge);
 /* No GIC reset, no SGI/PPI changes and no EOI: caller retains the complete
  * acknowledge token and performs exactly one EOI. Allowed IRQs come from the
  * board profile, with active mainline sources excluded. Objects are zeroed. */
+/* Masked registration verifies mask/priority/target/config before readiness;
+ * all failed writes keep the exact active lease until verified unregister.
+ * Unmask cannot revive incomplete registration or partial restoration. */
 #ifdef __cplusplus
 }
 #endif

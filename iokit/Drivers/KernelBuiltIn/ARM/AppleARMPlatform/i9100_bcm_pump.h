@@ -21,6 +21,7 @@ struct i9100_bcm_pump {
 };
 int i9100_bcm_pump_init(struct i9100_bcm_pump *,int enabled,struct i9100_bcm_boot *,struct i9100_wlan_control *,const struct i9100_pump_io *);
 int i9100_bcm_pump_tick(struct i9100_bcm_pump *,unsigned max_reads);
+int i9100_bcm_pump_recheck(struct i9100_bcm_pump *,unsigned *work_pending);
 int i9100_bcm_pump_abort(struct i9100_bcm_pump *);
 int i9100_bcm_pump_close(struct i9100_bcm_pump *);
 /* Default OFF; only the pinned SDIO HMB RX mode0, no hostintmask/IRQ enable.

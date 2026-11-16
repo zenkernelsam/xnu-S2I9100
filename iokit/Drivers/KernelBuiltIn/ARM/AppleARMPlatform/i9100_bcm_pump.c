@@ -126,5 +126,14 @@ done:
 }
 int i9100_bcm_pump_abort(struct i9100_bcm_pump *p)
 {int e=take(p);if(e)return e;e=fail(p,I9100_PUMP_CANCELLED);drop(p);return e;}
+int i9100_bcm_pump_recheck(struct i9100_bcm_pump *p,unsigned *work)
+{
+ if(!work)return I9100_PUMP_ARGUMENT;*work=0;int e=take(p);if(e)return e;
+ if(p->closing||p->fault){e=p->fault?p->error:I9100_PUMP_DISABLED;drop(p);return e;}
+ struct i9100_bcm4330 *b=bus(p);if(b->io.claim(b->io.cookie)){drop(p);return I9100_PUMP_BUSY;}
+ uint32_t status=0;e=live(p)?rd(p,STATUS,&status):I9100_PUMP_IO;
+ if(!e)*work=p->pending_rx||!!(status&(OWN_EVENTS|FATAL_STATUS));
+ b->io.release(b->io.cookie);drop(p);return e;
+}
 int i9100_bcm_pump_close(struct i9100_bcm_pump *p)
 {int e=take(p);if(e)return e;e=close_locked(p);p->cleanup_error=e;drop(p);return e;}

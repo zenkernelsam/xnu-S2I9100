@@ -33,9 +33,9 @@ int i9100_cascade_enable(struct i9100_irq_cascade *c,int enabled)
  int e=0;if(!enabled)for(unsigned n=0;n<32U;n++)if(c->slots[n].token){e=I9100_CASCADE_BUSY;break;}
  if(!e)c->enabled=enabled;c->io.leave(c->io.cookie,saved);return e;
 }
-int i9100_cascade_register(struct i9100_irq_cascade *c,unsigned child,unsigned trigger,i9100_cascade_handler handler,void *cookie,struct i9100_cascade_lease *l)
+static int register_source(struct i9100_irq_cascade *c,unsigned child,unsigned trigger,i9100_cascade_handler handler,void *cookie,struct i9100_cascade_lease *l,int enabled)
 {
- if(!c||!c->initialized||!l||l->active||child>=(c->kind==I9100_CASCADE_EINT?32U:8U)||!handler||
+ if(!c||!c->initialized||!l||l->active||(l->self&&l->self!=(uintptr_t)l)||child>=(c->kind==I9100_CASCADE_EINT?32U:8U)||!handler||
     (c->kind==I9100_CASCADE_EINT?trigger>4U:trigger!=0U))return I9100_CASCADE_ARGUMENT;
  uint32_t saved=c->io.enter(c->io.cookie);int e=0;
  struct i9100_cascade_slot *s=&c->slots[child];
@@ -44,38 +44,74 @@ int i9100_cascade_register(struct i9100_irq_cascade *c,unsigned child,unsigned t
  else if(s->token||c->generation==UINT32_MAX)e=I9100_CASCADE_BUSY;
  else if(is_enabled(c,child))e=I9100_CASCADE_BUSY; /* cannot take a running owner's line */
  else {
-  memset(s,0,sizeof(*s));s->initial=0;s->token=++c->generation;s->handler=handler;s->cookie=cookie;
+  memset(s,0,sizeof(*s));s->initial=0;s->token=++c->generation;s->handler=handler;s->cookie=cookie;s->lease=(uintptr_t)l;
+  memset(l,0,sizeof(*l));l->owner=c;l->child=child;l->token=s->token;l->active=1;l->self=(uintptr_t)l;
   if(c->kind==I9100_CASCADE_EINT){
    unsigned off=0xe00U+base(c,child),shift=(child%8U)*4U;
-   uint32_t conf=rd(c,off);s->config=(conf>>shift)&15U;
-   wr(c,off,(conf&~(15U<<shift))|(trigger<<shift));
+   uint32_t conf=rd(c,off);s->config=(conf>>shift)&7U;
+   wr(c,off,(conf&~(7U<<shift))|(trigger<<shift));
+   if(((rd(c,off)>>shift)&7U)!=trigger)e=I9100_CASCADE_IO;
    wr(c,0xf40U+base(c,child),bit(c,child));
   }
-  mask(c,child,0);
-  if(!is_enabled(c,child))e=I9100_CASCADE_IO;
-  memset(l,0,sizeof(*l));l->owner=c;l->child=child;l->token=s->token;l->active=1;
+  if(!e){mask(c,child,!enabled);if(is_enabled(c,child)!=(unsigned)enabled)e=I9100_CASCADE_IO;}
   /* Failed activation keeps ownership for explicit cleanup. */
   if(e)s->fault=1;
  }
  c->io.leave(c->io.cookie,saved);return e;
 }
+int i9100_cascade_register(struct i9100_irq_cascade *c,unsigned child,unsigned trigger,i9100_cascade_handler h,void *cookie,struct i9100_cascade_lease *l)
+{return register_source(c,child,trigger,h,cookie,l,1);}
+int i9100_cascade_register_masked(struct i9100_irq_cascade *c,unsigned child,unsigned trigger,i9100_cascade_handler h,void *cookie,struct i9100_cascade_lease *l)
+{return register_source(c,child,trigger,h,cookie,l,0);}
+static int valid(struct i9100_cascade_lease *l)
+{
+ return l&&l->active&&l->self==(uintptr_t)l&&l->owner&&l->owner->initialized&&
+  l->child<(l->owner->kind==I9100_CASCADE_EINT?32U:8U)&&l->owner->slots[l->child].token==l->token&&
+  l->owner->slots[l->child].lease==(uintptr_t)l;
+}
+static int set_mask(struct i9100_cascade_lease *l,int enabled)
+{
+ if(!valid(l))return I9100_CASCADE_OWNER;struct i9100_irq_cascade *c=l->owner;uint32_t saved=c->io.enter(c->io.cookie);
+ struct i9100_cascade_slot *s=&c->slots[l->child];int e=0;
+ if(!valid(l)||!c->enabled)e=I9100_CASCADE_OWNER;
+ else if(enabled&&(s->fault||s->restoring||s->busy))e=I9100_CASCADE_BUSY;
+ else{mask(c,l->child,!enabled);if(is_enabled(c,l->child)!=(unsigned)enabled){s->fault=1;e=I9100_CASCADE_IO;}}
+ c->io.leave(c->io.cookie,saved);return e;
+}
+int i9100_cascade_mask(struct i9100_cascade_lease *l){return set_mask(l,0);}
+int i9100_cascade_unmask(struct i9100_cascade_lease *l){return set_mask(l,1);}
+int i9100_cascade_pending(struct i9100_cascade_lease *l,unsigned *out)
+{
+ if(!out||!valid(l))return I9100_CASCADE_OWNER;struct i9100_irq_cascade *c=l->owner;uint32_t saved=c->io.enter(c->io.cookie);
+ int e=0;if(!valid(l))e=I9100_CASCADE_OWNER;else *out=pending(c,l->child);
+ c->io.leave(c->io.cookie,saved);return e;
+}
+int i9100_cascade_enabled_children(struct i9100_irq_cascade *c,uint32_t *out)
+{
+ if(!c||!c->initialized||!out)return I9100_CASCADE_ARGUMENT;uint32_t saved=c->io.enter(c->io.cookie);
+ if(!c->enabled){c->io.leave(c->io.cookie,saved);return I9100_CASCADE_DISABLED;}
+ uint32_t bits=0;unsigned count=c->kind==I9100_CASCADE_EINT?32U:8U;
+ for(unsigned n=0;n<count;n++)if(is_enabled(c,n))bits|=1U<<n;*out=bits;c->io.leave(c->io.cookie,saved);return 0;
+}
 int i9100_cascade_unregister(struct i9100_cascade_lease *l)
 {
- if(!l||!l->active||!l->owner||l->child>=32U)return I9100_CASCADE_OWNER;
+ if(!valid(l))return I9100_CASCADE_OWNER;
  struct i9100_irq_cascade *c=l->owner;uint32_t saved=c->io.enter(c->io.cookie);
  struct i9100_cascade_slot *s=&c->slots[l->child];int e=0;
- if(s->token!=l->token)e=I9100_CASCADE_OWNER;
+ if(!valid(l))e=I9100_CASCADE_OWNER;
  else if(s->busy)e=I9100_CASCADE_BUSY;
  else {
+  s->restoring=1;
   mask(c,l->child,1);
   if(is_enabled(c,l->child))e=I9100_CASCADE_IO;
   else {
    if(c->kind==I9100_CASCADE_EINT){
     unsigned off=0xe00U+base(c,l->child),shift=(l->child%8U)*4U;
-    wr(c,off,(rd(c,off)&~(15U<<shift))|(s->config<<shift));
+    wr(c,off,(rd(c,off)&~(7U<<shift))|(s->config<<shift));
+    if(((rd(c,off)>>shift)&7U)!=s->config)e=I9100_CASCADE_IO;
     wr(c,0xf40U+base(c,l->child),bit(c,l->child));
    }
-   memset(s,0,sizeof(*s));l->active=0;
+   if(!e){memset(s,0,sizeof(*s));l->active=0;}else s->fault=1;
   }
  }
  c->io.leave(c->io.cookie,saved);return e;
@@ -97,7 +133,7 @@ int i9100_cascade_dispatch(struct i9100_irq_cascade *c,uint32_t *unowned)
   c->io.leave(c->io.cookie,saved);int e=handler(cookie,n);saved=c->io.enter(c->io.cookie);
   if(s->token!=token){c->io.leave(c->io.cookie,saved);return I9100_CASCADE_OWNER;}
   s->busy=0;s->delivered++;delivered++;
-  if(e||pending(c,n)){mask(c,n,1);s->fault=1;}
+  if(e||(is_enabled(c,n)&&pending(c,n))){mask(c,n,1);s->fault=1;}
  }
  c->io.leave(c->io.cookie,saved);return delivered;
 }

@@ -19,6 +19,7 @@ struct worker_state {
  i9100_wlan_control control;i9100_bcm_pump pump;
  uint32_t added,ready,running,stopping,fault,pending,timer_wakes,notifier_wakes,notifiers,poll_us,busy_seen;
  uint64_t busy_started;int32_t error,cleanup_error;
+ i9100_bcm_irq_ops irq;i9100_bcm_notify *irq_token;
 };
 struct i9100_bcm_worker : public OSObject {
  OSDeclareDefaultStructors(i9100_bcm_worker)
@@ -54,6 +55,7 @@ static void stop_sources(i9100_bcm_worker *w)
 {
  IOInterruptState state=enter(w);w->s.running=0;w->s.pending=0;leave(w,state);
  if(w->s.event)w->s.event->disable();if(w->s.timer){w->s.timer->disable();w->s.timer->cancelTimeout();}
+ if(w->s.irq.cookie){int e=w->s.irq.mask(w->s.irq.cookie);if(e)w->s.cleanup_error=e;}
 }
 static void fault(i9100_bcm_worker *w,int error)
 {
@@ -72,18 +74,32 @@ static void process(i9100_bcm_worker *w)
  if(e==I9100_GPIO_BUSY||e==I9100_PUMP_BUSY){
   uint64_t now=now_ns(0);if(!w->s.busy_seen){w->s.busy_seen=1;w->s.busy_started=now;}
   else if(now<w->s.busy_started||now-w->s.busy_started>500000000ULL){fault(w,I9100_WLAN_TIMEOUT);return;}
- }else if(e){fault(w,e);return;}else w->s.busy_seen=0;
+ }else if(e){fault(w,e);return;}else{
+  w->s.busy_seen=0;
+  if(w->s.irq.cookie){
+   if(w->s.pump.pending_rx)e=w->s.irq.mask(w->s.irq.cookie);
+   else{int armed=w->s.irq.rearm(w->s.irq.cookie);if(armed<0)e=armed;
+    else if(!armed){unsigned work=0;e=i9100_bcm_pump_recheck(&w->s.pump,&work);
+     if(e||work){int masked=w->s.irq.mask(w->s.irq.cookie);if(masked)e=masked;
+      if(work){state=enter(w);w->s.pending=1;leave(w,state);w->s.event->wake();}
+     }
+    }
+   }
+   if(e&&e!=I9100_PUMP_BUSY){fault(w,e);return;}
+  }
+ }
  if(w->s.timer->setTimeoutUS(w->s.poll_us)!=kIOReturnSuccess)fault(w,I9100_PUMP_IO);
 }
 bool I9100BCMEvents::checkForWork()
 {if(!enabled)return false;IOInterruptState state=enter(client);bool run=client->s.pending&&client->s.running&&!client->s.stopping;client->s.pending=0;leave(client,state);if(run)process(client);return false;}
 static void timer(OSObject *owner,IOTimerEventSource *)
 {i9100_bcm_worker *w=(i9100_bcm_worker *)owner;inc(&w->s.timer_wakes);process(w);}
-enum {START=1,JOIN,SEND,DISCONNECT,ABORT,STATUS,DETACH,NOTIFIER_GET,NOTIFIER_PUT};
+enum {START=1,JOIN,SEND,DISCONNECT,ABORT,STATUS,DETACH,NOTIFIER_GET,NOTIFIER_PUT,IRQ_ATTACH,IRQ_DETACH};
 struct send_args {const uint8_t *bytes;unsigned count,priority;};
+struct irq_args {const i9100_bcm_irq_ops *ops;i9100_bcm_notify *token;};
 static int detach(i9100_bcm_worker *w)
 {
- IOInterruptState state=enter(w);bool notify=w->s.notifiers!=0;leave(w,state);if(notify)return I9100_PUMP_BUSY;
+ IOInterruptState state=enter(w);bool notify=w->s.notifiers!=0;leave(w,state);if(notify||w->s.irq.cookie)return I9100_PUMP_BUSY;
  if(w->s.control.initialized&&w->s.control.state!=I9100_WLAN_IDLE&&w->s.control.state!=I9100_WLAN_FAULT)return I9100_PUMP_BUSY;
  w->s.stopping=1;w->s.ready=0;stop_sources(w);int e=0;
  if(w->s.added&2U){e=w->s.loop->removeEventSource(w->s.timer);if(e)return e;w->s.added&=~2U;}
@@ -123,7 +139,14 @@ static IOReturn action(OSObject *target,void *operation,void *arg,void *,void *)
   else{w->s.notifiers++;memset(p,0,sizeof(*p));p->worker=w;p->self=(uintptr_t)p;p->owned=1;w->retain();}leave(w,state);return e;}
  case NOTIFIER_PUT:{i9100_bcm_notify *p=(i9100_bcm_notify *)arg;state=enter(w);
   if(!p||!p->owned||p->worker!=w||p->self!=(uintptr_t)p||!w->s.notifiers)e=I9100_PUMP_ARGUMENT;
-  else if(p->busy)e=I9100_PUMP_BUSY;else{w->s.notifiers--;p->owned=0;}leave(w,state);return e;}
+  else if(p->busy||(w->s.irq.cookie&&w->s.irq_token==p))e=I9100_PUMP_BUSY;else{w->s.notifiers--;p->owned=0;}leave(w,state);return e;}
+ case IRQ_ATTACH:{irq_args *p=(irq_args *)arg;
+  if(!p||!p->ops||!p->ops->cookie||!p->ops->rearm||!p->ops->mask||!p->token||!p->token->owned||
+     p->token->worker!=w||p->token->self!=(uintptr_t)p->token||w->s.irq.cookie||!w->s.ready)return I9100_PUMP_ARGUMENT;
+  w->s.irq=*p->ops;w->s.irq_token=p->token;return 0;}
+ case IRQ_DETACH:
+  if(!arg||arg!=w->s.irq.cookie)return I9100_PUMP_ARGUMENT;
+  e=w->s.irq.mask(w->s.irq.cookie);if(e)return e;memset(&w->s.irq,0,sizeof(w->s.irq));w->s.irq_token=0;return 0;
  default:return I9100_PUMP_ARGUMENT;
  }
 }
@@ -178,6 +201,9 @@ int i9100_bcm_worker_destroy(i9100_bcm_worker **owner)
  int e=w->s.loop?run(w,DETACH):detach(w);if(!e){w->release();*owner=0;}return e;
 }
 int i9100_bcm_worker_notifier_get(i9100_bcm_worker *w,i9100_bcm_notify *n){return run(w,NOTIFIER_GET,n);}
+int i9100_bcm_worker_irq_attach(i9100_bcm_worker *w,const i9100_bcm_irq_ops *ops,i9100_bcm_notify *token)
+{irq_args args={ops,token};return run(w,IRQ_ATTACH,&args);}
+int i9100_bcm_worker_irq_detach(i9100_bcm_worker *w,void *cookie){return run(w,IRQ_DETACH,cookie);}
 int i9100_bcm_worker_notifier_put(i9100_bcm_notify *n)
 {if(!n||!n->owned||n->self!=(uintptr_t)n||!n->worker)return I9100_PUMP_ARGUMENT;i9100_bcm_worker *w=n->worker;int e=run(w,NOTIFIER_PUT,n);if(!e)w->release();return e;}
 int i9100_bcm_worker_signal(i9100_bcm_notify *n)

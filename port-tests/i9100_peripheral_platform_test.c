@@ -15,7 +15,7 @@ struct model {
  uint64_t ns;
  uint32_t freeze_time,domain,domain_fail,domain_put_fail,consumer_busy,domain_partial,restore_drop;
  struct i9100_irq_cascade *cascade;struct i9100_cascade_lease *lease;
- unsigned handler_count,clear_source,handler_error;
+ unsigned handler_count,clear_source,handler_error,mask_handler;
 };
 static struct model m;
 static int lock(void *c){struct model *p=c;if(p->locked)return -1;p->locked=1;return 0;}
@@ -125,6 +125,7 @@ static int handler(void *c,unsigned child)
 {
  struct model *p=c;assert(!p->locked);p->handler_count++;
  assert(i9100_cascade_unregister(p->lease)==I9100_CASCADE_BUSY);
+ if(p->mask_handler)assert(!i9100_cascade_mask(p->lease));
  if(p->clear_source&&p->cascade->kind==I9100_CASCADE_COMBINER)
   p->regs[1][(p->cascade->group/4U*16U+12U)/4]&=~(1U<<(p->cascade->group%4U*8U+child));
  return p->handler_error?-1:0;
@@ -145,6 +146,20 @@ static void cascade(void)
  m.regs[1][0x1c/4]=1U<<14;m.clear_source=0;
  assert(i9100_cascade_dispatch(&c,&unowned)==1);assert(c.slots[6].fault&&!(m.regs[1][0x10/4]&(1U<<14)));
  assert(!i9100_cascade_unregister(&l));assert(!i9100_cascade_enable(&c,0));
+ memset(&c,0,sizeof(c));memset(&m,0,sizeof(m));m.cascade=&c;m.lease=&l;
+ assert(!i9100_cascade_init(&c,&io,I9100_CASCADE_EINT,0,1U<<21));assert(!i9100_cascade_enable(&c,1));
+ for(unsigned n=0;n<4U;n++)m.regs[0][(0xf00U+n*4U)/4]=255U;
+ m.regs[0][0xe08U/4U]=0xa9876543U;
+ assert(!i9100_cascade_register_masked(&c,21,2,handler,&m,&l)&&l.active);
+ assert(m.regs[0][0xe08U/4U]==0xa9a76543U&&(m.regs[0][0xf08U/4U]&32U));
+ struct i9100_cascade_lease copied=l;unsigned writes=m.writes;
+ assert(i9100_cascade_unmask(&copied)==I9100_CASCADE_OWNER&&m.writes==writes);
+ assert(!i9100_cascade_unmask(&l));m.regs[0][0xf48U/4U]=32U;m.mask_handler=1;
+ assert(i9100_cascade_dispatch(&c,&unowned)==1&&!c.slots[21].fault&&(m.regs[0][0xf08U/4U]&32U));
+ assert(!i9100_cascade_unmask(&l));assert(!i9100_cascade_mask(&l));m.fail_write=m.writes+2U;
+ assert(i9100_cascade_unregister(&l)==I9100_CASCADE_IO&&l.active&&c.slots[21].restoring);
+ assert(i9100_cascade_unmask(&l)==I9100_CASCADE_BUSY);m.fail_write=0;
+ assert(!i9100_cascade_unregister(&l)&&m.regs[0][0xe08U/4U]==0xa9876543U);assert(!i9100_cascade_enable(&c,0));
 }
 static uint32_t aud_read(void *c,unsigned off){return read_generic(c,0,off);}
 static void aud_write(void *c,unsigned off,uint32_t value)

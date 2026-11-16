@@ -32,7 +32,7 @@ C_SOURCES = [
     "i9100_bcm_pump.c",
 ]
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
-               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp"]
+               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp"]
 TESTS = [
     ("i9100_peripheral_bus_test.c", C_SOURCES[:5]),
     ("i9100_peripheral_platform_test.c", ["i9100_gpio_broker.c", "i9100_clock_gates.c",
@@ -61,14 +61,15 @@ TESTS = [
     ("i9100_bcm_firmware_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c", "i9100_bcm_firmware.c"]),
     ("i9100_bcm_core_download_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c", "i9100_bcm_firmware.c", "i9100_bcm_core_download.c"]),
     ("i9100_native_transport_test.cpp", ["i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_irq_registry.c", "i9100_peripheral_board.c",
-        "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c"]),
+        "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c", "i9100_irq_cascade.c"]),
     ("i9100_radio_power_test.c", ["i9100_gpio_broker.c", "i9100_peripheral_board.c", "i9100_radio_power.c"]),
     ("i9100_radio_native_test.cpp", ["i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_irq_registry.c", "i9100_peripheral_board.c",
-        "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c", "i9100_radio_power.c", "i9100_radio_native.cpp"]),
+        "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c", "i9100_radio_power.c", "i9100_radio_native.cpp", "i9100_irq_cascade.c"]),
     ("i9100_bcm_boot_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c", "i9100_bcm_core_download.c", "i9100_bcm_firmware.c", "i9100_bcm_f2.c", "i9100_bcm_boot.c"]),
     ("i9100_wlan_control_test.c", ["i9100_bcm4330.c", "i9100_bcm_f2.c", "i9100_wlan_control.c"]),
     ("i9100_bcm_pump_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c", "i9100_bcm_core_download.c", "i9100_bcm_firmware.c", "i9100_bcm_f2.c", "i9100_bcm_boot.c", "i9100_wlan_control.c", "i9100_bcm_pump.c"]),
     ("i9100_bcm_worker_test.cpp", ["i9100_bcm4330.c", "i9100_bcm_chip.c", "i9100_bcm_core_download.c", "i9100_bcm_firmware.c", "i9100_bcm_f2.c", "i9100_bcm_boot.c", "i9100_wlan_control.c", "i9100_bcm_pump.c", "i9100_bcm_worker.cpp"]),
+    ("i9100_bcm_irq_test.cpp", ["i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_irq_registry.c", "i9100_irq_cascade.c", "i9100_irq_router.c", "i9100_peripheral_board.c", "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c", "i9100_bcm_irq.cpp"]),
 ]
 
 

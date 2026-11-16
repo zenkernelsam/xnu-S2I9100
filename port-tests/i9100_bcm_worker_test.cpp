@@ -63,6 +63,9 @@ static int receive_data(void *,const uint8_t *p,unsigned bytes,unsigned priority
 {assert(last_loop->thread&&last_loop->gate&&!m.locked&&bytes==64U&&priority==0U&&p[14]==0x5a);rx_delivered++;
  if(close_in_callback)assert(i9100_bcm_worker_destroy(&worker)==I9100_PUMP_BUSY&&worker);return 0;}
 static i9100_bcm_output output={nullptr,receive_data};
+static unsigned irq_rearms,irq_masks,inject_edge;
+static int rearm_irq(void *){irq_rearms++;if(inject_edge){m.sdio_regs[0x20U/4U]|=0x40U;inject_edge=0;}return 0;}
+static int mask_irq(void *){irq_masks++;return 0;}
 static uint8_t sequence;
 static void start_host()
 {
@@ -158,8 +161,19 @@ static void construction_failures()
  assert(!status().ready&&status().worker_hold&&status().cleanup_error==I9100_GPIO_BUSY);
  put_fail=0;release_worker();
 }
+static void masked_edge_recheck()
+{
+ linked();irq_rearms=irq_masks=0;i9100_bcm_notify n={};assert(!i9100_bcm_worker_notifier_get(worker,&n));
+ i9100_bcm_irq_ops ops={&n,rearm_irq,mask_irq};assert(!i9100_bcm_worker_irq_attach(worker,&ops,&n));
+ assert(i9100_bcm_worker_notifier_put(&n)==I9100_PUMP_BUSY);
+ clear_rx();uint8_t *p=frame(80,2);p[12]=0x20;p[30]=0x5a;eof();m.sdio_regs[0x20U/4U]=0;inject_edge=1;
+ unsigned before=rx_wire_calls;last_loop->tick();assert(status().pending&&irq_rearms==1U&&irq_masks==1U&&rx_wire_calls==before);
+ last_loop->pump();assert(status().data_frames==1U&&irq_rearms==2U);
+ assert(!i9100_bcm_worker_irq_detach(worker,&n)&&!i9100_bcm_worker_notifier_put(&n));
+ assert(i9100_bcm_worker_abort(worker)==I9100_PUMP_CANCELLED);release_worker();
+}
 int main()
 {
- notifications_and_delivery();faults_and_cleanup();construction_failures();
+ notifications_and_delivery();faults_and_cleanup();construction_failures();masked_edge_recheck();
  puts("PASS real OSObject/IOWorkLoop/worker+F1/F2/CDC/controller: notifier deferred no SDIO/retain+close gate/callback destroy reject/TX+RX/disconnect before release/HALT preserves cause/native fault+bounded busy/all allocations+add failures/remove+put retention/disabled late sources; host/native-hold/card/FW stand-ins, no physical IRQ or native enumeration proof");return 0;
 }

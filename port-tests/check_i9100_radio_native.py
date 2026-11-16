@@ -7,7 +7,7 @@ p=argparse.ArgumentParser(description=__doc__)
 p.add_argument("--cross-compile",action="store_true")
 a=p.parse_args()
 sources=["i9100_gpio_broker.c","i9100_clock_gates.c","i9100_irq_registry.c","i9100_peripheral_board.c",
-         "i9100_i2c_samsung.c","i9100_uart_bluetooth.c","i9100_sdio.c","i9100_radio_power.c"]
+         "i9100_i2c_samsung.c","i9100_uart_bluetooth.c","i9100_sdio.c","i9100_radio_power.c","i9100_irq_cascade.c"]
 helper=REPO/"port-tests/i9100_native_parent_model.h"
 before=hashlib.sha256(helper.read_bytes()).hexdigest()
 e=Evidence("radio-native-offline")

@@ -4,6 +4,7 @@
 #include "i9100_peripheral_board.h"
 #include "i9100_peripheral_io.h"
 #include "i9100_irq_registry.h"
+#include "i9100_irq_cascade.h"
 #include "i9100_uart_bluetooth.h"
 #include "i9100_bluetooth_h4.h"
 #include "i9100_bcm_f2.h"
@@ -25,6 +26,7 @@ int i9100_peripheral_native_destroy(struct i9100_peripheral_native **);
 struct i9100_gpio_broker *i9100_peripheral_native_gpio(struct i9100_peripheral_native *);
 struct i9100_clock_gates *i9100_peripheral_native_clocks(struct i9100_peripheral_native *);
 struct i9100_irq_registry *i9100_peripheral_native_irqs(struct i9100_peripheral_native *);
+struct i9100_irq_cascade *i9100_peripheral_native_eint(struct i9100_peripheral_native *);
 int i9100_peripheral_native_i2c_open(struct i9100_peripheral_native *,unsigned profile_index,uint32_t verified_pclk_hz,struct i9100_peripheral_i2c *);
 int i9100_peripheral_native_i2c_close(struct i9100_peripheral_native *,unsigned profile_index);
 int i9100_peripheral_native_uart_open(struct i9100_peripheral_native *,uint32_t verified_clock_hz,uint32_t baud,enum i9100_uart_fraction,int fresh_peer_gpio_clock_verified,struct i9100_bt_io *);

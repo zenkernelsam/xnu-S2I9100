@@ -195,7 +195,8 @@ static void irq_tests(void)
  struct i9100_irq_lease stale=l;assert(!i9100_irq_unregister(&l));assert(m.regs[(0x400+91/4*4)/4]==priority&&m.regs[(0x800+91/4*4)/4]==target);
  assert(!i9100_irq_register(&r,91,1,irq_handler,&m,&other));unsigned writes=m.writes;assert(i9100_irq_unregister(&stale)==I9100_IRQ_OWNER&&m.writes==writes);assert(!i9100_irq_unregister(&other));
  m.regs[(0x100+96/32*4)/4]|=1U<<(96&31);assert(i9100_irq_register(&r,96,0,irq_handler,&m,&l)==I9100_IRQ_BUSY);
- m.fail_enable=1;assert(i9100_irq_register(&r,91,0,irq_handler,&m,&l)==I9100_IRQ_IO&&!l.active);assert(!i9100_irq_registry_enable(&r,0));
+ m.fail_enable=1;assert(i9100_irq_register(&r,91,0,irq_handler,&m,&l)==I9100_IRQ_IO&&l.active);
+ assert(i9100_irq_registry_enable(&r,0)==I9100_IRQ_BUSY);m.fail_enable=0;assert(!i9100_irq_unregister(&l));assert(!i9100_irq_registry_enable(&r,0));
  memset(&m,0,sizeof(m));memset(&r,0,sizeof(r));assert(!i9100_irq_registry_init(&r,&io,allow));assert(!i9100_irq_registry_enable(&r,1));
  m.regs[(0x400+96/4*4)/4]=0x11;m.regs[(0x800+96/4*4)/4]=0x22;
  assert(!i9100_irq_register_masked(&r,96,0,irq_handler,&m,&l)&&l.active&&!r.slots[l.slot].enabled);
@@ -205,6 +206,14 @@ static void irq_tests(void)
  m.fail_mask=1;assert(i9100_irq_mask(&l)==I9100_IRQ_IO&&l.active&&r.slots[l.slot].enabled);m.fail_mask=0;assert(!i9100_irq_mask(&l));
  m.ignore_restore=1;assert(i9100_irq_unregister(&l)==I9100_IRQ_IO&&l.active);
  m.ignore_restore=0;assert(!i9100_irq_unregister(&l)&&!i9100_irq_registry_enable(&r,0));
+ assert(!i9100_irq_registry_enable(&r,1));m.ignore_restore=1;
+ assert(i9100_irq_register_masked(&r,96,1,irq_handler,&m,&l)==I9100_IRQ_IO&&l.active&&!r.slots[l.slot].ready);
+ assert(i9100_irq_unmask(&l)==I9100_IRQ_IO);struct i9100_irq_lease copied=l;writes=m.writes;
+ assert(i9100_irq_unregister(&copied)==I9100_IRQ_OWNER&&m.writes==writes);m.ignore_restore=0;
+ assert(!i9100_irq_unregister(&l)&&!i9100_irq_registry_enable(&r,0));
+ assert(!i9100_irq_registry_enable(&r,1));m.regs[(0xc00U+96U/16U*4U)/4U]=1U;
+ assert(!i9100_irq_register_masked(&r,96,1,irq_handler,&m,&l)&&m.regs[(0xc00U+96U/16U*4U)/4U]==3U);
+ assert(!i9100_irq_unregister(&l)&&m.regs[(0xc00U+96U/16U*4U)/4U]==1U);assert(!i9100_irq_registry_enable(&r,0));
  puts("PASS IRQ whitelist/exclusive leases,full ACK token,no implicit EOI,active callback lifetime,source masking and original GIC fields");
 }
 struct dma_model {unsigned locked,busy,released,fail_sync,count,actions[32];uintptr_t cpu;uint32_t pa,bytes;};
