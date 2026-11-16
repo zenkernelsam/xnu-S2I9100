@@ -8,7 +8,7 @@ extern kern_return_t vm_map_enter(vm_map_t,vm_map_offset_t *,vm_map_size_t,
     vm_map_offset_t,int,vm_object_t,vm_object_offset_t,boolean_t,
     vm_prot_t,vm_prot_t,vm_inherit_t);
 /* Observe original Setup UIKit execution; never replace an event or result. */
-enum { I9100_UI_SITES=10, I9100_UI_CAPACITY=64 };
+enum { I9100_UI_SITES=11, I9100_UI_CAPACITY=64 };
 volatile uint32_t i9100_ui_execution_diag[32]={2};
 volatile uint32_t i9100_ui_execution_rows[4+I9100_UI_CAPACITY*96];
 static volatile UInt32 i9100_ui_execution_guard;
@@ -20,7 +20,7 @@ static const uint8_t i9100_ui_execution_cache_uuid[16]={
 /* The final entry is an offset from the UUID-verified Setup Mach header. */
 static const uint32_t i9100_ui_execution_sites[I9100_UI_SITES]={
 0x32f3284c,0x32f439cc,0x32f44d58,0x32f453e4,
-0x33074028,0x3307604c,0x33076ee4,0x330185c0,0x0000ef18,0x32f85e94};
+0x33074028,0x3307604c,0x33076ee4,0x330185c0,0x0000ef18,0x32f85e94,0x000022b4};
 static const uint8_t i9100_ui_execution_original[I9100_UI_SITES][8]={
 {0xf0,0xb5,0x03,0xaf,0x2d,0xe9,0x00,0x0d},
 {0x4d,0xf2,0x6c,0x51,0xc0,0xf2,0x8a,0x61},
@@ -31,7 +31,8 @@ static const uint8_t i9100_ui_execution_original[I9100_UI_SITES][8]={
 {0xf0,0xb5,0x03,0xaf,0x4d,0xf8,0x04,0x8d},
 {0xf0,0xb5,0x49,0xf6,0xa6,0x26,0x04,0x46},
 {0xf0,0xb5,0x03,0xaf,0x2d,0xe9,0x00,0x0d},
-{0x10,0x46,0xc7,0xf7,0x4b,0xbe,0x00,0xbf}};
+{0x10,0x46,0xc7,0xf7,0x4b,0xbe,0x00,0xbf},
+{0x4c,0xf6,0x54,0x70,0xc0,0xf2,0x05,0x00}};
 static const uint8_t i9100_ui_execution_prefix[36]={
 0x2d,0xe9,0xff,0x5f,0xef,0xf3,0x00,0x8c,0x82,0xb0,0xcd,0xf8,0x00,0xc0,
 0x01,0x20,0x4f,0xf0,0x14,0x0c,0x80,0xdf,0xdd,0xf8,0x00,0xc0,0x02,0xb0,
@@ -72,6 +73,34 @@ static void i9100_ui_retina_code(uint8_t *out,unsigned header,unsigned slide,uns
     const uint16_t original_mov=0x4610U;memcpy(out+restore+14,&original_mov,2);
     const uint32_t tail[2]={0xf000f8dfU,0x32f4db31U+slide};memcpy(out+jump,tail,8);
 }
+static void i9100_ui_background_code(uint8_t *out,unsigned header,unsigned slide)
+{
+    /* Only the original freshly allocated Linen UIImageView. The original
+     * UIView bounds API supplies its parent's rectangle. Keep all caller
+     * GPR/APSR/FPSCR and volatile VFP registers intact around the native APIs.
+     * Encoding independently comes from port-tests/ui-background-template.s. */
+    static const uint8_t code[172]={
+    0x2d,0xe9,0xff,0x5f,0xef,0xf3,0x00,0x8c,0x82,0xb0,0xcd,0xf8,0x00,0xc0,0xf0,0xb3,
+    0xb8,0xf1,0x00,0x0f,0x3b,0xd0,0x2d,0xed,0x10,0x0b,0x6d,0xed,0x20,0x0b,0x88,0xb0,
+    0xf1,0xee,0x10,0xca,0xcd,0xf8,0x18,0xc0,0x02,0xa8,0x41,0x46,0x40,0xf2,0x00,0x02,
+    0xc0,0xf2,0x00,0x02,0x40,0xf2,0x00,0x0c,0xc0,0xf2,0x00,0x0c,0xe0,0x47,0x3a,0x98,
+    0x40,0xf2,0x00,0x01,0xc0,0xf2,0x00,0x01,0x02,0x9a,0x03,0x9b,0xdd,0xf8,0x10,0xc0,
+    0xcd,0xf8,0x00,0xc0,0xdd,0xf8,0x14,0xc0,0xcd,0xf8,0x04,0xc0,0x40,0xf2,0x00,0x0c,
+    0xc0,0xf2,0x00,0x0c,0xe0,0x47,0x3a,0x98,0x40,0xf2,0x00,0x01,0xc0,0xf2,0x00,0x01,
+    0x12,0x22,0x40,0xf2,0x00,0x0c,0xc0,0xf2,0x00,0x0c,0xe0,0x47,0xdd,0xf8,0x18,0xc0,
+    0xe1,0xee,0x10,0xca,0x08,0xb0,0xfd,0xec,0x20,0x0b,0xbd,0xec,0x10,0x0b,0xdd,0xf8,
+    0x00,0xc0,0x02,0xb0,0x8c,0xf3,0x00,0x8c,0xbd,0xe8,0xff,0x5f,0,0,0,0,0,0,0,0,
+    0xdf,0xf8,0x00,0xf0,0,0,0,0};
+    memcpy(out,code,sizeof(code));
+    i9100_ui_mov32(out+44,2,0x333a5768U+slide);
+    i9100_ui_mov32(out+52,12,0x32f33659U+slide);
+    i9100_ui_mov32(out+64,1,0x333a6168U+slide);
+    i9100_ui_mov32(out+92,12,0x32f3372dU+slide);
+    i9100_ui_mov32(out+104,1,0x333a56f2U+slide);
+    i9100_ui_mov32(out+114,12,0x32f51401U+slide);
+    memcpy(out+156,i9100_ui_execution_original[10],8);
+    unsigned target=header+0x22bdU;memcpy(out+168,&target,4);
+}
 static void i9100_ui_execution_record(proc_t p,user_addr_t header)
 {
     int enabled=0;
@@ -98,7 +127,7 @@ static int i9100_ui_execution_image_matches(unsigned header)
 }
 int i9100_ui_execution_bootstrap(proc_t p,unsigned return_pc,unsigned return_cpsr)
 {
-    int enabled=0,abi=0,retina=0,keepawake=0;
+    int enabled=0,abi=0,retina=0,keepawake=0,background=0,native=0;
     if(!p || !p->task || strcmp(p->p_comm,"Setup") ||
        !PE_parse_boot_argn("i9100uitrace",&enabled,4) || enabled!=1 ||
        !PE_parse_boot_argn("i9100hidabi",&abi,4) || abi!=6 ||
@@ -114,8 +143,10 @@ int i9100_ui_execution_bootstrap(proc_t p,unsigned return_pc,unsigned return_cps
     d[7]=d[8]=d[9]=0;d[11]=1;
     PE_parse_boot_argn("i9100uiretina",&retina,4);unsigned site_count=retina==1?10U:9U;d[26]=retina==1;
     PE_parse_boot_argn("i9100uikeepawake",&keepawake,4);keepawake=keepawake==1 && retina==1;d[27]=keepawake;
+    PE_parse_boot_argn("i9100setupnative",&native,4);PE_parse_boot_argn("i9100setupbg",&background,4);
+    background=background==1 && native==1 && retina==1;if(background)site_count=11;d[28]=background;d[29]=0;
     vm_map_t map=current_map();vm_map_offset_t address=4096,sites[I9100_UI_SITES];
-    uint32_t mh[7],dyld[21];uint8_t original[I9100_UI_SITES][8],code[9*64+112]={0};unsigned touched=0;
+    uint32_t mh[7],dyld[21];uint8_t original[I9100_UI_SITES][8],code[704+172]={0};unsigned touched=0;
     boolean_t allocated=FALSE;int error=0;
     if(memcmp(p->p_uuid,i9100_ui_execution_uuid,16) || header<4096 || header>0x3ff00000U ||
        (header&4095U) || copyin(header,mh,28) || mh[0]!=0xfeedfaceU || mh[1]!=12 || mh[3]!=2)goto failed;
@@ -142,8 +173,23 @@ int i9100_ui_execution_bootstrap(proc_t p,unsigned return_pc,unsigned return_cps
             d[8]=9;goto failed;
         }
     }
+    if(background){
+        static const unsigned addresses[3]={0x32f33658U,0x32f3372cU,0x32f51400U};
+        static const unsigned selectors[3]={0x333a5768U,0x333a6168U,0x333a56f2U};
+        static const char *names[3]={"bounds","setFrame:","setAutoresizingMask:"};
+        static const unsigned lengths[3]={7,10,21};
+        static const uint8_t expected[3][8]={
+            {0x80,0xb5,0x4c,0xf2,0xbc,0x72,0x6f,0x46},
+            {0x80,0xb5,0x6f,0x46,0x83,0xb0,0x48,0xf6},
+            {0x4e,0xf6,0x1c,0x21,0xc0,0xf2,0x89,0x61}};
+        uint8_t api[8],name[21];
+        for(unsigned n=0;n<3;n++)if(copyin(addresses[n]+slide,api,8) || memcmp(api,expected[n],8) ||
+            copyin(selectors[n]+slide,name,lengths[n]) || memcmp(name,names[n],lengths[n])){
+            d[8]=10;goto failed;
+        }
+    }
     for(unsigned n=0;n<site_count;n++){
-        sites[n]=i9100_ui_execution_sites[n]+(n==8?header:slide);
+        sites[n]=i9100_ui_execution_sites[n]+((n==8 || n==10)?header:slide);
         if(copyin(sites[n],original[n],8) || memcmp(original[n],i9100_ui_execution_original[n],8)){d[8]=1;goto failed;}
     }d[11]=2;
     kern_return_t result=vm_map_enter(map,&address,4096,0,VM_FLAGS_ANYWHERE,VM_OBJECT_NULL,0,FALSE,
@@ -155,6 +201,7 @@ int i9100_ui_execution_bootstrap(proc_t p,unsigned return_pc,unsigned return_cps
         memcpy(code+n*64+36,original[n],8);uint32_t jump[2]={0xf000f8dfU,sites[n]+9U};memcpy(code+n*64+44,jump,8);
     }
     if(retina==1)i9100_ui_retina_code(code+9*64,header,slide,keepawake);
+    if(background)i9100_ui_background_code(code+704,header,slide);
     if(copyout(code,address,sizeof(code))){d[8]=2;goto failed;}
     flush_dcache(address,sizeof(code),FALSE);invalidate_icache(address,sizeof(code),FALSE);
     result=vm_map_protect(map,address,address+4096,VM_PROT_READ|VM_PROT_EXECUTE,FALSE);d[7]=result;
@@ -163,12 +210,13 @@ int i9100_ui_execution_bootstrap(proc_t p,unsigned return_pc,unsigned return_cps
         unsigned page=sites[n]&~4095U;
         result=vm_map_protect(map,page,page+4096,VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY,FALSE);d[7]=result;
         if(result!=KERN_SUCCESS)goto failed;
-        uint32_t branch[2]={0xf000f8dfU,address+n*64+1U};touched|=1U<<n;
+        uint32_t branch[2]={0xf000f8dfU,address+(n==10?704U:n*64)+1U};touched|=1U<<n;
         if(copyout(branch,sites[n],8)){d[8]=3+n;goto failed;}
         flush_dcache(sites[n],8,FALSE);invalidate_icache(sites[n],8,FALSE);
         result=vm_map_protect(map,page,page+4096,VM_PROT_READ|VM_PROT_EXECUTE,FALSE);d[7]=result;
         if(result!=KERN_SUCCESS)goto failed;
     }
+    if(background)d[29]=sites[10];
     d[10]++;d[11]=4;d[30]=sites[0];OSMemoryBarrier();d[1]=2;i9100_ui_execution_guard=0;return 0;
 failed:
     for(unsigned n=0;n<site_count;n++)if(touched&(1U<<n)){

@@ -20,7 +20,7 @@ struct task {unsigned acts;};typedef struct task*task_t;
 struct proc {const char*p_comm;unsigned p_pid;task_t task;uint8_t p_uuid[16];unsigned p_idversion;};typedef struct proc*proc_t;
 struct map {int x;};typedef struct map*vm_map_t;
 static struct task child={1},parent={1};static task_t current=&child;static struct map map;static struct proc p;
-static unsigned enabled=1,abi=6,retina,awake,irq,interrupts=1,preempt,ops,fail_at,fail_again,reads,allocated,removed,read_fail,dyld_error;
+static unsigned enabled=1,abi=6,retina,awake,background,native,irq,interrupts=1,preempt,ops,fail_at,fail_again,reads,allocated,removed,read_fail,dyld_error;
 static uint8_t image[0x160000],shared[0x160000],exe[0x20000],exeshared[0x20000],mh[28],codebuf[4096],actor[784],event[128];static uint32_t dyld[21],saved[16];
 #define TASK_DYLD_INFO 17
 #define TASK_DYLD_INFO_COUNT (sizeof(task_dyld_info_data_t)/sizeof(unsigned))
@@ -44,7 +44,7 @@ static unsigned get_task_numacts(task_t t){return t->acts;}
 static unsigned ml_at_interrupt_context(void){return irq;}
 static unsigned ml_get_interrupts_enabled(void){return interrupts;}
 static unsigned get_preemption_level(void){return preempt;}
-static int PE_parse_boot_argn(const char*n,int*out,unsigned s){assert(s==4);*out=!strcmp(n,"i9100uitrace")?enabled:!strcmp(n,"i9100uiretina")?retina:!strcmp(n,"i9100uikeepawake")?awake:abi;return 1;}
+static int PE_parse_boot_argn(const char*n,int*out,unsigned s){assert(s==4);*out=!strcmp(n,"i9100uitrace")?enabled:!strcmp(n,"i9100uiretina")?retina:!strcmp(n,"i9100uikeepawake")?awake:!strcmp(n,"i9100setupbg")?background:!strcmp(n,"i9100setupnative")?native:abi;return 1;}
 static int OSCompareAndSwap(unsigned a,unsigned b,volatile unsigned*p){if(*p!=a)return 0;*p=b;return 1;}
 #define OSMemoryBarrier() __sync_synchronize()
 static int task_info(task_t t,unsigned flavor,task_info_t data,unsigned*count){assert(t==&child&&flavor==17&&*count==TASK_DYLD_INFO_COUNT);if(dyld_error)return 4;task_dyld_info_data_t*i=(void*)data;i->all_image_info_addr=0x25000;i->all_image_info_size=84;i->all_image_info_format=0;return 0;}
@@ -55,6 +55,12 @@ static int copyin(user_addr_t a,void*out,unsigned n){
  else if(a==0x333ae22c&&n==29)memcpy(out,"setPreferredSharedImageScale:",29);
  else if(a==0x32fec504&&n==8){static uint8_t bytes[8]={0x90,0xb5,0x43,0xf2,0xbe,0x61,0x01,0xaf};memcpy(out,bytes,8);}
  else if(a==0x333aa923&&n==22)memcpy(out,"setIdleTimerDisabled:",22);
+ else if(a==0x32f33658&&n==8){static uint8_t bytes[8]={0x80,0xb5,0x4c,0xf2,0xbc,0x72,0x6f,0x46};memcpy(out,bytes,8);}
+ else if(a==0x32f3372c&&n==8){static uint8_t bytes[8]={0x80,0xb5,0x6f,0x46,0x83,0xb0,0x48,0xf6};memcpy(out,bytes,8);}
+ else if(a==0x32f51400&&n==8){static uint8_t bytes[8]={0x4e,0xf6,0x1c,0x21,0xc0,0xf2,0x89,0x61};memcpy(out,bytes,8);}
+ else if(a==0x333a5768&&n==7)memcpy(out,"bounds",7);
+ else if(a==0x333a6168&&n==10)memcpy(out,"setFrame:",10);
+ else if(a==0x333a56f2&&n==21)memcpy(out,"setAutoresizingMask:",21);
  else if(a>=0x32f2f000&&a+n<=0x3308f000)memcpy(out,image+(a-0x32f2f000),n);
  else if(a>=0x65000&&a+n<=0x85000)memcpy(out,exe+(a-0x65000),n);
  else if(a==0x25000&&n==84)memcpy(out,dyld,n);
@@ -66,27 +72,27 @@ static int copyin(user_addr_t a,void*out,unsigned n){
 static int failing(void){ops++;return ops==fail_at||ops==fail_again;}
 kern_return_t vm_map_enter(vm_map_t m,vm_map_offset_t*a,vm_map_size_t n,vm_map_offset_t mask,int flags,vm_object_t obj,vm_object_offset_t off,boolean_t copy,vm_prot_t cur,vm_prot_t max,vm_inherit_t inherit){assert(m==&map&&n==4096&&!mask&&flags==1&&!obj&&!off&&!copy&&cur==3&&max==7&&inherit==1);if(failing())return 4;*a=0x1000;allocated=1;return 0;}
 static int vm_map_protect(vm_map_t m,unsigned a,unsigned e,unsigned prot,int max){assert(m==&map&&e==a+4096&&!max&&(prot==5||prot==19));return failing()?4:0;}
-static int copyout(const void*in,user_addr_t a,unsigned n){int error=failing();if(a==0x1000&&n==688)memcpy(codebuf,in,error?4:n);else if(a>=0x65000&&a+n<=0x85000){assert(n==8);memcpy(exe+(a-0x65000),in,error?4:n);}else{assert(a>=0x32f2f000&&a+n<=0x3308f000&&n==8);memcpy(image+(a-0x32f2f000),in,error?4:n);}return error?14:0;}
+static int copyout(const void*in,user_addr_t a,unsigned n){int error=failing();if(a==0x1000&&n==876)memcpy(codebuf,in,error?4:n);else if(a>=0x65000&&a+n<=0x85000){assert(n==8);memcpy(exe+(a-0x65000),in,error?4:n);}else{assert(a>=0x32f2f000&&a+n<=0x3308f000&&n==8);memcpy(image+(a-0x32f2f000),in,error?4:n);}return error?14:0;}
 static int vm_map_remove(vm_map_t m,unsigned a,unsigned e,int f){assert(m==&map&&a==0x1000&&e==0x2000&&!f);allocated=0;removed=1;return 0;}
-static void flush_dcache(unsigned a,unsigned n,int physical){assert(!physical&&(n==8||n==688));}
-static void invalidate_icache(unsigned a,unsigned n,int physical){assert(!physical&&(n==8||n==688));}
+static void flush_dcache(unsigned a,unsigned n,int physical){assert(!physical&&(n==8||n==876));}
+static void invalidate_icache(unsigned a,unsigned n,int physical){assert(!physical&&(n==8||n==876));}
 ''' + body + r'''
 static int bootstrap(void){return i9100_ui_execution_bootstrap(&p,0x30080,0x30);}
 static void reset(void){
  memset((void*)i9100_ui_execution_diag,0,sizeof(i9100_ui_execution_diag));i9100_ui_execution_diag[0]=2;
  memset((void*)i9100_ui_execution_rows,0,sizeof(i9100_ui_execution_rows));memset(i9100_ui_execution_pending,0,16);i9100_ui_execution_guard=0;
- current=&child;child.acts=1;enabled=interrupts=1;abi=6;awake=retina=irq=preempt=ops=fail_at=fail_again=reads=allocated=removed=read_fail=dyld_error=0;
+ current=&child;child.acts=1;enabled=interrupts=1;abi=6;awake=retina=background=native=irq=preempt=ops=fail_at=fail_again=reads=allocated=removed=read_fail=dyld_error=0;
  p.p_comm="Setup";p.p_pid=104;p.task=&child;p.p_idversion=104;memcpy(p.p_uuid,i9100_ui_execution_uuid,16);
  uint32_t h[7]={0xfeedface,12,9,2};memcpy(mh,h,28);memset(dyld,0,84);dyld[0]=12;
  memset(shared,0,sizeof(shared));h[3]=6;h[4]=1;h[5]=24;memcpy(shared,h,28);uint32_t lc[2]={27,24};memcpy(shared+28,lc,8);memcpy(shared+36,i9100_ui_execution_cache_uuid,16);
  memset(exeshared,0,sizeof(exeshared));
- for(unsigned n=0;n<I9100_UI_SITES;n++)memcpy(n==8?exeshared+i9100_ui_execution_sites[n]:shared+(i9100_ui_execution_sites[n]-0x32f2f000),i9100_ui_execution_original[n],8);
+ for(unsigned n=0;n<I9100_UI_SITES;n++)memcpy((n==8||n==10)?exeshared+i9100_ui_execution_sites[n]:shared+(i9100_ui_execution_sites[n]-0x32f2f000),i9100_ui_execution_original[n],8);
  memcpy(image,shared,sizeof(image));memcpy(exe,exeshared,sizeof(exe));memset(saved,0,64);saved[2]=0x20000;saved[4]=saved[5]=0x40000;memset(actor,0xa5,sizeof(actor));memset(event,0x5a,128);
 }
 static void install(void){i9100_ui_execution_record(&p,0x65000);assert(!bootstrap()&&i9100_ui_execution_diag[1]==2);}
 int main(int argc,char**argv){
  assert(argc==2);reset();current=&parent;i9100_ui_execution_record(&p,0x65000);assert(!bootstrap()&&!reads&&!ops);current=&child;assert(!bootstrap()&&i9100_ui_execution_diag[1]==2);
- FILE*f=fopen(argv[1],"wb");assert(f);fwrite(codebuf,1,688,f);fclose(f);assert(!memcmp(shared+(i9100_ui_execution_sites[0]-0x32f2f000),i9100_ui_execution_original[0],8));
+ FILE*f=fopen(argv[1],"wb");assert(f);fwrite(codebuf,1,876,f);fclose(f);assert(!memcmp(shared+(i9100_ui_execution_sites[0]-0x32f2f000),i9100_ui_execution_original[0],8));
  for(unsigned n=1;n<=30;n++){reset();i9100_ui_execution_record(&p,0x65000);fail_at=n;assert(!bootstrap()&&i9100_ui_execution_diag[1]==3&&!memcmp(image,shared,sizeof(image))&&!memcmp(exe,exeshared,sizeof(exe)));if(n>1)assert(removed&&!allocated);}
  reset();i9100_ui_execution_record(&p,0x65000);fail_at=6;fail_again=7;assert(bootstrap()==EIO&&i9100_ui_execution_diag[9]&&allocated&&!removed);
  for(unsigned n=0;n<8;n++){reset();i9100_ui_execution_record(&p,0x65000);if(n==0)enabled=0;if(n==1)abi=7;if(n==2)irq=1;if(n==3)interrupts=0;if(n==4)preempt=1;if(n==5)child.acts=2;if(n==6)p.p_idversion++;if(n==7)current=&parent;assert(!bootstrap()&&!reads&&!ops);}
@@ -112,6 +118,15 @@ int main(int argc,char**argv){
  for(unsigned n=1;n<=33;n++){reset();retina=1;i9100_ui_execution_record(&p,0x65000);fail_at=n;assert(!bootstrap()&&i9100_ui_execution_diag[1]==3&&!memcmp(image,shared,sizeof(image))&&!memcmp(exe,exeshared,sizeof(exe)));}
  reset();retina=1;read_fail=0x3310e9c4;i9100_ui_execution_record(&p,0x65000);assert(!bootstrap()&&!ops&&i9100_ui_execution_diag[8]==8);
  reset();retina=awake=1;read_fail=0x32fec504;i9100_ui_execution_record(&p,0x65000);assert(!bootstrap()&&!ops&&i9100_ui_execution_diag[8]==9);
+ reset();retina=native=background=1;install();assert(i9100_ui_execution_diag[28]==1&&i9100_ui_execution_diag[29]==0x672b4);
+ assert(!memcmp(exe+0x22b4,(uint32_t[]){0xf000f8df,0x12c1},8));
+ snprintf(path,sizeof(path),"%s.background",argv[1]);f=fopen(path,"wb");assert(f);fwrite(codebuf+704,1,172,f);fclose(f);
+ i9100_ui_background_code(codebuf,0x2d000,0x20c000);
+ snprintf(path,sizeof(path),"%s.background-slide",argv[1]);f=fopen(path,"wb");assert(f);fwrite(codebuf,1,172,f);fclose(f);
+ for(unsigned n=1;n<=36;n++){reset();retina=native=background=1;i9100_ui_execution_record(&p,0x65000);fail_at=n;assert(!bootstrap()&&i9100_ui_execution_diag[1]==3&&!memcmp(image,shared,sizeof(image))&&!memcmp(exe,exeshared,sizeof(exe)));}
+ for(unsigned n=0;n<6;n++){static unsigned addresses[]={0x32f33658,0x32f3372c,0x32f51400,0x333a5768,0x333a6168,0x333a56f2};reset();retina=native=background=1;read_fail=addresses[n];i9100_ui_execution_record(&p,0x65000);assert(!bootstrap()&&!ops&&i9100_ui_execution_diag[8]==10);}
+ reset();retina=background=1;install();assert(!i9100_ui_execution_diag[28]&&!i9100_ui_execution_diag[29]);
+ reset();retina=native=background=1;exe[0x22b4]^=1;i9100_ui_execution_record(&p,0x65000);assert(!bootstrap()&&!ops&&i9100_ui_execution_diag[8]==1);
  puts("PASS production own-task Setup observer, exact UUID/bytes refusal,30 partial-write transaction rollbacks,unsafe stop,receiver/event bytes,scope and ring wrap");
 }
 '''
