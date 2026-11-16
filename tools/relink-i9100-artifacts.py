@@ -50,8 +50,13 @@ def main():
         if result.returncode:raise RuntimeError('Repair failed; inspect '+str(log))
     run(cmd,cwd,out/'compile.log')
     filelist=out/'link.filelist';filelist.write_text('\n'.join(str(target if v==old_object else v) for v in originals)+'\n')
-    args=shlex.split((previous/'link-flags.txt').read_text().strip().splitlines()[-1])
+    if (previous/'link-flags.txt').exists():
+        args=shlex.split((previous/'link-flags.txt').read_text().strip().splitlines()[-1])
+    else:
+        retained=json.loads((previous/'repair.json').read_text())['linker']
+        args=retained[:retained.index('-filelist')]
     if args[0]!='/usr/bin/clang++' or not any(x.startswith('-fuse-ld='+str(repo.parent/'assets/i9100-toolchain/bin/ld64')) for x in args):raise ValueError('Unexpected linker/toolchain')
+    (out/'link-flags.txt').write_text(shlex.join(args)+'\n')
     args+=['-filelist',str(filelist),str(build/'version.o'),str(build/'lastkernelconstructor.o'),'-o',str(out/'mach_kernel.sys')]
     run(args,build,out/'link.log')
     if any(fingerprint(Path(v))!=expected for v,expected in hashes.items()):raise RuntimeError('Reused link input changed during repair')
