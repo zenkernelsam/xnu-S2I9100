@@ -56,6 +56,8 @@ TESTS = [
     ("i9100_bcm_chip_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c"]),
     ("i9100_bcm_firmware_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c", "i9100_bcm_firmware.c"]),
     ("i9100_bcm_core_download_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c", "i9100_bcm_firmware.c", "i9100_bcm_core_download.c"]),
+    ("i9100_native_transport_test.cpp", ["i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_irq_registry.c", "i9100_peripheral_board.c",
+        "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c"]),
 ]
 
 
