@@ -34,6 +34,9 @@ int i9100_sensor_read(struct i9100_sensor *,struct i9100_sensor_sample *);
  * guessed orientation. K3DH: 100Hz,12-bit,2g,BDU. K3G:lowest ODR,250dps,BDU.
  * AK8975 includes factory ASA adjustment, reads ST2 to release the latch and
  * rejects overflow/error. Samples are committed only after complete I/O.
+ * Stable ST control fields are read back before admission and after restore;
+ * AK8975 powerdown waits100us and reads the mode before marking inactive.
+ * An ACK with unchanged controls leaves an error/fault for explicit cleanup.
  * Polling diagnostic module, not yet an iOS CoreMotion/HID service. */
 #ifdef __cplusplus
 }

@@ -8,6 +8,7 @@
 struct model {
  uint8_t regs[256],address,config;
  unsigned locked,transactions,fail_transaction,partial,delays;
+ unsigned ignore_write,ignore_reg,ignore_value;
  uint64_t ns;
  unsigned operations,fail_operation,sticky_failure,rail,pwm,timeout,cancel;
  uint32_t period,duty;
@@ -24,7 +25,8 @@ static int transfer(void *c,const struct i9100_i2c_message *msgs,unsigned count,
  if(p->partial){*done=count-1;return 0;}
  assert(msgs[0].address==p->address&&!msgs[0].read);
  uint8_t reg=msgs[0].bytes[0];if(p->address!=0x0c)reg&=127U;
- if(count==1){assert(msgs[0].length==2);p->regs[reg]=msgs[0].bytes[1];}
+ if(count==1){assert(msgs[0].length==2);
+  if(!(p->ignore_write&&reg==p->ignore_reg&&msgs[0].bytes[1]==p->ignore_value))p->regs[reg]=msgs[0].bytes[1];}
  else {assert(count==2&&msgs[0].length==1&&msgs[1].read&&msgs[1].address==p->address);
   for(unsigned n=0;n<msgs[1].length;n++)msgs[1].bytes[n]=p->regs[(uint8_t)(reg+n)];
   if(p->address==0x0c&&reg==2&&msgs[1].length==8){p->regs[2]=0;p->regs[0xa]=0;}}
@@ -90,6 +92,45 @@ static void sensor_faults(void)
  struct i9100_sensor s={0};struct i9100_sensor_config c=config(1);c.axis[0][0]=1;
  assert(i9100_sensor_init(&s,&io,&c)==I9100_SENSOR_ARGUMENT);
 }
+static void sensor_sticky_registers(void)
+{
+ /* An ACK does not prove a stable register changed. Do not mark an unstarted
+  * sensor active, or release a sensor whose old controls were not restored. */
+ for(unsigned kind=1;kind<=2;kind++){
+  memset(&m,0,sizeof(m));m.address=kind==1?0x19:0x69;m.regs[0xf]=kind==1?0x33:0xd3;
+  struct i9100_sensor s={0};struct i9100_sensor_config c=config(kind);
+  assert(!i9100_sensor_init(&s,&io,&c));m.ignore_write=1;m.ignore_reg=0x20;m.ignore_value=kind==1?0x57:0x0f;
+  assert(i9100_sensor_enable(&s,1)==I9100_SENSOR_IO&&!s.active&&!s.fault&&!m.regs[0x20]);
+  m.ignore_write=0;assert(!i9100_sensor_enable(&s,1));assert(!i9100_sensor_enable(&s,0));
+  memset(&s,0,sizeof(s));m.regs[0x22]=0x52;
+  assert(!i9100_sensor_init(&s,&io,&c)&&!i9100_sensor_enable(&s,1));
+  m.ignore_write=1;m.ignore_reg=0x22;m.ignore_value=0x52;
+  assert(i9100_sensor_enable(&s,0)==I9100_SENSOR_IO&&s.fault&&s.active&&!m.regs[0x20]);
+  assert(i9100_sensor_enable(&s,1)==I9100_SENSOR_BUSY);
+  m.ignore_write=0;assert(!i9100_sensor_enable(&s,0)&&!s.active&&!s.fault&&m.regs[0x22]==0x52);
+ }
+ for(unsigned path=0;path<3;path++){
+  memset(&m,0,sizeof(m));m.address=0x0c;m.regs[0]=0x48;
+  m.regs[0x10]=m.regs[0x11]=m.regs[0x12]=128;
+  struct i9100_sensor s={0};struct i9100_sensor_config c=config(3);
+  assert(!i9100_sensor_init(&s,&io,&c));
+  if(!path){
+   m.ignore_write=1;m.ignore_reg=0x0a;m.ignore_value=0;
+   assert(i9100_sensor_enable(&s,1)==I9100_SENSOR_IO&&s.fault&&!s.active&&m.regs[0x0a]==0x0f);
+  }else{
+   assert(!i9100_sensor_enable(&s,1)&&!i9100_sensor_begin(&s));
+   m.ignore_write=1;m.ignore_reg=0x0a;m.ignore_value=0;
+   if(path==1)assert(i9100_sensor_enable(&s,0)==I9100_SENSOR_IO&&s.fault&&s.active&&s.converting);
+   else{
+    m.ns+=25000001ULL;struct i9100_sensor_sample sample,old;memset(&sample,0xa5,sizeof(sample));old=sample;
+    assert(i9100_sensor_read(&s,&sample)==I9100_SENSOR_TIMEOUT&&s.fault&&s.converting);
+    assert(!memcmp(&sample,&old,sizeof(sample)));
+   }
+   assert(m.regs[0x0a]==1);
+  }
+  m.ignore_write=0;assert(!i9100_sensor_enable(&s,0)&&!s.fault&&!s.active&&!s.converting&&!m.regs[0x0a]);
+ }
+}
 static int operation(struct model *p)
 {p->operations++;return p->operations==p->fail_operation||p->sticky_failure?-1:0;}
 static int hread(void *c,uint8_t reg,uint8_t *v){struct model *p=c;assert(p->locked&&reg==2);int e=operation(p);if(!e)*v=p->config;return e;}
@@ -128,4 +169,4 @@ static void vibration(void)
  assert(i9100_vibrator_pulse(&v,30,50)==I9100_VIB_BUSY);m.sticky_failure=0;assert(!i9100_vibrator_stop(&v)&&!v.fault);
 }
 int main(void)
-{sensor_st(1);sensor_st(2);sensor_mag();sensor_faults();vibration();puts("PASS sensor IDs/BDU/signed units/axis/ASA/ST2/data-ready/timeout/partial IO; haptic duty/time cap and applied-but-failed shutdown/quarantine");return 0;}
+{sensor_st(1);sensor_st(2);sensor_mag();sensor_faults();sensor_sticky_registers();vibration();puts("PASS sensor IDs/BDU/signed units/axis/ASA/ST2/data-ready/timeout/partial IO/stable-control and powerdown readback/ACK-without-write recovery; haptic duty/time cap and applied-but-failed shutdown/quarantine");return 0;}

@@ -33,12 +33,24 @@ int i9100_sensor_init(struct i9100_sensor *s,const struct i9100_peripheral_i2c *
  memset(s,0,sizeof(*s));s->io=*io;s->config=*c;s->initialized=1;
  s->address=c->kind==I9100_SENSOR_K3DH?0x19:(c->kind==I9100_SENSOR_K3G?0x69:0x0c);return 0;
 }
+static int st_verify(struct i9100_sensor *s,const uint8_t expected[5])
+{
+ uint8_t control[5];int e=read_reg(s,0xa0,control,sizeof(control));
+ return e?e:(memcmp(control,expected,sizeof(control))?I9100_SENSOR_IO:0);
+}
+static int ak_stop(struct i9100_sensor *s)
+{
+ int e=write_reg(s,0x0a,0);if(e)return e;
+ if(s->io.delay_us(s->io.cookie,100))return I9100_SENSOR_IO;
+ uint8_t mode=255;e=read_reg(s,0x0a,&mode,1);
+ return e?e:((mode&15U)?I9100_SENSOR_IO:0);
+}
 static int st_stop(struct i9100_sensor *s)
 {
  int e=write_reg(s,0x20,0);
  for(unsigned n=1;n<5;n++){int restore=write_reg(s,(uint8_t)(0x20U+n),s->saved[n]);if(!e)e=restore;}
- uint8_t control=255;int check=read_reg(s,0x20,&control,1);if(!e)e=check;
- if(!e&&control)e=I9100_SENSOR_IO;
+ uint8_t expected[5];memcpy(expected,s->saved,sizeof(expected));expected[0]=0;
+ int check=st_verify(s,expected);if(!e)e=check;
  return e;
 }
 int i9100_sensor_enable(struct i9100_sensor *s,int enabled)
@@ -51,7 +63,7 @@ int i9100_sensor_enable(struct i9100_sensor *s,int enabled)
  if((enabled&&(s->active||s->fault))||(!enabled&&!s->active&&!s->fault))
   {s->io.release(s->io.cookie);return I9100_SENSOR_BUSY;}
  if(!enabled){
-  e=s->config.kind==I9100_SENSOR_AK8975?write_reg(s,0x0a,0):st_stop(s);
+  e=s->config.kind==I9100_SENSOR_AK8975?ak_stop(s):st_stop(s);
   if(!e){s->active=s->fault=s->converting=0;}else s->fault=1;
   goto done;
  }
@@ -64,8 +76,7 @@ int i9100_sensor_enable(struct i9100_sensor *s,int enabled)
   e=write_reg(s,0x0a,0x0f);
   if(!e&&s->io.delay_us(s->io.cookie,100))e=I9100_SENSOR_IO;
   if(!e)e=read_reg(s,0x10,s->asa,3);
-  int stop=write_reg(s,0x0a,0);if(!e)e=stop;
-  if(!e&&s->io.delay_us(s->io.cookie,100))e=I9100_SENSOR_IO;
+  int stop=ak_stop(s);if(!e)e=stop;
   if(!e)for(unsigned n=0;n<3;n++)if(!s->asa[n]||s->asa[n]==255U)e=I9100_SENSOR_ID;
   if(stop)s->fault=1;
  }else {
@@ -75,7 +86,9 @@ int i9100_sensor_enable(struct i9100_sensor *s,int enabled)
   for(unsigned n=1;n<5&&!e;n++)
    e=write_reg(s,(uint8_t)(0x20U+n),n==3U?(s->config.kind==I9100_SENSOR_K3DH?0x88:0x80):0);
   if(!e)e=write_reg(s,0x20,s->config.kind==I9100_SENSOR_K3DH?0x57:0x0f);
-  if(!e){uint8_t verify=0;e=read_reg(s,0x23,&verify,1);if(!e&&verify!=(s->config.kind==I9100_SENSOR_K3DH?0x88:0x80))e=I9100_SENSOR_IO;}
+  if(!e){uint8_t expected[5]={s->config.kind==I9100_SENSOR_K3DH?0x57:0x0f,0,0,
+                            s->config.kind==I9100_SENSOR_K3DH?0x88:0x80,0};
+   e=st_verify(s,expected);}
   if(e){if(st_stop(s))s->fault=1;}
  }
  if(!e){s->active=1;s->converting=0;s->last_sample=0;}
@@ -104,7 +117,7 @@ int i9100_sensor_read(struct i9100_sensor *s,struct i9100_sensor_sample *out)
  if(n<s->last_sample){e=I9100_SENSOR_TIMEOUT;goto done;}
  if(s->config.kind==I9100_SENSOR_AK8975){
   if(n<s->started||n-s->started>25000000ULL){
-   e=I9100_SENSOR_TIMEOUT;if(write_reg(s,0x0a,0))s->fault=1;else s->converting=0;goto done;
+   e=I9100_SENSOR_TIMEOUT;if(ak_stop(s))s->fault=1;else s->converting=0;goto done;
   }
   e=read_reg(s,0x02,&status,1);if(e)goto done;
   if(!(status&1U)){e=I9100_SENSOR_NOT_READY;goto done;}
