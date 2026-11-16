@@ -11,7 +11,7 @@ public:
  static void *operator new(size_t size) noexcept{return i9100_model_event_allocate(size);}
  static void operator delete(void *p){i9100_model_event_free(p);}
  virtual ~OSObject()=default;virtual bool init(){return true;}virtual void free(){}
- void retain(){refs++;}void release(){if(!--refs){free();delete this;}}
+ void retain(){__sync_add_and_fetch(&refs,1);}void release(){if(!__sync_sub_and_fetch(&refs,1)){free();delete this;}}
 };
 #define OSDeclareDefaultStructors(name) public: name(); virtual ~name(); private:
 #define OSDefineMetaClassAndStructors(name,base) name::name()=default;name::~name()=default;

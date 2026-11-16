@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from i9100_offline_build import Evidence, REPO, ROOT, PLATFORM, idle
 from i9100_link_snapshot import freeze,verify
+from i9100_power_shared_copy import prepare as prepare_shared_power
 
 C_SOURCES = [
     "i9100_gpio_broker.c", "i9100_i2c_gpio.c", "i9100_clock_gates.c",
@@ -32,7 +33,7 @@ C_SOURCES = [
     "i9100_bcm_pump.c",
 ]
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
-               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp"]
+               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp"]
 TESTS = [
     ("i9100_peripheral_bus_test.c", C_SOURCES[:5]),
     ("i9100_peripheral_platform_test.c", ["i9100_gpio_broker.c", "i9100_clock_gates.c",
@@ -70,6 +71,7 @@ TESTS = [
     ("i9100_bcm_pump_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c", "i9100_bcm_core_download.c", "i9100_bcm_firmware.c", "i9100_bcm_f2.c", "i9100_bcm_boot.c", "i9100_wlan_control.c", "i9100_bcm_pump.c"]),
     ("i9100_bcm_worker_test.cpp", ["i9100_bcm4330.c", "i9100_bcm_chip.c", "i9100_bcm_core_download.c", "i9100_bcm_firmware.c", "i9100_bcm_f2.c", "i9100_bcm_boot.c", "i9100_wlan_control.c", "i9100_bcm_pump.c", "i9100_bcm_worker.cpp"]),
     ("i9100_bcm_irq_test.cpp", ["i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_irq_registry.c", "i9100_irq_cascade.c", "i9100_irq_router.c", "i9100_peripheral_board.c", "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c", "i9100_bcm_irq.cpp"]),
+    ("i9100_power_shared_test.cpp", ["i9100_power_bus.c", "i9100_power.c", "i9100_power_shared.cpp"]),
 ]
 
 
@@ -77,6 +79,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--link", action="store_true")
     p.add_argument("--models", action="store_true")
+    p.add_argument("--power-shared", action="store_true", help="Link paired copied Power/bus/PE integration; no live source changes")
     p.add_argument("--reference", type=Path, help="successful retained control-* kernel directory")
     p.add_argument("--wait-idle", type=int, default=0, choices=range(0, 61), metavar="0..60")
     args = p.parse_args()
@@ -92,6 +95,7 @@ def main():
                 raise
             time.sleep(2)
     if args.models:
+        shared_copies = prepare_shared_power(e)
         for test, sources in TESTS:
             folder = e.out / Path(test).stem
             folder.mkdir()
@@ -100,12 +104,19 @@ def main():
             if test.endswith(".cpp"):
                 e.model_cpp(test, [name for name in sources if name.endswith(".c")],
                             [name for name in sources if name.endswith(".cpp")],
-                            libraries=["crypto"] if test=="i9100_bcm_worker_test.cpp" else ())
+                            libraries=["crypto"] if test=="i9100_bcm_worker_test.cpp" else ["pthread"] if test=="i9100_power_shared_test.cpp" else (),
+                            source_overrides=shared_copies if test=="i9100_power_shared_test.cpp" else None)
+                if test=="i9100_power_shared_test.cpp":
+                    for n in range(1,4):e.run([str(e.out/"models"),str(n)],"shared-prepare-failure-"+str(n)+"-tests")
             else:
                 e.model(test, sources, libraries=["crypto"] if test in ("i9100_bcm_firmware_test.c","i9100_bcm_core_download_test.c","i9100_bcm_boot_test.c","i9100_bcm_pump_test.c") else ())
             e.out = previous
         e.result["model_suites"] = [name for name, _ in TESTS]
     e.cross_compile(C_SOURCES + CPP_SOURCES)
+    if args.power_shared:
+        if not args.models:shared_copies = prepare_shared_power(e)
+        e.cross_compile(["i9100_power_bus.c","IOS7I9100Power.cpp","AppleARMPE.cpp"],shared_copies)
+        e.result["peripheral_objects"] = len(C_SOURCES + CPP_SOURCES)
     if args.link:
         if args.reference:
             reference = args.reference.resolve()
@@ -131,9 +142,17 @@ def main():
         # every input before linking and retain its exact bytes/hash.
         idle()
         stable_base,base_snapshot=freeze(base_list,e.out/"frozen-base")
+        excluded=[]
+        if args.power_shared:
+            for name in ("i9100_power_bus.o","IOS7I9100Power.cpo","AppleARMPE.cpo"):
+                found=[i for i,path in enumerate(base_list) if Path(path).name==name]
+                if len(found)!=1:raise RuntimeError("Reference override is ambiguous: "+name)
+                excluded.extend(found)
+            e.result["replaced_reference_objects"] = [base_list[i] for i in excluded]
+        linked_base=[path for i,path in enumerate(stable_base) if i not in excluded]
         stable_aux,aux_snapshot=freeze([build/"version.o",build/"lastkernelconstructor.o"],e.out/"frozen-aux")
         filelist = e.out / "link.filelist"
-        filelist.write_text("\n".join(stable_base + extra) + "\n")
+        filelist.write_text("\n".join(linked_base + extra) + "\n")
         command = shlex.split((reference / "link-flags.txt").read_text().strip().splitlines()[-1])
         command.extend(["-filelist", str(filelist), *stable_aux, "-o", str(e.out / "mach_kernel.sys")])
         env = dict(os.environ, TC=str(ROOT / "assets/i9100-toolchain"), SDKROOT="/",

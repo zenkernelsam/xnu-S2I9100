@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """Check both optional patches together on retained out copies, never the live tree."""
 import ast
+import argparse
 import hashlib
 import json
 from pathlib import Path
 from i9100_offline_build import Evidence, REPO
 
+p = argparse.ArgumentParser(description=__doc__)
+p.add_argument("--power-shared", action="store_true")
+args = p.parse_args()
 e = Evidence("peripheral-patch-check")
 e.wait_idle_seconds = 60
 paths = ["iokit/conf/files.arm", "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp"]
+if args.power_shared:
+    paths += ["iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_power_bus.c", "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100Power.cpp"]
 tree = e.out / "integration-tree"
 captured = {}
 for path in paths:
@@ -19,6 +25,8 @@ for path in paths:
     destination.write_bytes(original)
 patches = [REPO / "port-tests/i9100_emmc_integration.patch",
            REPO / "port-tests/i9100_peripheral_buses_build.patch"]
+if args.power_shared:
+    patches.append(REPO / "port-tests/i9100_power_shared_integration.patch")
 patch_hashes = {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest() for path in patches}
 prefix = str(tree.relative_to(REPO))
 e.run(["git", "apply", "--check", "--directory=" + prefix, *map(str, patches)], "joint-apply-check", cwd=REPO)
@@ -46,4 +54,5 @@ for path in patches:
         raise RuntimeError("Integration patch changed during check")
 e.result.update(live_source_sha256=captured, integration_patch_sha256=patch_hashes,
                 object_count=len(names), live_tree_modified=False, patched_only=str(tree.relative_to(REPO)))
+e.result["shared_power_integration"]=args.power_shared
 e.finish([], "Both eMMC/peripheral patches composed on two out file copies; full inventory once, live files unchanged, no device")

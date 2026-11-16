@@ -88,7 +88,8 @@ class Evidence:
         self.result["models"] = test_file
         self.result["models_sha256"] = hashlib.sha256((REPO / "port-tests" / test_file).read_bytes()).hexdigest()
 
-    def cross_compile(self, sources):
+    def cross_compile(self, sources, source_overrides=None):
+        source_overrides = source_overrides or {}
         commands = None
         for file in sorted((REPO / "out/automation").glob("control-*/compile-commands.json"), reverse=True):
             data = json.loads(file.read_text())
@@ -112,7 +113,13 @@ class Evidence:
             if len(inputs) != 1 or "-O1" not in command:
                 raise RuntimeError("Unexpected compiler template")
             destination = self.out / (name + (".cpo" if cpp else ".o"))
-            command[inputs[0]] = str(PLATFORM / name)
+            source = source_overrides.get(name, PLATFORM / name)
+            source = Path(source).resolve()
+            if name in source_overrides and (not source.is_relative_to(REPO / "out") or source.name != name):
+                raise RuntimeError("Source override must be a matching file in retained repo out")
+            command[inputs[0]] = str(source)
+            if name in source_overrides:
+                command.extend(["-I" + str(PLATFORM)])
             command[command.index("-o") + 1] = str(destination)
             for i, flag in enumerate(command[:-1]):
                 if flag in ("-MF", "-MT"):
@@ -123,9 +130,10 @@ class Evidence:
         (self.out / "compile-commands.json").write_text(json.dumps(self.commands, indent=2) + "\n")
         self.result["cross_compiled"] = True
 
-    def model_cpp(self, test_file, c_sources, cpp_sources, libraries=()):
+    def model_cpp(self, test_file, c_sources, cpp_sources, libraries=(), source_overrides=None):
         """Run native bridge logic with a host-only IOKit facade, not an ARM SDK."""
         sdk = REPO / "port-tests/offline-native-sdk"
+        source_overrides = source_overrides or {}
         common = ["-O1", "-Wall", "-Wextra", "-Werror", "-fno-pie",
                   "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
                   "-I" + str(sdk), "-I" + str(PLATFORM)]
@@ -133,8 +141,11 @@ class Evidence:
         for source in c_sources + cpp_sources:
             cpp = source.endswith(".cpp")
             destination = self.out / ("host-model-" + source + ".o")
+            actual = Path(source_overrides.get(source, PLATFORM / source)).resolve()
+            if source in source_overrides and (not actual.is_relative_to(REPO / "out") or actual.name != source):
+                raise RuntimeError("Model source override must be a matching retained out copy")
             self.run(["clang++" if cpp else "clang", "-std=c++11" if cpp else "-std=c99",
-                      *common, "-c", str(PLATFORM / source), "-o", str(destination)], "host-" + source)
+                      *common, "-c", str(actual), "-o", str(destination)], "host-" + source)
             objects.append(str(destination))
         self.run(["clang++", "-std=c++11", *common, "-no-pie",
                   str(REPO / "port-tests" / test_file), *objects, "-o", str(self.out / "models"),
