@@ -398,6 +398,7 @@ volatile uint32_t i9100_vm_error_diag[1 + 64 * 6];
  * count +16 rows {receiver,sender,flags-lo,flags-hi,id,size,bits,name[4],stage}.
  * Observes validated receive-header copyout; never changes the request. */
 volatile uint32_t i9100_reboot_rpc_diag[1 + 16 * 12];
+#include "i9100_reboot_sender.h"
 static int i9100_xpc_boundary_enabled(void)
 {
     int enabled = 0;
@@ -1294,6 +1295,7 @@ mach_msg_overwrite_trap(
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
         i9100_service_wire_record(1, kmsg, option, mr);
+        i9100_reboot_sender_note(kmsg);
         i9100_ls_publish_sequence=i9100_ls_publish_record(1,kmsg,option,mr);
         i9100_ls_query_sequence=i9100_ls_query_kmsg(1,kmsg,option,mr);
         i9100_fig_rpc_sequence=i9100_fig_rpc_kmsg(1,kmsg,option,mr);

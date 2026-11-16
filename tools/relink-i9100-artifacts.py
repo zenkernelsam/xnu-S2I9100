@@ -33,7 +33,7 @@ def main():
     recorded_paths={Path(x['arguments'][x['arguments'].index('-o')+1]).resolve() for x in records}
     if any(not v.is_relative_to(repo/'out') for v in recorded_paths):raise ValueError('Recorded object outside XNU out')
     cmd=list(record['arguments']);old_object=Path(cmd[cmd.index('-o')+1]).resolve()
-    if old_object!=previous/obj or '-O1' not in cmd or cmd[0] not in ('/usr/bin/clang','/usr/bin/clang++'):raise ValueError('Unexpected retained compiler command')
+    if (not a.baseline_sha256 and old_object!=previous/obj) or old_object.parts[-2:]!=obj.parts or '-O1' not in cmd or cmd[0] not in ('/usr/bin/clang','/usr/bin/clang++'):raise ValueError('Unexpected retained compiler command')
     build=repo/'BUILD/obj/RELEASE_ARM_EXYNOS4210_I9100';cwd=build/obj.parts[0]/'RELEASE'
     originals=[Path(x).resolve() for x in (previous/'link.filelist').read_text().splitlines()]
     if originals.count(old_object)!=1:raise ValueError('Repair object is missing or ambiguous in the prior link')
