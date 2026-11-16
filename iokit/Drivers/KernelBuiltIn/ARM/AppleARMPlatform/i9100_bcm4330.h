@@ -33,6 +33,7 @@ struct i9100_bcm4330 {
  void *boot_owner;
  void *control_owner;
  uint32_t protocol_generation,control_generation;
+ void *rx_owner;uint32_t data_paused;
 };
 int i9100_bcm_init(struct i9100_bcm4330 *,const struct i9100_bcm_io *);
 int i9100_bcm_enable(struct i9100_bcm4330 *,int enabled,uint16_t cis_vendor,uint16_t cis_device);
@@ -41,6 +42,7 @@ int i9100_bcm_protocol_start(struct i9100_bcm4330 *,unsigned negotiated_version,
 int i9100_bcm_send_data(struct i9100_bcm4330 *,const uint8_t *ethernet,unsigned bytes,unsigned priority);
 int i9100_bcm_ioctl(struct i9100_bcm4330 *,uint32_t command,int set,const uint8_t *input,unsigned bytes);
 int i9100_bcm_receive(struct i9100_bcm4330 *,const uint8_t *frame,unsigned bytes,struct i9100_bcm_frame *);
+int i9100_bcm_receive_owned(struct i9100_bcm4330 *,void *rx_owner,const uint8_t *,unsigned,struct i9100_bcm_frame *);
 int i9100_bcm_poll_request(struct i9100_bcm4330 *);
 int i9100_bcm_control_bind(struct i9100_bcm4330 *,void *owner,uint32_t firmware_generation);
 int i9100_bcm_control_check(struct i9100_bcm4330 *,void *owner,uint32_t firmware_generation);

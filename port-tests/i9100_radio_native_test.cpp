@@ -21,17 +21,22 @@ static i9100_radio_native *radio(i9100_peripheral_native *c)
 {i9100_radio_native *r=0;assert(!i9100_radio_native_open(1,c,&supplied,1,&r)&&r);return r;}
 static i9100_radio_status status(i9100_radio_native *r)
 {i9100_radio_status s;assert(!i9100_radio_native_status(r,&s));return s;}
-static void close(i9100_peripheral_native *c,i9100_radio_native *r)
+static void close(i9100_peripheral_native *&c,i9100_radio_native *&r)
 {assert(!i9100_radio_native_close(&r)&&!r&&!supply.held);off_pins();assert(!i9100_peripheral_native_destroy(&c)&&!active_allocations);}
 static void normal()
 {
  i9100_peripheral_native *c=setup_radio_parent();unsigned before=allocations;i9100_radio_native *r=0;
  assert(i9100_radio_native_open(0,c,&supplied,1,&r)==I9100_RADIO_DISABLED&&!r&&allocations==before);
  r=radio(c);i9100_radio_status s=status(r);assert(s.ready&&s.native_bound&&!s.powered[0]&&!s.powered[1]);
+ i9100_radio_native *old=r;before=allocations;
+ assert(i9100_radio_native_open(1,c,&supplied,1,&r)==I9100_RADIO_BUSY&&r==old&&allocations==before);
  i9100_bt_io io;before=barriers;
  assert(i9100_radio_native_uart_open(r,48000000U,115200U,I9100_UART_RAW_FRACTION,&io)==I9100_RADIO_DISABLED&&barriers==before);
  assert(!i9100_radio_native_set_power(r,I9100_RADIO_BT,1)&&ns==70000000ULL);
  assert(!i9100_radio_native_uart_open(r,48000000U,115200U,I9100_UART_RAW_FRACTION,&io));
+ i9100_native_transport_hold borrowed={};assert(!i9100_radio_native_borrow(r,I9100_RADIO_BT,&borrowed));before=barriers;
+ assert(i9100_radio_native_transport_close(r,I9100_RADIO_BT)==I9100_UART_BUSY&&!c->uart.closing&&barriers==before);
+ assert(!i9100_peripheral_native_transport_hold_put(&borrowed));
  s=status(r);assert(s.native_uart_owned&&s.holds[1]==1U&&s.generation[1]==1U);
  assert(!i9100_radio_native_set_power(r,I9100_RADIO_WLAN,1));
  assert(!i9100_radio_native_set_power(r,I9100_RADIO_WLAN,0));

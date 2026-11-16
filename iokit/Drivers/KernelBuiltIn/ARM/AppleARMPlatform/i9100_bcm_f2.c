@@ -67,7 +67,7 @@ int i9100_bcm_f2_enable_locked(struct i9100_bcm_f2 *t,int enabled,uint32_t gener
 {
  if(!t||!t->initialized||(enabled!=0&&enabled!=1))return I9100_F2_ARGUMENT;
  int e=0;
- if(!enabled){t->enabled=0;goto done;} /* no hardware/FIFO reset pretended */
+ if(!enabled){if(t->rx_owner){e=I9100_F2_BUSY;goto done;}t->enabled=0;goto done;} /* no hardware/FIFO reset pretended */
  if(t->enabled){e=I9100_F2_BUSY;goto done;}
  if(!generation||generation<=t->generation){e=I9100_F2_GENERATION;goto done;}
  if(!t->card->active||t->card->fault||t->card->block_size[1]!=64U||t->card->block_size[2]!=512U)
@@ -94,12 +94,13 @@ int i9100_bcm_f2_get_io(struct i9100_bcm_f2 *t,struct i9100_bcm_io *io)
  memset(io,0,sizeof(*io));io->cookie=t;io->claim=take;io->release=drop;
  io->cmd52=forward52;io->cmd53=forward53;io->send_frame=send;io->now_ns=now;io->delay_us=delay;return 0;
 }
-int i9100_bcm_f2_receive(struct i9100_bcm_f2 *t,uint8_t *frame,unsigned capacity,unsigned *bytes)
+static int receive_for(struct i9100_bcm_f2 *t,void *owner,uint8_t *frame,unsigned capacity,unsigned *bytes)
 {
  if(bytes)*bytes=0;
  if(!t||!t->initialized||!frame||capacity<I9100_F2_FRAME_MAX||!bytes)return I9100_F2_ARGUMENT;
  if(take(t))return I9100_F2_BUSY;
  int e=0;
+ if(t->rx_owner!=owner){e=I9100_F2_BUSY;goto done;}
  if(!t->enabled){e=I9100_F2_DISABLED;goto done;}if(!alive(t)){e=I9100_F2_IO;goto done;}
  t->stage=STAGE_HEADER;t->logical_bytes=t->wire_bytes=0;
  e=fifo(t,0,t->scratch,32);if(e)goto done;
@@ -120,3 +121,7 @@ done:
  wipe(t->scratch,sizeof(t->scratch));
  drop(t);return e;
 }
+int i9100_bcm_f2_receive(struct i9100_bcm_f2 *t,uint8_t *frame,unsigned capacity,unsigned *bytes)
+{return receive_for(t,0,frame,capacity,bytes);}
+int i9100_bcm_f2_receive_owned(struct i9100_bcm_f2 *t,void *owner,uint8_t *frame,unsigned capacity,unsigned *bytes)
+{return owner?receive_for(t,owner,frame,capacity,bytes):I9100_F2_ARGUMENT;}

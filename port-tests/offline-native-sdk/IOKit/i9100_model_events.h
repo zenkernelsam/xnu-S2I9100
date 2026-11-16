@@ -10,7 +10,7 @@ class OSObject {
 public:
  static void *operator new(size_t size) noexcept{return i9100_model_event_allocate(size);}
  static void operator delete(void *p){i9100_model_event_free(p);}
- virtual ~OSObject()=default;virtual void free(){}
+ virtual ~OSObject()=default;virtual bool init(){return true;}virtual void free(){}
  void retain(){refs++;}void release(){if(!--refs){free();delete this;}}
 };
 #define OSDeclareDefaultStructors(name) public: name(); virtual ~name(); private:
@@ -22,6 +22,7 @@ protected:
  void signalWorkAvailable();
 public:
  typedef void (*Action)(OSObject *,IOEventSource *);
+ using OSObject::init;
  virtual bool init(OSObject *o,Action=0){owner=o;return true;}
  virtual bool checkForWork(){return false;}
  virtual void enable(){enabled=true;}virtual void disable(){enabled=false;}

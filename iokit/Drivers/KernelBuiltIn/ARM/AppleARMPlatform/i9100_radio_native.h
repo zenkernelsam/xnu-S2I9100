@@ -16,6 +16,7 @@ int i9100_radio_native_uart_open(struct i9100_radio_native *,uint32_t verified_c
 int i9100_radio_native_uart_read(struct i9100_radio_native *,uint8_t *,unsigned,unsigned *);
 int i9100_radio_native_sdio_open(struct i9100_radio_native *,uint32_t verified_sclk_hz,struct i9100_sdio **,struct i9100_f2_io *);
 int i9100_radio_native_transport_close(struct i9100_radio_native *,enum i9100_radio_role);
+int i9100_radio_native_borrow(struct i9100_radio_native *,enum i9100_radio_role,struct i9100_native_transport_hold *);
 int i9100_radio_native_status(struct i9100_radio_native *,struct i9100_radio_status *);
 int i9100_radio_native_close(struct i9100_radio_native **);
 /* Default OFF, real broker + IOLock/MCT timebase/native-owned hosts, no new
@@ -25,6 +26,9 @@ int i9100_radio_native_close(struct i9100_radio_native **);
  * before host open and release it only after owned host close. Error with
  * nonnull context preserves cleanup ownership. Child/H4/F2/core/FW users
  * must finish before transport_close; close never kills active borrowers.
+ * borrow registers a native hold for an active UART/SDIO host. A session
+ * holds one until firmware/H4 is halted; each workloop holds another until
+ * all event sources are stopped/removed. Release via native hold_put.
  * Close blocks new opens, confirms GPIO/supply shutdown, then unbinds and
  * frees context. Any failure keeps parent/provider/context alive. The owner
  * serializes context pointer lifetime/close against wrapper API calls.

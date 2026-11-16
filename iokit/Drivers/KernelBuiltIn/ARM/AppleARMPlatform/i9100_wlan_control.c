@@ -216,9 +216,26 @@ int i9100_wlan_disconnect(struct i9100_wlan_control *c)
 int i9100_wlan_control_close(struct i9100_wlan_control *c)
 {
  int e=take(c);if(e)return e;
- if((c->state!=I9100_WLAN_IDLE&&c->state!=I9100_WLAN_FAULT)||
+ if(c->consumer||(c->state!=I9100_WLAN_IDLE&&c->state!=I9100_WLAN_FAULT)||
     (c->state==I9100_WLAN_IDLE&&(c->pending||c->event_mask_owned))){drop(c);return I9100_WLAN_BUSY;}
  e=i9100_bcm_control_unbind(c->bus,c,c->state==I9100_WLAN_FAULT);
  if(!e){wipe(&c->config,sizeof(c->config));c->enabled=0;c->initialized=0;}
  drop(c);return e;
+}
+int i9100_wlan_consumer_bind(struct i9100_wlan_control *c,void *owner)
+{
+ if(!owner)return I9100_WLAN_ARGUMENT;int e=take(c);if(e)return e;
+ if(c->consumer||c->state!=I9100_WLAN_IDLE||c->pending)e=I9100_WLAN_BUSY;
+ else c->consumer=owner;drop(c);return e;
+}
+int i9100_wlan_consumer_unbind(struct i9100_wlan_control *c,void *owner)
+{
+ if(!owner)return I9100_WLAN_ARGUMENT;int e=take(c);if(e)return e;
+ if(c->consumer!=owner||(c->state!=I9100_WLAN_IDLE&&c->state!=I9100_WLAN_FAULT))e=I9100_WLAN_BUSY;
+ else c->consumer=0;drop(c);return e;
+}
+int i9100_wlan_quarantine(struct i9100_wlan_control *c,int error)
+{
+ if(error>=0)return I9100_WLAN_ARGUMENT;int e=take(c);if(e)return e;
+ e=fail(c,error);drop(c);return e;
 }

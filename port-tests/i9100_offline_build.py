@@ -123,7 +123,7 @@ class Evidence:
         (self.out / "compile-commands.json").write_text(json.dumps(self.commands, indent=2) + "\n")
         self.result["cross_compiled"] = True
 
-    def model_cpp(self, test_file, c_sources, cpp_sources):
+    def model_cpp(self, test_file, c_sources, cpp_sources, libraries=()):
         """Run native bridge logic with a host-only IOKit facade, not an ARM SDK."""
         sdk = REPO / "port-tests/offline-native-sdk"
         common = ["-O1", "-Wall", "-Wextra", "-Werror", "-fno-pie",
@@ -137,7 +137,8 @@ class Evidence:
                       *common, "-c", str(PLATFORM / source), "-o", str(destination)], "host-" + source)
             objects.append(str(destination))
         self.run(["clang++", "-std=c++11", *common, "-no-pie",
-                  str(REPO / "port-tests" / test_file), *objects, "-o", str(self.out / "models")], "compile-native-models")
+                  str(REPO / "port-tests" / test_file), *objects, "-o", str(self.out / "models"),
+                  *["-l" + name for name in libraries]], "compile-native-models")
         self.run([str(self.out / "models")], "native-model-tests")
         self.result.update(native_model=test_file, native_iokit_facade=True,
                            native_model_sha256=hashlib.sha256((REPO / "port-tests" / test_file).read_bytes()).hexdigest(),

@@ -35,7 +35,7 @@ static bool output_valid(i9100_radio_native *r,const void *p,size_t n)
 }
 int i9100_radio_native_open(int enabled,i9100_peripheral_native *parent,const i9100_radio_supply *supply,int verified,i9100_radio_native **out)
 {
- if(!out||(enabled!=0&&enabled!=1))return I9100_RADIO_ARGUMENT;*out=0;
+ if(!out||(enabled!=0&&enabled!=1))return I9100_RADIO_ARGUMENT;if(*out)return I9100_RADIO_BUSY;
  if(!enabled)return I9100_RADIO_DISABLED;
  if(!parent||verified!=1||!supply||!supply->get||!supply->verify||!supply->put||!ml_get_interrupts_enabled())return I9100_RADIO_ARGUMENT;
  i9100_radio_native *r=(i9100_radio_native *)IOMalloc(sizeof(*r));if(!r)return I9100_RADIO_BUSY;
@@ -83,6 +83,12 @@ int i9100_radio_native_transport_close(i9100_radio_native *r,enum i9100_radio_ro
  i9100_radio_hold *hold=role==I9100_RADIO_WLAN?&r->sdio_hold:&r->uart_hold;
  int e=lease->owned?i9100_peripheral_native_transport_close(lease):0;
  if(!e&&hold->owned)e=i9100_radio_hold_put(hold);r->cleanup_error=e;return e;
+}
+int i9100_radio_native_borrow(i9100_radio_native *r,enum i9100_radio_role role,i9100_native_transport_hold *hold)
+{
+ if(!output_valid(r,hold,sizeof(*hold))||(role!=I9100_RADIO_WLAN&&role!=I9100_RADIO_BT))return I9100_RADIO_ARGUMENT;
+ if(r->closing)return I9100_RADIO_DISABLED;
+ return i9100_peripheral_native_transport_hold_get(role==I9100_RADIO_WLAN?&r->sdio:&r->uart,hold);
 }
 int i9100_radio_native_status(i9100_radio_native *r,i9100_radio_status *out)
 {

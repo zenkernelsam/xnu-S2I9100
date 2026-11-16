@@ -19,12 +19,12 @@ struct native_i2c {
 };
 struct native_uart {
  struct i9100_peripheral_native *context;unsigned live;
- i9100_native_transport_lease *owner,*allowed_owner;uint32_t generation,closing;
+ i9100_native_transport_lease *owner,*allowed_owner;uint32_t generation,closing,borrowers;
  IOLock *outer,*controller;i9100_uart_bluetooth port;i9100_gpio_lease pins;i9100_clock_lease gate;
 };
 struct native_sdio {
  struct i9100_peripheral_native *context;unsigned live;
- i9100_native_transport_lease *owner,*allowed_owner;uint32_t generation,closing;
+ i9100_native_transport_lease *owner,*allowed_owner;uint32_t generation,closing,borrowers;
  IOLock *outer,*controller;i9100_sdio card;i9100_gpio_lease pins;
  i9100_clock_lease ip_gate,source_gate;
 };
@@ -236,6 +236,7 @@ static int uart_close_for(i9100_peripheral_native *c,i9100_native_transport_leas
  if(uart_control_lock(u))return I9100_UART_BUSY;
  if(!u->live){h4_unlock(u);return I9100_UART_DISABLED;}
  if(u->owner!=owner||(owner&&u->generation!=owner->generation)){h4_unlock(u);return I9100_UART_BUSY;}
+ if(u->borrowers){h4_unlock(u);return I9100_UART_BUSY;}
  u->closing=1;
  int e=0;if(u->port.prepared)e=i9100_uart_bt_stop(&u->port);
  if(!e&&u->pins.active)e=i9100_gpio_release(&u->pins,I9100_GPIO_RESTORE);
@@ -295,6 +296,7 @@ static int sdio_close_for(i9100_peripheral_native *c,i9100_native_transport_leas
  if(sdio_control_lock(s))return I9100_SDIO_BUSY;
  if(!s->live){packet_unlock(s);return I9100_SDIO_DISABLED;}
  if(s->owner!=owner||(owner&&s->generation!=owner->generation)){packet_unlock(s);return I9100_SDIO_BUSY;}
+ if(s->borrowers){packet_unlock(s);return I9100_SDIO_BUSY;}
  s->closing=1;
  int e=0;if(s->card.active)e=i9100_sdio_enable(&s->card,0,1);
  if(!e&&s->card.host_owned)e=i9100_sdio_release_host(&s->card);
@@ -343,6 +345,40 @@ int i9100_peripheral_native_transport_close(i9100_native_transport_lease *owner)
  return owner->kind==I9100_NATIVE_UART?uart_close_for(owner->context,owner):owner->kind==I9100_NATIVE_SDIO?
         sdio_close_for(owner->context,owner):I9100_GPIO_ARGUMENT;
 }
+static int transport_hold(i9100_native_transport_hold *hold,i9100_native_transport_lease *lease,unsigned operation)
+{
+ if(!hold||!lease||!lease_valid(lease,lease->kind)||
+    (lease->kind!=I9100_NATIVE_UART&&lease->kind!=I9100_NATIVE_SDIO)||
+    ranges_overlap((uintptr_t)hold,sizeof(*hold),(uintptr_t)lease,sizeof(*lease))||
+    ranges_overlap((uintptr_t)hold,sizeof(*hold),(uintptr_t)lease->context,sizeof(*lease->context)))return I9100_GPIO_ARGUMENT;
+ if(operation==0U){if(hold->owned||(hold->self&&hold->self!=(uintptr_t)hold))return I9100_GPIO_OWNER;}
+ else if(!hold->owned||hold->self!=(uintptr_t)hold||hold->lease!=lease||hold->kind!=lease->kind||hold->generation!=lease->generation)
+  return I9100_GPIO_OWNER;
+ i9100_peripheral_native *c=lease->context;IOLock *lock=lease->kind==I9100_NATIVE_UART?c->uart.outer:c->sdio.outer;
+ if(thread_lock(lock))return I9100_GPIO_BUSY;
+ bool uart=lease->kind==I9100_NATIVE_UART;
+ uint32_t *count=uart?&c->uart.borrowers:&c->sdio.borrowers;
+ bool matches=uart?(c->uart.live&&c->uart.owner==lease&&c->uart.generation==lease->generation):
+  (c->sdio.live&&c->sdio.owner==lease&&c->sdio.generation==lease->generation);
+ bool ready=uart?(!c->uart.closing&&c->uart.port.prepared&&!c->uart.port.fault):
+  (!c->sdio.closing&&c->sdio.card.active&&!c->sdio.card.fault);
+ int e=0;
+ if(!matches)e=I9100_GPIO_OWNER;
+ else if(operation==0U){
+  if(!ready||*count==0xffffffffU)e=I9100_GPIO_BUSY;
+  else{(*count)++;memset(hold,0,sizeof(*hold));hold->lease=lease;hold->self=(uintptr_t)hold;
+   hold->kind=lease->kind;hold->generation=lease->generation;hold->owned=1;}
+ }else if(!*count)e=I9100_GPIO_OWNER;
+ else if(operation==1U){if(!ready)e=I9100_GPIO_IO;}
+ else{(*count)--;hold->owned=0;}
+ IOLockUnlock(lock);return e;
+}
+int i9100_peripheral_native_transport_hold_get(i9100_native_transport_lease *lease,i9100_native_transport_hold *hold)
+{return transport_hold(hold,lease,0);}
+int i9100_peripheral_native_transport_hold_check(i9100_native_transport_hold *hold)
+{return hold?transport_hold(hold,hold->lease,1):I9100_GPIO_ARGUMENT;}
+int i9100_peripheral_native_transport_hold_put(i9100_native_transport_hold *hold)
+{return hold?transport_hold(hold,hold->lease,2):I9100_GPIO_ARGUMENT;}
 int i9100_peripheral_native_transport_idle(i9100_peripheral_native *c,enum i9100_native_transport_kind kind)
 {
  if(!c)return I9100_GPIO_ARGUMENT;

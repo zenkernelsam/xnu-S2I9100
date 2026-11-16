@@ -133,7 +133,7 @@ int i9100_bcm_boot_start(struct i9100_bcm_boot *t)
  }
  if(!e){t->stage=7;e=i9100_bcm_f2_enable_locked(t->packets,1,t->generation);if(e)e=I9100_BCM_BOOT_IO;}
  if(!e){
-  struct i9100_bcm4330 *b=bus(t);b->protocol_generation=t->generation;b->protocol_ready=1;b->rx_sequence=b->rx_seen=0;b->tx_sequence=255U;b->tx_max=0;
+  struct i9100_bcm4330 *b=bus(t);b->protocol_generation=t->generation;b->protocol_ready=1;b->data_paused=!!(t->interrupt_status&0x30U);b->rx_sequence=b->rx_seen=0;b->tx_sequence=255U;b->tx_max=0;
   t->ready=1;t->stage=8;
  }else t->fault=1;
  t->error=e;drop(t);return e;
@@ -141,7 +141,7 @@ int i9100_bcm_boot_start(struct i9100_bcm_boot *t)
 int i9100_bcm_boot_stop(struct i9100_bcm_boot *t)
 {
  int e=take(t,1);if(e)return e;struct i9100_bcm4330 *b=bus(t);
- if(b->control_owner){drop(t);return I9100_BCM_BOOT_BUSY;}
+ if(b->control_owner||b->rx_owner||t->packets->rx_owner){drop(t);return I9100_BCM_BOOT_BUSY;}
  t->ready=0;b->protocol_ready=0;t->packets->enabled=0;t->packets->cleanup_f1=1;
  e=i9100_bcm_bp_restore_locked(b)?I9100_BCM_BOOT_IO:0;
  if(!e&&t->owned){int r=i9100_bcm_core_quiesce_locked(t->firmware->chip);if(r)e=I9100_BCM_BOOT_IO;

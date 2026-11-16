@@ -20,20 +20,21 @@ struct model {
  uint32_t cm3_control,d11_control,pending_value[3];unsigned pending_reads[3];
  unsigned boot_model,ht_ready,f2_ready,no_mailbox,mailbox_delay,event_raised,mailbox_interrupt,mailbox_ack_count;
  uint32_t mailbox_pre_data;
+ uint32_t post_clear_irq,post_ack_irq,post_ack_mailbox;
  uint32_t sdio_regs[32],firmware_mailbox,expected_token;
  uint8_t function_enable,fbr_low,fbr_high;
 };
 static struct model m;
 static struct i9100_bcm4330 bus;
 static struct i9100_bcm_chip chip;
-static int lock(void *cookie){struct model *p=cookie;if(p->locked)return -1;p->locked=1;return 0;}
-static void unlock(void *cookie){struct model *p=cookie;assert(p->locked);p->locked=0;}
+static int lock(void *cookie){struct model *p=(struct model *)cookie;if(p->locked)return -1;p->locked=1;return 0;}
+static void unlock(void *cookie){struct model *p=(struct model *)cookie;assert(p->locked);p->locked=0;}
 static uint64_t now(void *cookie){return ((struct model *)cookie)->ns;}
-static int delay(void *cookie,uint32_t us){struct model *p=cookie;if(!p->freeze_time)p->ns+=(uint64_t)us*1000U;return 0;}
+static int delay(void *cookie,uint32_t us){struct model *p=(struct model *)cookie;if(!p->freeze_time)p->ns+=(uint64_t)us*1000U;return 0;}
 static int operation(struct model *p){p->ns+=p->step;return ++p->ops==p->fail_op?-1:0;}
 static int cmd52(void *cookie,int write,unsigned fn,uint32_t addr,uint8_t *v)
 {
- struct model *p=cookie;assert(p->locked&&fn==1U);
+ struct model *p=(struct model *)cookie;assert(p->locked&&fn==1U);
  if(addr>=0x1000aU&&addr<=0x1000cU){
   unsigned n=addr-0x1000aU;const uint8_t original[3]={0x80,0x70,0x16};
   if(write){if(!(p->ignore_window_restore&&*v==original[n]))p->window[n]=*v;}
@@ -73,7 +74,7 @@ static uint32_t word_read(struct model *p,uint32_t address)
 }
 static int cmd53(void *cookie,int write,unsigned fn,uint32_t offset,int increment,uint8_t *bytes,uint32_t count)
 {
- struct model *p=cookie;assert(p->locked&&fn==1U&&count&&count<=512U&&!(count&3U)&&increment&&(offset&0x8000U));
+ struct model *p=(struct model *)cookie;assert(p->locked&&fn==1U&&count&&count<=512U&&!(count&3U)&&increment&&(offset&0x8000U));
  uint32_t address=((uint32_t)p->window[2]<<24)|((uint32_t)p->window[1]<<16)|
                   ((uint32_t)(p->window[0]&0x80U)<<8)|(offset&0x7fffU);
  if(address<4U*1024U*1024U){
@@ -95,11 +96,16 @@ static int cmd53(void *cookie,int write,unsigned fn,uint32_t offset,int incremen
   if(address==0x18004010U){p->bank_writes++;if(!(p->ignore_bank_restore&&v==0x101U))p->bankidx=v;}
   else if(p->boot_model&&address>=0x18011000U&&address<0x18011080U){
    unsigned off=address-0x18011000U;assert(off==0x20U||off==0x40U||off==0x48U);
-   if(off==0x20U)p->sdio_regs[off/4U]&=~v;
+   if(off==0x20U){p->sdio_regs[off/4U]&=~v;
+    if(p->post_clear_irq){p->sdio_regs[off/4U]|=p->post_clear_irq;p->post_clear_irq=0;}
+   }
    else if(off==0x40U){assert(v==2U);p->sdio_regs[0x20U/4U]&=~0x80U;p->mailbox_ack_count++;
     if(p->mailbox_pre_data&&p->mailbox_ack_count==1U){
      /* A real producer can post the next mailbox as soon as ACK is written. */
      p->sdio_regs[0x4cU/4U]=p->firmware_mailbox;p->sdio_regs[0x20U/4U]|=0x80U;
+    }
+    if(p->post_ack_irq){p->sdio_regs[0x20U/4U]|=p->post_ack_irq;p->post_ack_irq=0;
+     if(p->post_ack_mailbox)p->sdio_regs[0x4cU/4U]=p->post_ack_mailbox;
     }
    }
    else p->sdio_regs[off/4U]=v;

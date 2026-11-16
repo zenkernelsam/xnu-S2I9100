@@ -71,7 +71,7 @@ int i9100_bcm_enable(struct i9100_bcm4330 *b,int enabled,uint16_t vendor,uint16_
  int e=0;
  if(!enabled){
   if(!b->enabled){e=I9100_BCM_DISABLED;goto done;}
-  if(b->chip_holds||b->boot_owner||b->control_owner){e=I9100_BCM_BUSY;goto done;}
+  if(b->chip_holds||b->boot_owner||b->control_owner||b->rx_owner){e=I9100_BCM_BUSY;goto done;}
   if(i9100_bcm_bp_restore_locked(b)){e=I9100_BCM_IO;goto done;}
   uint8_t saved=b->saved_clock;
   if(b->io.cmd52(b->io.cookie,1,1,0x1000e,&saved)){e=I9100_BCM_IO;b->fault=1;}
@@ -114,8 +114,8 @@ int i9100_bcm_protocol_start(struct i9100_bcm4330 *b,unsigned version,unsigned c
 {
  if(!b||!b->initialized||version!=4U||credit>127U)return I9100_BCM_ARGUMENT;
  if(b->io.claim(b->io.cookie))return I9100_BCM_BUSY;
- int e=0;if(!b->enabled)e=I9100_BCM_DISABLED;else if(b->fault||b->protocol_ready||b->chip_holds||b->boot_owner||b->control_owner||b->protocol_generation==UINT32_MAX)e=I9100_BCM_BUSY;
- else {b->protocol_generation++;b->protocol_ready=1;b->tx_sequence=b->rx_sequence=b->rx_seen=b->flow_mask=0;b->tx_max=(uint8_t)credit;}
+ int e=0;if(!b->enabled)e=I9100_BCM_DISABLED;else if(b->fault||b->protocol_ready||b->chip_holds||b->boot_owner||b->control_owner||b->rx_owner||b->protocol_generation==UINT32_MAX)e=I9100_BCM_BUSY;
+ else {b->protocol_generation++;b->protocol_ready=1;b->data_paused=0;b->tx_sequence=b->rx_sequence=b->rx_seen=b->flow_mask=0;b->tx_max=(uint8_t)credit;}
  b->io.release(b->io.cookie);return e;
 }
 static int send(struct i9100_bcm4330 *b,unsigned channel,const uint8_t *payload,unsigned bytes,unsigned priority)
@@ -123,7 +123,7 @@ static int send(struct i9100_bcm4330 *b,unsigned channel,const uint8_t *payload,
  if(!b->enabled||!b->protocol_ready)return I9100_BCM_DISABLED;
  if(b->fault)return I9100_BCM_IO;
  unsigned credit=(uint8_t)(b->tx_max-b->tx_sequence);
- if((credit&128U)||credit<=(channel==2U?1U:0U)||(channel==2U&&(b->flow_mask&(1U<<priority))))return I9100_BCM_CREDIT;
+ if((credit&128U)||credit<=(channel==2U?1U:0U)||(channel==2U&&(b->data_paused||(b->flow_mask&(1U<<priority)))))return I9100_BCM_CREDIT;
  uint8_t frame[2048];unsigned header=channel==2U?16U:12U,length=header+bytes,padded=(length+3U)&~3U;
  if(padded>sizeof(frame))return I9100_BCM_ARGUMENT;
  memset(frame,0,padded);frame[0]=(uint8_t)length;frame[1]=(uint8_t)(length>>8);
@@ -174,7 +174,7 @@ int i9100_bcm_control_bind(struct i9100_bcm4330 *b,void *owner,uint32_t generati
 int i9100_bcm_control_unbind(struct i9100_bcm4330 *b,void *owner,int cancel)
 {
  if(!b||!b->initialized||!owner||(cancel!=0&&cancel!=1))return I9100_BCM_ARGUMENT;if(b->io.claim(b->io.cookie))return I9100_BCM_BUSY;
- int e=b->control_owner!=owner?I9100_BCM_BUSY:b->pending&&!cancel?I9100_BCM_BUSY:0;
+ int e=b->control_owner!=owner||b->rx_owner?I9100_BCM_BUSY:b->pending&&!cancel?I9100_BCM_BUSY:0;
  if(!e){if(cancel){b->pending=0;b->fault=1;}b->control_owner=0;}
  b->io.release(b->io.cookie);return e;
 }
@@ -186,11 +186,12 @@ int i9100_bcm_control_check(struct i9100_bcm4330 *b,void *owner,uint32_t generat
   !b->enabled||!b->protocol_ready?I9100_BCM_DISABLED:b->fault?I9100_BCM_IO:0;
  b->io.release(b->io.cookie);return e;
 }
-int i9100_bcm_receive(struct i9100_bcm4330 *b,const uint8_t *frame,unsigned bytes,struct i9100_bcm_frame *out)
+static int receive_for(struct i9100_bcm4330 *b,void *owner,const uint8_t *frame,unsigned bytes,struct i9100_bcm_frame *out)
 {
  if(!b||!b->initialized||!frame||!out||bytes<12U||bytes>2048U)return I9100_BCM_ARGUMENT;
  if(b->io.claim(b->io.cookie))return I9100_BCM_BUSY;
  int e=0;
+ if(b->rx_owner!=owner){e=I9100_BCM_BUSY;goto done;}
  if(!b->enabled||!b->protocol_ready){e=I9100_BCM_DISABLED;goto done;}if(b->fault){e=I9100_BCM_IO;goto done;}
  uint16_t length=le16(frame),inverse=le16(frame+2);unsigned channel=frame[5]&15U,offset=frame[7];
  if((uint16_t)(length^inverse)!=0xffffU||length<12U||length>bytes||offset<12U||offset>length||
@@ -227,6 +228,10 @@ fail:
 done:
  b->io.release(b->io.cookie);return e;
 }
+int i9100_bcm_receive(struct i9100_bcm4330 *b,const uint8_t *frame,unsigned bytes,struct i9100_bcm_frame *out)
+{return receive_for(b,0,frame,bytes,out);}
+int i9100_bcm_receive_owned(struct i9100_bcm4330 *b,void *owner,const uint8_t *frame,unsigned bytes,struct i9100_bcm_frame *out)
+{return owner?receive_for(b,owner,frame,bytes,out):I9100_BCM_ARGUMENT;}
 int i9100_bcm_poll_request(struct i9100_bcm4330 *b)
 {
  if(!b||!b->initialized)return I9100_BCM_ARGUMENT;

@@ -16,6 +16,10 @@ struct i9100_native_transport_lease {
  struct i9100_peripheral_native *context;uintptr_t self;
  uint32_t kind,generation,owned;
 };
+struct i9100_native_transport_hold {
+ struct i9100_native_transport_lease *lease;uintptr_t self;
+ uint32_t kind,generation,owned;
+};
 int i9100_peripheral_native_create(int enabled,struct i9100_peripheral_native **);
 int i9100_peripheral_native_destroy(struct i9100_peripheral_native **);
 struct i9100_gpio_broker *i9100_peripheral_native_gpio(struct i9100_peripheral_native *);
@@ -32,6 +36,9 @@ int i9100_peripheral_native_uart_open_owned(struct i9100_peripheral_native *,str
 int i9100_peripheral_native_uart_read_owned(struct i9100_native_transport_lease *,uint8_t *,unsigned,unsigned *);
 int i9100_peripheral_native_sdio_open_owned(struct i9100_peripheral_native *,struct i9100_native_transport_lease *,uint32_t verified_sclk_hz,int verified,struct i9100_sdio **,struct i9100_f2_io *);
 int i9100_peripheral_native_transport_close(struct i9100_native_transport_lease *);
+int i9100_peripheral_native_transport_hold_get(struct i9100_native_transport_lease *,struct i9100_native_transport_hold *);
+int i9100_peripheral_native_transport_hold_check(struct i9100_native_transport_hold *);
+int i9100_peripheral_native_transport_hold_put(struct i9100_native_transport_hold *);
 int i9100_peripheral_native_transport_idle(struct i9100_peripheral_native *,enum i9100_native_transport_kind);
 int i9100_peripheral_native_radio_bind(struct i9100_peripheral_native *,struct i9100_native_transport_lease *uart_owner,struct i9100_native_transport_lease *sdio_owner);
 int i9100_peripheral_native_radio_unbind(struct i9100_peripheral_native *,struct i9100_native_transport_lease *uart_owner,struct i9100_native_transport_lease *sdio_owner);
@@ -58,6 +65,11 @@ int i9100_peripheral_native_radio_unbind(struct i9100_peripheral_native *,struct
  * lock/controller lock. GPIO/I2C/clock operations reject IRQ-disabled context.
  * Active/failed leases keep their context alive; destroy never forces them.
  * Context owner serializes destroy with all API/borrowed-manager access.
+ * Protocol/FW/worker borrowers acquire a persistent transport_hold before
+ * using returned IO; close refuses active holds without entering closing.
+ * Exact lease address, kind and generation are checked under the host outer
+ * lock. Holds may be released after protocol faults but not copied/reused;
+ * never release the board/session hold while firmware may still execute.
  * GIC dispatch still belongs to the timer's single-IAR/single-EOI provider;
  * exposing the registry does not install an interrupt hook by itself. */
 #ifdef __cplusplus

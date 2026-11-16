@@ -18,12 +18,14 @@ struct i9100_bcm_f2 {
  uint32_t initialized,enabled,fault,generation,tx_frames,rx_frames,empty_reads;
  uint32_t stage,last_error,last_transfer,logical_bytes,wire_bytes;
  uint32_t cleanup_f1;
+ void *rx_owner;
  uint8_t last_header[32],scratch[2080]; /* 32B header + rounded2048B remainder */
 };
 int i9100_bcm_f2_init(struct i9100_bcm_f2 *,struct i9100_sdio *,const struct i9100_f2_io *);
 int i9100_bcm_f2_enable(struct i9100_bcm_f2 *,int enabled,uint32_t verified_firmware_link_generation);
 int i9100_bcm_f2_get_io(struct i9100_bcm_f2 *,struct i9100_bcm_io *);
 int i9100_bcm_f2_receive(struct i9100_bcm_f2 *,uint8_t *frame,unsigned capacity,unsigned *bytes);
+int i9100_bcm_f2_receive_owned(struct i9100_bcm_f2 *,void *rx_owner,uint8_t *,unsigned,unsigned *);
 /* Real CMD52/CMD53 adapter for F1 probe/backplane and F2 packets. Owns a
  * semantic lock distinct from the host-controller lock; card/context outlive
  * it and the caller serializes any returned frame views/BCM decode calls.

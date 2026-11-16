@@ -25,6 +25,7 @@ struct i9100_wlan_control {
  uint32_t request_command,request_capacity,join_attempted,join_issued,ssid_ok,link_seen,keyed,verification_step,event_mask_owned;
  uint32_t event_count,link_losses,tx_frames;uint8_t saved_event_mask[16],event_mask[16],event_address[6],key_address[6],bssid[6];
  uint16_t request_id;int32_t error,firmware_status;uint32_t last_event,last_event_status,last_reason;
+ void *consumer;
 };
 int i9100_wlan_event_decode(const uint8_t *ethernet,unsigned bytes,struct i9100_wlan_event *);
 int i9100_wlan_control_init(struct i9100_wlan_control *,int enabled,struct i9100_bcm4330 *,const struct i9100_wlan_io *,uint32_t firmware_generation);
@@ -37,6 +38,9 @@ int i9100_wlan_data_allowed(struct i9100_wlan_control *,const struct i9100_bcm_f
 int i9100_wlan_receive(struct i9100_wlan_control *,const struct i9100_bcm_frame *);
 int i9100_wlan_disconnect(struct i9100_wlan_control *);
 int i9100_wlan_control_close(struct i9100_wlan_control *);
+int i9100_wlan_consumer_bind(struct i9100_wlan_control *,void *owner);
+int i9100_wlan_consumer_unbind(struct i9100_wlan_control *,void *owner);
+int i9100_wlan_quarantine(struct i9100_wlan_control *,int negative_error);
 /* Default OFF, single primary STA, OPEN or WPA2-PSK/CCMP with a caller-owned
  * prederived32B PMK. No passphrase hashing, secret logging, scan/RF activity
  * or hardware registration by init. Preserve event mask, send actual vendor

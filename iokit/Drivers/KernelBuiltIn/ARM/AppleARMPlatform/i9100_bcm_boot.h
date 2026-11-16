@@ -25,7 +25,7 @@ int i9100_bcm_boot_close(struct i9100_bcm_boot *);
 /* Default OFF, requires approved SHA/MAC-pinned halted RAM staging and native
  * board/host ownership. Start requests/readbacks HT, sets host version/F2
  * block size, clears stale HMB bits while cores held reset, then releases
- * CM3 only. A NEW HMB_SW1 event + FWREADY/DEVREADY + version4 and IOR2 are
+ * CM3 only. A NEW HMB_HOST_INT(SW3/80) + FWREADY/DEVREADY + version4 and IOR2 are
  * required; cached mailbox bytes are not handshake evidence. No IRQ enable.
  * Vendor attach seed tx_seq255/tx_max0 grants one initial control-only slot;
  * data remains blocked until real received frames supply further credits.
