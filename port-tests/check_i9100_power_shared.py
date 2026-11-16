@@ -15,9 +15,11 @@ if not a.arm_only:
            "-I"+str(PLATFORM),"-c",str(copies["i9100_power_bus.c"]),"-o",str(e.out/"raw-wire.o")],"shared-wire-model-compile")
     e.run(["clang","-std=c99","-O1","-Wall","-Wextra","-Werror","-fno-pie","-fsanitize=address,undefined","-fno-sanitize-recover=all",
            "-I"+str(PLATFORM),"-c",str(PLATFORM/"i9100_power.c"),"-o",str(e.out/"power-policy.o")],"shared-policy-compile")
+    e.run(["clang","-std=c99","-O1","-Wall","-Wextra","-Werror","-fno-pie","-fsanitize=address,undefined","-fno-sanitize-recover=all",
+           "-I"+str(PLATFORM),"-c",str(PLATFORM/"i9100_radio_survey.c"),"-o",str(e.out/"radio-survey.o")],"shared-survey-compile")
     e.run(["clang++","-std=c++11","-O1","-Wall","-Wextra","-Werror","-fno-pie","-no-pie","-fsanitize=address,undefined","-fno-sanitize-recover=all",
            "-I"+str(REPO/"port-tests/offline-native-sdk"),"-I"+str(PLATFORM),str(REPO/"port-tests/i9100_power_shared_test.cpp"),
-           str(PLATFORM/"i9100_power_shared.cpp"),str(e.out/"raw-wire.o"),str(e.out/"power-policy.o"),"-pthread","-o",str(e.out/"models")],"shared-model-compile")
+           str(PLATFORM/"i9100_power_shared.cpp"),str(e.out/"raw-wire.o"),str(e.out/"power-policy.o"),str(e.out/"radio-survey.o"),"-pthread","-o",str(e.out/"models")],"shared-model-compile")
     e.run([str(e.out/"models")],"shared-model-tests")
     for n in range(1,4):e.run([str(e.out/"models"),str(n)],"prepare-failure-"+str(n)+"-tests")
 if a.cross_compile or a.arm_only:

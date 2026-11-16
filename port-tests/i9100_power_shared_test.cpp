@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause; original electrical/policy model plus real shared gate. */
 #include "i9100_power_shared.h"
+#include "i9100_radio_survey.h"
 #include "offline-native-sdk/IOKit/i9100_model_events.h"
 #include <atomic>
 #include <thread>
@@ -58,6 +59,9 @@ static void reader_lifetime()
 {
  Actor actor;auto hw=actor.io();bool dead=false;Owner *owner=new Owner(&dead);
  assert(!i9100_power_shared_publish(owner,&hw));i9100_power_read_client c={};assert(!i9100_power_read_open(&c));
+ actor.gpio.memory[1]=3;actor.gpio.memory[0x13]=1;actor.gpio.memory[0x4b]=0xe8;
+ struct i9100_radio_survey survey;assert(!i9100_radio_survey_read(&c,&survey)&&survey.ap_clock_programmed&&survey.vtf_programmed_mv==2800U);
+ assert(!survey.electrical_verified&&!survey.wiring_verified);
  uint8_t v=0;assert(!i9100_power_read_pmic(&c,0x3b,&v)&&v==0x91);unsigned before=actor.enters;
  assert(i9100_power_read_pmic(&c,2,&v)==I9100_SHARED_ARGUMENT&&actor.enters==before);
  assert(i9100_power_read_pmic(&c,3,&v)==I9100_SHARED_ARGUMENT&&actor.enters==before);
