@@ -187,7 +187,7 @@ int i9100_bcm_chip_close(struct i9100_bcm_chip *c)
  if(!c||!c->initialized||c->owner!=(uintptr_t)c||!c->bus||!c->bus->initialized)
   return I9100_BCM_CHIP_ARGUMENT;
  struct i9100_bcm4330 *b=c->bus;if(b->io.claim(b->io.cookie))return I9100_BCM_CHIP_BUSY;
- if(c->ram_selector_owned||c->firmware_holds||c->ram_image_owned||b->window_restore_pending||b->chip_holds!=1U){
+ if(c->ram_selector_owned||c->firmware_holds||c->ram_image_owned||c->core_download_owned||b->window_restore_pending||b->chip_holds!=1U){
   b->io.release(b->io.cookie);return I9100_BCM_CHIP_BUSY;
  }
  b->chip_holds=0;c->initialized=0;c->owner=0;c->bus=0;b->io.release(b->io.cookie);return 0;

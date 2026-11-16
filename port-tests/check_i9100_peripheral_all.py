@@ -25,6 +25,7 @@ C_SOURCES = [
     "i9100_uart_bluetooth.c", "i9100_pwm_haptic.c",
     "i9100_bcm_f2.c", "i9100_audio_power.c", "i9100_irq_router.c", "i9100_pcm_ring.c", "i9100_bcm_chip.c",
     "i9100_bcm_firmware.c", "i9100_bcm_firmware_crypto.c",
+    "i9100_bcm_core_download.c",
 ]
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
                "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp"]
@@ -54,6 +55,7 @@ TESTS = [
     ("i9100_pcm_ring_test.c", ["i9100_pcm_ring.c"]),
     ("i9100_bcm_chip_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c"]),
     ("i9100_bcm_firmware_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c", "i9100_bcm_firmware.c"]),
+    ("i9100_bcm_core_download_test.c", ["i9100_bcm4330.c", "i9100_bcm_chip.c", "i9100_bcm_firmware.c", "i9100_bcm_core_download.c"]),
 ]
 
 
@@ -84,7 +86,7 @@ def main():
                 e.model_cpp(test, [name for name in sources if name.endswith(".c")],
                             [name for name in sources if name.endswith(".cpp")])
             else:
-                e.model(test, sources, libraries=["crypto"] if test=="i9100_bcm_firmware_test.c" else ())
+                e.model(test, sources, libraries=["crypto"] if test in ("i9100_bcm_firmware_test.c","i9100_bcm_core_download_test.c") else ())
             e.out = previous
         e.result["model_suites"] = [name for name, _ in TESTS]
     e.cross_compile(C_SOURCES + CPP_SOURCES)
