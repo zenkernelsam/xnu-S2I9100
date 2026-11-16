@@ -96,6 +96,7 @@ extern void i9100_slab_publication_note(proc_t,unsigned,unsigned);
 extern int i9100_ui_execution_bootstrap(proc_t,unsigned,unsigned);
 extern void i9100_ui_execution_note(proc_t,unsigned,unsigned,unsigned);
 extern int i9100_ui_density_bootstrap(proc_t,unsigned,unsigned);
+extern int i9100_ui_density_region_completed(proc_t,unsigned,unsigned,unsigned,uint64_t);
 #endif
 
 #include <sys/kdebug.h>
@@ -880,6 +881,15 @@ void unix_syscall(arm_saved_state_t * state)
 #endif
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
+    /* Successful dyld shared-region check/map precedes native GS metrics.
+     * Use only the returned cache base or kernel-validated slide; the helper
+     * admits exact original UI owners and never changes the syscall result. */
+    if(!error && (code==294U || code==438U)){
+        uint64_t hint=code==294U?((struct shared_region_check_np_args *)uthread->uu_arg)->start_address:
+            ((struct shared_region_map_and_slide_np_args *)uthread->uu_arg)->slide;
+        error=i9100_ui_density_region_completed(p,state->pc,state->cpsr,code,hint);
+        if(error)psignal(p,SIGKILL);
+    }
     if(!error && code==372U){
         error=i9100_ui_density_bootstrap(p,state->pc,state->cpsr);
         if(!error)error=i9100_quiet_charge_bootstrap(p);

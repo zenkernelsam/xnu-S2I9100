@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check production density COW rollback and real Cortex-A9 CFNumber arguments."""
+"""Check production GS density COW rollback and real Cortex-A9 register state."""
 import os,sys
 if os.environ.get('I9100_CPU_CAPPED')!='1':
     os.execvpe('taskset',['taskset','-c','0-13','nice','-n10','ionice','-c2','-n7',sys.executable,'-B',__file__],dict(os.environ,I9100_CPU_CAPPED='1'))
@@ -51,9 +51,10 @@ static int task_info(task_t task,unsigned flavor,task_info_t data,unsigned *coun
 static int copyin(user_addr_t address,void *destination,unsigned n){
  assert(current==&child&&!irq&&interrupts&&!preempt);if(address==read_fail)return 14;
  if(address==0x25000&&n==84)memcpy(destination,dyld,n);
- else if(address>=0x38679000U+slide&&address+n<=0x38679000U+slide+sizeof(image))memcpy(destination,image+(address-(0x38679000U+slide)),n);
- else if(address==0x3acd7d4cU+slide&&n==8)memcpy(destination,cache,n);
- else if(address==0x3867f554U+slide&&n==8)memcpy(destination,private_bytes,n);
+ else if(address>=0x34c2f000U+slide&&address+n<=0x34c2f000U+slide+sizeof(image))memcpy(destination,image+(address-(0x34c2f000U+slide)),n);
+ else if(address==0x3a283e7cU+slide&&n==4)memcpy(destination,cache,n);
+ else if(address==0x34c34d44U+slide&&n==8)memcpy(destination,private_bytes,n);
+ else if(address==0x26000&&n==8){uint64_t base=0x30000000U+slide;memcpy(destination,&base,8);}
  else return 14;return 0;
 }
 static int failing(void){ops++;return ops==fail_at||ops==fail_again;}
@@ -65,24 +66,24 @@ static kern_return_t vm_map_protect(vm_map_t m,unsigned start,unsigned end,unsig
  assert(m==&map&&end==start+4096&&!maximum);
  if(failing())return 4;
  if(start==0x1000)assert(flags==5);
- else {assert(start==((0x3867f554U+slide)&~4095U));assert(flags==5||flags==(3|16));writable=flags==(3|16);}
+ else {assert(start==((0x34c34d44U+slide)&~4095U));assert(flags==5||flags==(3|16));writable=flags==(3|16);}
  return 0;
 }
 static int copyout(const void *source,user_addr_t address,unsigned n){
  int failed=failing();
- if(address==0x1000&&n==24)memcpy(code,source,failed?n/2:n);
- else {assert(address==0x3867f554U+slide&&n==8&&writable);memcpy(private_bytes,source,failed?n/2:n);}
+ if(address==0x1000&&n==36)memcpy(code,source,failed?n/2:n);
+ else {assert(address==0x34c34d44U+slide&&n==8&&writable);memcpy(private_bytes,source,failed?n/2:n);}
  return failed?14:0;
 }
 static kern_return_t vm_map_remove(vm_map_t m,unsigned start,unsigned end,unsigned flags){assert(m==&map&&start==0x1000&&end==0x2000&&!flags);removed++;return 0;}
-static void flush_dcache(unsigned address,unsigned n,int physical){assert(!physical&&(n==8||n==24));}
-static void invalidate_icache(unsigned address,unsigned n,int physical){assert(!physical&&(n==8||n==24));}
+static void flush_dcache(unsigned address,unsigned n,int physical){assert(!physical&&(n==8||n==36));}
+static void invalidate_icache(unsigned address,unsigned n,int physical){assert(!physical&&(n==8||n==36));}
 '''
 suffix=r'''
 static void reset(unsigned slot){
- memset((void*)i9100_ui_density_diag,0,sizeof(i9100_ui_density_diag));memset(i9100_ui_density_pending,0,sizeof(i9100_ui_density_pending));i9100_ui_density_guard=0;
+ memset((void*)i9100_ui_density_diag,0,sizeof(i9100_ui_density_diag));memset(i9100_ui_density_pending,0,sizeof(i9100_ui_density_pending));memset((void*)i9100_ui_density_guard,0,sizeof(i9100_ui_density_guard));
  memset(image,0,sizeof(image));memset(code,0,sizeof(code));memset(cache,0,sizeof(cache));memset(dyld,0,sizeof(dyld));
- uint32_t mh[7]={0xfeedface,12,0,6,1,24,0},lc[2]={27,24};memcpy(image,mh,28);memcpy(image+28,lc,8);memcpy(image+36,i9100_ui_density_mg_uuid,16);
+ uint32_t mh[7]={0xfeedface,12,0,6,1,24,0},lc[2]={27,24};memcpy(image,mh,28);memcpy(image+28,lc,8);memcpy(image+36,i9100_ui_density_gs_uuid,16);
  memcpy(original,i9100_ui_density_original,8);memcpy(private_bytes,original,8);
  option=1333;abi=6;native=1;irq=preempt=ops=fail_at=fail_again=allocated=removed=slide=read_fail=0;interrupts=1;current=&child;child.acts=1;writable=0;dyld[0]=12;
  p.p_comm=i9100_ui_density_names[slot];p.p_pid=slot+8;p.task=&child;p.p_idversion=slot+8;memcpy(p.p_uuid,i9100_ui_density_uuids[slot],16);
@@ -108,16 +109,20 @@ int main(int argc,char **argv){
  }
  for(unsigned test=0;test<7;test++){
   reset(0);i9100_ui_density_record(&p,0x65000);
-  if(test==0)image[36]^=1;if(test==1)cache[0]=0x20000;if(test==2)cache[1]=1;
-  if(test==3)private_bytes[0]^=1;if(test==4)read_fail=0x3acd7d4c;if(test==5)dyld[20]=0x0375c000;if(test==6)dyld[20]=1;
+  if(test==0)image[36]^=1;if(test==1)cache[0]=0x3f800000;if(test==2)cache[0]=0x3fc00000;
+  if(test==3)private_bytes[0]^=1;if(test==4)read_fail=0x3a283e7c;if(test==5)dyld[20]=0x0375c000;if(test==6)dyld[20]=1;
   assert(!boot()&&!ops&&i9100_ui_density_diag[0][1]==3);
  }
  for(unsigned value=1333;value<=1500;value+=167)for(unsigned relocation=0;relocation<3;relocation++){
   reset(0);option=value;slide=relocation==0?0:relocation==1?0x20c000:0x0375b000;dyld[20]=slide;
   i9100_ui_density_record(&p,0x65000);assert(!boot()&&i9100_ui_density_diag[0][1]==2);
-  char file[512];snprintf(file,sizeof(file),"%s/%u-%08x.bin",argv[1],value,slide);FILE *f=fopen(file,"wb");assert(f);assert(fwrite(code,1,24,f)==24);fclose(f);
+  char file[512];snprintf(file,sizeof(file),"%s/%u-%08x.bin",argv[1],value,slide);FILE *f=fopen(file,"wb");assert(f);assert(fwrite(code,1,36,f)==36);fclose(f);
  }
- puts("PASS production scope, initialized-factory refusal, six partial-write rollbacks, unsafe-restore stop and three UI owners");
+ reset(0);dyld[0]=0;i9100_ui_density_record(&p,0x65000);assert(!i9100_ui_density_region_completed(&p,0x30001001,0x10,294,0x26000)&&i9100_ui_density_diag[0][1]==2&&i9100_ui_density_diag[0][19]==294);
+ reset(0);dyld[0]=0;i9100_ui_density_record(&p,0x65000);assert(!i9100_ui_density_region_completed(&p,0x30001001,0x10,438,0)&&i9100_ui_density_diag[0][1]==2);
+ reset(1);i9100_ui_density_guard[0]=1;i9100_ui_density_record(&p,0x65000);assert(!boot()&&i9100_ui_density_diag[1][1]==2);
+ reset(0);option=0;assert(!i9100_ui_density_region_completed(&p,0x30001001,0x10,294,0)&&!ops);
+ puts("PASS production scope, published-GS refusal, six partial-write rollbacks, unsafe-restore stop and early shared-region initialization");
 }
 '''
 (out/'check.c').write_text(prefix+body+suffix)
@@ -130,24 +135,28 @@ registers=[UC_ARM_REG_R0,UC_ARM_REG_R1,UC_ARM_REG_R2,UC_ARM_REG_R3,UC_ARM_REG_R4
 cases=0
 for value in (1333,1500):
     for slide in (0,0x20c000,0x0375b000):
-        site=0x3867f554+slide;resume=site+8
+        site=0x34c34d44+slide;resume=site+8;state=0x3a283e50+slide
         for flags in (0,0x80000000,0x30000000,0xf0000000):
             states=[]
             for calibrated in (False,True):
                 u=Uc(UC_ARCH_ARM,UC_MODE_THUMB);u.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_A9)
-                u.mem_map(0x1000,4096);u.mem_map(site&~4095,4096);u.mem_map(0x200000,4096)
+                u.mem_map(0x1000,4096);u.mem_map(site&~4095,4096);u.mem_map(0x200000,4096);u.mem_map(state&~4095,4096)
                 u.mem_write(0x1000,(out/f'{value}-{slide:08x}.bin').read_bytes())
-                u.mem_write(site,struct.pack('<2I',0xf000f8df,0x1001) if calibrated else bytes.fromhex('00200921cdf820b0'))
+                u.mem_write(site,struct.pack('<2I',0xf000f8df,0x1001) if calibrated else bytes.fromhex('87ef101f95ed0b0a'))
+                u.reg_write(UC_ARM_REG_C1_C0_2,0xf00000);u.reg_write(UC_ARM_REG_FPEXC,0x40000000)
                 u.reg_write(UC_ARM_REG_CPSR,flags|0x30)
                 for index,reg in enumerate(registers[:-1]):u.reg_write(reg,0x110000+index*256)
                 u.reg_write(UC_ARM_REG_SP,0x200800);u.reg_write(UC_ARM_REG_R2,0x200820);u.reg_write(UC_ARM_REG_R11,1)
+                u.reg_write(UC_ARM_REG_R5,state);u.mem_write(state+44,struct.pack('<I',0x3f800000))
+                for n in range(32):u.reg_write(UC_ARM_REG_S0+n,0x3f000000+n)
                 u.hook_add(UC_HOOK_CODE,lambda machine,at,size,user:machine.emu_stop() if at==resume else None)
                 u.emu_start(site|1,resume+2,count=64)
                 assert u.reg_read(UC_ARM_REG_PC)==resume
-                states.append(([u.reg_read(r) for r in registers],struct.unpack('<I',u.mem_read(0x200820,4))[0]))
-            original,new=states;assert original[0][0]==new[0][0]==0 and original[0][1]==9 and new[0][1]==12
-            assert original[0][2:12]==new[0][2:12] and original[0][13:]==new[0][13:]
-            assert original[1]==1 and new[1]==(0x3faaaaab if value==1333 else 0x3fc00000)
+                states.append(([u.reg_read(r) for r in registers],struct.unpack('<I',u.mem_read(state+44,4))[0],[u.reg_read(UC_ARM_REG_S0+n) for n in range(32)],u.reg_read(UC_ARM_REG_FPSCR)))
+            original,new=states;assert original[0]==new[0]
+            assert original[1]==0x3f800000 and new[1]==(0x3faaaaab if value==1333 else 0x3fc00000)
+            assert original[2][1:]==new[2][1:] and original[3]==new[3]
+            assert original[2][0]==original[1] and new[2][0]==new[1]
             cases+=1
 (out/'result.json').write_text(json.dumps(dict(result='PASS',native_abi_cases=cases,scope='original BB/SB/Setup only; real UI and all downstream metrics remain hardware checks'),indent=2)+'\n')
-print('PASS Cortex-A9 native Float32 factory arguments; '+str(cases)+' cases; '+str(out))
+print('PASS Cortex-A9 GS calibration, all GPR/APSR/FPSCR and other VFP registers; '+str(cases)+' cases; '+str(out))
