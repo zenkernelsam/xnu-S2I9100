@@ -95,6 +95,7 @@ extern int i9100_slab_publication_bootstrap(proc_t,unsigned,unsigned);
 extern void i9100_slab_publication_note(proc_t,unsigned,unsigned);
 extern int i9100_ui_execution_bootstrap(proc_t,unsigned,unsigned);
 extern void i9100_ui_execution_note(proc_t,unsigned,unsigned,unsigned);
+extern int i9100_ui_density_bootstrap(proc_t,unsigned,unsigned);
 #endif
 
 #include <sys/kdebug.h>
@@ -880,7 +881,8 @@ void unix_syscall(arm_saved_state_t * state)
 
 #if BOARD_CONFIG_EXYNOS4210_I9100
     if(!error && code==372U){
-        error=i9100_quiet_charge_bootstrap(p);
+        error=i9100_ui_density_bootstrap(p,state->pc,state->cpsr);
+        if(!error)error=i9100_quiet_charge_bootstrap(p);
         if(!error)error=i9100_ui_sounds_unavailable_bootstrap(p,state->pc,state->cpsr);
         if(!error)error=i9100_slab_publication_bootstrap(p,state->pc,state->cpsr);
         if(!error)error=i9100_hid_execution_bootstrap(p,state->pc,state->cpsr);
