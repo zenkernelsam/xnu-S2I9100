@@ -211,6 +211,7 @@ extern struct savearea *get_user_regs(thread_t);
 #include "../dev/arm/i9100_ui_sounds_unavailable.h"
 #include "../dev/arm/i9100_slab_publication_trace.h"
 #include "../dev/arm/i9100_ui_execution_trace.h"
+#include "../dev/arm/i9100_setup_native_layout.h"
 #endif
 
 
@@ -996,6 +997,11 @@ grade:
 
 	if (load_result.unixproc) {
 		user_addr_t	ap;
+
+#if BOARD_CONFIG_EXYNOS4210_I9100
+        i9100_setup_native_layout(imgp,load_result.uuid,
+            (imgp->ip_flags & IMGPF_IS_64BIT)?8U:4U);
+#endif
 
 		/*
 		 * Copy the strings area out into the new process address
