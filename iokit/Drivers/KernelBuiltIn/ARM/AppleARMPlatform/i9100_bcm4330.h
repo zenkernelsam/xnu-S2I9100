@@ -29,6 +29,7 @@ struct i9100_bcm4330 {
  uint8_t saved_clock,tx_sequence,tx_max,rx_sequence,rx_seen,flow_mask,pending;
  uint8_t window_saved[3],window_restore_pending,window_touched;
  uint32_t chip_holds;
+ void *boot_owner;
 };
 int i9100_bcm_init(struct i9100_bcm4330 *,const struct i9100_bcm_io *);
 int i9100_bcm_enable(struct i9100_bcm4330 *,int enabled,uint16_t cis_vendor,uint16_t cis_device);

@@ -113,7 +113,7 @@ int i9100_bcm_protocol_start(struct i9100_bcm4330 *b,unsigned version,unsigned c
 {
  if(!b||!b->initialized||version!=4U||credit>127U)return I9100_BCM_ARGUMENT;
  if(b->io.claim(b->io.cookie))return I9100_BCM_BUSY;
- int e=0;if(!b->enabled)e=I9100_BCM_DISABLED;else if(b->fault||b->protocol_ready||b->chip_holds)e=I9100_BCM_BUSY;
+ int e=0;if(!b->enabled)e=I9100_BCM_DISABLED;else if(b->fault||b->protocol_ready||b->chip_holds||b->boot_owner)e=I9100_BCM_BUSY;
  else {b->protocol_ready=1;b->tx_sequence=b->rx_sequence=b->rx_seen=b->flow_mask=0;b->tx_max=(uint8_t)credit;}
  b->io.release(b->io.cookie);return e;
 }

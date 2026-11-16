@@ -2,6 +2,7 @@
 #include "i9100_bcm_firmware.h"
 #include "i9100_bcm_backplane_private.h"
 #include "i9100_bcm_chip_private.h"
+#include "i9100_bcm_firmware_private.h"
 #include <string.h>
 static int aliases(uintptr_t,uint32_t,uintptr_t,uint32_t);
 static uint32_t align4(uint32_t n){return (n+3U)&~3U;}
@@ -153,7 +154,7 @@ int i9100_bcm_fw_load(struct i9100_bcm_firmware *t,const uint8_t *fw,const uint8
  if(aliases((uintptr_t)fw,fn,(uintptr_t)nv,nn)||aliases((uintptr_t)fw,fn,(uintptr_t)t,sizeof(*t))||
     aliases((uintptr_t)nv,nn,(uintptr_t)t,sizeof(*t)))return I9100_BCM_FW_ARGUMENT;
  int e=take(t,0);if(e)return e;
- if(t->loaded||t->chip->ram_image_owned){drop(t);return I9100_BCM_FW_BUSY;}
+ if(t->boot_holds||t->loaded||t->execution_possible||t->chip->ram_image_owned){drop(t);return I9100_BCM_FW_BUSY;}
  t->stage=1;e=i9100_bcm_nvram_validate(nv,nn,t->profile.verified_factory_mac);
  if(!e)e=hash(t,fw,fn,t->profile.firmware_sha256);if(!e)e=hash(t,nv,nn,t->profile.nvram_sha256);
  if(e){t->error=e;drop(t);return e;}
@@ -162,6 +163,8 @@ int i9100_bcm_fw_load(struct i9100_bcm_firmware *t,const uint8_t *fw,const uint8
  if(!e&&identity!=t->chip->chip_id)e=I9100_BCM_FW_ID;
  if(e){t->error=e;if(e==I9100_BCM_FW_IO)t->fault=t->chip->bus->fault=1;drop(t);return e;}
  t->started=t->chip->bus->io.now_ns(t->chip->bus->io.cookie);
+ t->confirmed_firmware_bytes=t->confirmed_nvram_bytes=t->token_verified=0;
+ t->transfer_address=t->transfer_bytes=0;t->cleanup_error=0;
  t->chip->ram_image_owned=1;t->stage=3;e=token(t,0);
  if(!e){t->stage=4;e=copy(t,0,fw,fn,t->layout.firmware_padded,&t->confirmed_firmware_bytes);}
  if(!e){t->stage=5;e=copy(t,t->layout.nvram_address,nv,nn,t->layout.nvram_padded,&t->confirmed_nvram_bytes);}
@@ -172,21 +175,27 @@ int i9100_bcm_fw_load(struct i9100_bcm_firmware *t,const uint8_t *fw,const uint8
  else{t->fault=1;if(e==I9100_BCM_FW_IO)t->chip->bus->fault=1;}
  t->error=e;drop(t);return e;
 }
-int i9100_bcm_fw_abort(struct i9100_bcm_firmware *t)
+int i9100_bcm_fw_abort_locked(struct i9100_bcm_firmware *t)
 {
- int e=take(t,1);if(e)return e;
- e=i9100_bcm_bp_restore_locked(t->chip->bus)?I9100_BCM_FW_IO:0;
+ if(t->execution_possible)return I9100_BCM_FW_BUSY;
+ int e=i9100_bcm_bp_restore_locked(t->chip->bus)?I9100_BCM_FW_IO:0;
  if(!e&&t->chip->ram_image_owned){
   e=guard(t);
   t->started=t->chip->bus->io.now_ns(t->chip->bus->io.cookie);
   if(!e)e=token(t,0);
   if(!e){t->chip->ram_image_owned=0;t->loaded=t->token_verified=0;}
  }
- t->cleanup_error=e;if(e)t->fault=1;drop(t);return e;
+ t->cleanup_error=e;if(e)t->fault=1;return e;
+}
+int i9100_bcm_fw_abort(struct i9100_bcm_firmware *t)
+{
+ int e=take(t,1);if(e)return e;
+ if(t->boot_holds){drop(t);return I9100_BCM_FW_BUSY;}
+ e=i9100_bcm_fw_abort_locked(t);drop(t);return e;
 }
 int i9100_bcm_fw_close(struct i9100_bcm_firmware *t)
 {
  int e=take(t,1);if(e)return e;
- if(t->chip->ram_image_owned||t->chip->bus->window_restore_pending){drop(t);return I9100_BCM_FW_BUSY;}
+ if(t->boot_holds||t->execution_possible||t->chip->ram_image_owned||t->chip->bus->window_restore_pending){drop(t);return I9100_BCM_FW_BUSY;}
  t->chip->firmware_holds=0;drop(t);t->enabled=t->initialized=0;t->owner=0;t->chip=0;return 0;
 }

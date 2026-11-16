@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "i9100_bcm_f2.h"
+#include "i9100_bcm_f2_private.h"
 #include <string.h>
 enum {STAGE_IDLE=0,STAGE_HEADER=1,STAGE_BODY=2,STAGE_TX=3,STAGE_DONE=4};
 static uint16_t le16(const uint8_t *p){return (uint16_t)(p[0]|((uint16_t)p[1]<<8));}
@@ -12,13 +13,13 @@ static uint64_t now(void *cookie)
 static int delay(void *cookie,uint32_t us)
 {struct i9100_bcm_f2 *t=cookie;return t->io.delay_us(t->io.cookie,us);}
 static int alive(struct i9100_bcm_f2 *t)
-{return t->initialized&&t->card->active&&!t->card->fault&&!t->fault;}
+{return t->initialized&&t->card->active&&!t->card->fault&&(!t->fault||t->cleanup_f1);}
 static int fail(struct i9100_bcm_f2 *t,int error)
 {t->fault=1;t->last_error=error;return error;}
 static int forward52(void *cookie,int write,unsigned fn,uint32_t addr,uint8_t *value)
 {
  struct i9100_bcm_f2 *t=cookie;
- if(!alive(t))return I9100_F2_IO;
+ if(!alive(t)||(t->cleanup_f1&&fn>1U))return I9100_F2_IO;
  int e=i9100_sdio_cmd52(t->card,write,fn,addr,value);if(e)fail(t,I9100_F2_IO);return e;
 }
 static int forward53(void *cookie,int write,unsigned fn,uint32_t addr,int increment,uint8_t *bytes,uint32_t length)
@@ -59,10 +60,9 @@ int i9100_bcm_f2_init(struct i9100_bcm_f2 *t,struct i9100_sdio *card,const struc
  if(!t||t->initialized||!card||!card->initialized||!io||!io->lock||!io->unlock||!io->now_ns||!io->delay_us)return I9100_F2_ARGUMENT;
  memset(t,0,sizeof(*t));t->io=*io;t->card=card;t->initialized=1;return 0;
 }
-int i9100_bcm_f2_enable(struct i9100_bcm_f2 *t,int enabled,uint32_t generation)
+int i9100_bcm_f2_enable_locked(struct i9100_bcm_f2 *t,int enabled,uint32_t generation)
 {
  if(!t||!t->initialized||(enabled!=0&&enabled!=1))return I9100_F2_ARGUMENT;
- if(take(t))return I9100_F2_BUSY;
  int e=0;
  if(!enabled){t->enabled=0;goto done;} /* no hardware/FIFO reset pretended */
  if(t->enabled){e=I9100_F2_BUSY;goto done;}
@@ -77,7 +77,13 @@ int i9100_bcm_f2_enable(struct i9100_bcm_f2 *t,int enabled,uint32_t generation)
   {e=I9100_F2_DISABLED;goto done;}
  t->generation=generation;t->enabled=1;t->fault=0;t->stage=STAGE_IDLE;t->last_error=0;
 done:
- drop(t);return e;
+ return e;
+}
+int i9100_bcm_f2_enable(struct i9100_bcm_f2 *t,int enabled,uint32_t generation)
+{
+ if(!t||!t->initialized)return I9100_F2_ARGUMENT;
+ if(take(t))return I9100_F2_BUSY;
+ int e=i9100_bcm_f2_enable_locked(t,enabled,generation);drop(t);return e;
 }
 int i9100_bcm_f2_get_io(struct i9100_bcm_f2 *t,struct i9100_bcm_io *io)
 {

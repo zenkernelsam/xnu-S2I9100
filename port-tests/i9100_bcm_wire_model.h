@@ -18,6 +18,9 @@ struct model {
  uint8_t *mutate_source;
  unsigned core_actions_allowed,core_writes,drop_core_control,reset_stall,reset_status_busy,freeze_time,defer_reset_reads;
  uint32_t cm3_control,d11_control,pending_value[3];unsigned pending_reads[3];
+ unsigned boot_model,ht_ready,f2_ready,no_mailbox,mailbox_delay,event_raised;
+ uint32_t sdio_regs[32],firmware_mailbox,expected_token;
+ uint8_t function_enable,fbr_low,fbr_high;
 };
 static struct model m;
 static struct i9100_bcm4330 bus;
@@ -34,7 +37,7 @@ static int cmd52(void *cookie,int write,unsigned fn,uint32_t addr,uint8_t *v)
   unsigned n=addr-0x1000aU;const uint8_t original[3]={0x80,0x70,0x16};
   if(write){if(!(p->ignore_window_restore&&*v==original[n]))p->window[n]=*v;}
   else *v=p->window[n];
- }else{assert(addr==0x1000eU);if(write)p->clock=*v;else *v=p->clock|0x40U;}
+ }else{assert(addr==0x1000eU);if(write)p->clock=*v;else *v=p->clock|0x40U|((p->boot_model&&p->ht_ready&&(p->clock&0x12U))?0x80U:0U);}
  return operation(p);
 }
 static uint32_t word_read(struct model *p,uint32_t address)
@@ -56,6 +59,13 @@ static uint32_t word_read(struct model *p,uint32_t address)
  if(address==0x18004000U)return p->coreinfo;
  if(address==0x18004010U)return p->bankidx;
  if(address==0x18004040U){assert(p->bankidx<I9100_BCM_MAX_BANKS);return p->banks[p->bankidx];}
+ if(p->boot_model&&address>=0x18011000U&&address<0x18011080U){
+  if(address==0x18011020U&&!(p->arm_reset&1U)&&(p->function_enable&4U)&&p->f2_ready&&!p->event_raised&&!p->no_mailbox){
+   if(p->mailbox_delay)p->mailbox_delay--;
+   else{p->sdio_regs[0x20U/4U]|=0x20U;p->sdio_regs[0x4cU/4U]=p->firmware_mailbox;p->event_raised=1;p->d11_reset&=~1U;}
+  }
+  return p->sdio_regs[(address-0x18011000U)/4U];
+ }
  assert(!"Unreviewed register/ROM/RAM read");return 0;
 }
 static int cmd53(void *cookie,int write,unsigned fn,uint32_t offset,int increment,uint8_t *bytes,uint32_t count)
@@ -80,6 +90,12 @@ static int cmd53(void *cookie,int write,unsigned fn,uint32_t offset,int incremen
  if(write){
   uint32_t v=bytes[0]|((uint32_t)bytes[1]<<8)|((uint32_t)bytes[2]<<16)|((uint32_t)bytes[3]<<24);
   if(address==0x18004010U){p->bank_writes++;if(!(p->ignore_bank_restore&&v==0x101U))p->bankidx=v;}
+  else if(p->boot_model&&address>=0x18011000U&&address<0x18011080U){
+   unsigned off=address-0x18011000U;assert(off==0x20U||off==0x40U||off==0x48U);
+   if(off==0x20U)p->sdio_regs[off/4U]&=~v;
+   else if(off==0x40U){assert(v==2U);p->sdio_regs[0x20U/4U]&=~0x20U;}
+   else p->sdio_regs[off/4U]=v;
+  }
   else{
    assert(p->core_actions_allowed); /* original suites continue to forbid every core write */
    const uint32_t wrappers[3]={0x18102000U,0x18101000U,0x18104000U};unsigned accepted=0;
@@ -89,6 +105,11 @@ static int cmd53(void *cookie,int write,unsigned fn,uint32_t offset,int incremen
      if(!p->drop_core_control)*control=v;accepted=1;
     }
     if(address==wrappers[n]+0x800U){
+     if(p->boot_model&&n==0U&&!(v&1U)){
+      assert(p->ram&&p->expected_token);uint8_t *q=p->ram+p->ram_capacity-4U;
+      assert((q[0]|((uint32_t)q[1]<<8)|((uint32_t)q[2]<<16)|((uint32_t)q[3]<<24))==p->expected_token);
+      assert((p->sdio_regs[0x48U/4U]&0xff0000U)==0x40000U&&!(p->sdio_regs[0x20U/4U]&0xf0U));
+     }
      uint32_t *reset=n==0?&p->arm_reset:n==1?&p->d11_reset:&p->ram_reset;
      if(p->reset_stall!=n+1U){
       if(p->defer_reset_reads){p->pending_value[n]=v;p->pending_reads[n]=p->defer_reset_reads;}

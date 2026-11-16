@@ -10,7 +10,8 @@ int i9100_bcm_core_download_stop(struct i9100_bcm_chip *);
 /* Opt-in BCM4330 AI/CM3/one D11/SOCRAM only; all wrappers come from DMP.
  * The caller owns the fresh board power/host lifetime and deliberately permits
  * a destructive WLAN RAM/core reset; an inherited firmware is not restored.
- * No PMU/global chip/flash/BT reset and no CPU/D11 reset release are offered.
+ * No PMU/global chip/flash/BT reset or CPU/D11 release in this prepare API.
+ * The separate bootstrap may release CM3 only after verified RAM staging.
  * Prepare leaves CM3 and D11 held reset, releases only SOCRAM reset, verifies
  * its clock, then permits the separate actual RAM-size probe/staging module.
  * Masked IOCTRL preserves other fields; RESETSTATUS and RESETCTRL waits are

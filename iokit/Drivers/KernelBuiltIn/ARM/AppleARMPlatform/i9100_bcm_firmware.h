@@ -28,6 +28,8 @@ struct i9100_bcm_firmware {
  uintptr_t owner;uint64_t started;
  uint32_t initialized,enabled,loaded,fault,stage,confirmed_firmware_bytes,confirmed_nvram_bytes;
  uint32_t transfer_address,transfer_bytes,token_verified;
+ uint32_t boot_holds;
+ uint32_t execution_possible;
  int32_t error,cleanup_error;
 };
 int i9100_bcm_fw_make_layout(uint32_t ram_bytes,uint32_t sdio_core_revision,uint32_t firmware_bytes,uint32_t nvram_bytes,struct i9100_bcm_fw_layout *);
@@ -53,8 +55,9 @@ int i9100_bcm_fw_kernel_sha256(void *,const void *,uint32_t,uint8_t digest[32]);
  * and D11 remain reset and SOCRAM is up, clears/readbacks token before releasing
  * ownership. It does not restore the previous RAM image. Failed abort/close
  * retains the context for board-level reset/recovery by its owner.
- * loaded means staged bytes/readbacks/hash/token verified with CM3 held
- * reset; later boot/handshake/firmware provenance/calibration/network/iOS
+ * loaded means staged bytes/readbacks/hash/token verified; the bootstrap
+ * execution_possible flag distinguishes later CPU release from halted RAM.
+ * Boot/handshake/firmware provenance/calibration/network/iOS
  * service are separate required stages. Kernel SHA uses registered crypto
  * only, rejects missing/invalid provider and never fakes a valid digest. */
 #ifdef __cplusplus

@@ -17,6 +17,7 @@ struct i9100_bcm_f2 {
  struct i9100_f2_io io;struct i9100_sdio *card;
  uint32_t initialized,enabled,fault,generation,tx_frames,rx_frames,empty_reads;
  uint32_t stage,last_error,last_transfer,logical_bytes,wire_bytes;
+ uint32_t cleanup_f1;
  uint8_t last_header[32],scratch[2080]; /* 32B header + rounded2048B remainder */
 };
 int i9100_bcm_f2_init(struct i9100_bcm_f2 *,struct i9100_sdio *,const struct i9100_f2_io *);

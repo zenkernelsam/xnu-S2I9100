@@ -125,5 +125,11 @@ static void failures(void)
  assert(i9100_bcm_fw_load(&loader,firmware,vars)==I9100_BCM_FW_TIMEOUT&&!loader.loaded&&chip.ram_image_owned);
  m.step=0;close_loader();
 }
+static void reload_counts(void)
+{
+ prepare(1025U,12);open_loader();assert(!i9100_bcm_fw_load(&loader,firmware,vars));
+ assert(!i9100_bcm_fw_abort(&loader));assert(!i9100_bcm_fw_load(&loader,firmware,vars));
+ assert(loader.confirmed_firmware_bytes==1025U&&loader.confirmed_nvram_bytes==sizeof(vars));close_loader();
+}
 int main(void)
-{layout_and_vars();safe_preflight();download();failures();puts("PASS exact SHA256/MAC/preflight no-IO; halted BCM RAM chunks/window crossings/padding/PR85623/readback/token-last; every transport failure/failed-abort owner; no core activation/RF");return 0;}
+{layout_and_vars();safe_preflight();download();failures();reload_counts();puts("PASS exact SHA256/MAC/preflight no-IO; halted BCM RAM chunks/window crossings/padding/PR85623/readback/token-last/reload counters; every transport failure/failed-abort owner; no core activation/RF");return 0;}

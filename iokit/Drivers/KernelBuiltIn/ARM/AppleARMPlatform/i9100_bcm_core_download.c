@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "i9100_bcm_core_download.h"
 #include "i9100_bcm_backplane_private.h"
+#include "i9100_bcm_core_download_private.h"
 enum {IOCTRL=0x408,RESETCTRL=0x800,RESETSTATUS=0x804};
 struct cores {const struct i9100_bcm_core *cm3,*d11,*ram;};
 static int get_cores(struct i9100_bcm_chip *c,struct cores *out)
@@ -123,4 +124,37 @@ int i9100_bcm_core_download_stop(struct i9100_bcm_chip *c)
  if(!e)e=stop_locked(c,&cores);
  c->core_cleanup_error=e;if(e&&e!=I9100_BCM_CHIP_DISABLED&&e!=I9100_BCM_CHIP_BUSY)c->fault=1;
  c->bus->io.release(c->bus->io.cookie);return e;
+}
+int i9100_bcm_core_start_cm3_locked(struct i9100_bcm_chip *c)
+{
+ struct cores cores;int e=get_cores(c,&cores);if(e)return e;
+ if(!c->core_download_owned||!c->core_download_ready||!c->ram_ready||!c->ram_image_owned||!c->firmware_holds)
+  return I9100_BCM_CHIP_NOT_READY;
+ uint32_t cm3=0,d11=0,ram=0,clock=0;
+ e=read32(c,cores.cm3->wrapper+RESETCTRL,&cm3);
+ if(!e)e=read32(c,cores.d11->wrapper+RESETCTRL,&d11);
+ if(!e)e=read32(c,cores.ram->wrapper+RESETCTRL,&ram);
+ if(!e)e=read32(c,cores.ram->wrapper+IOCTRL,&clock);
+ if(!e&&(!(cm3&1U)||!(d11&1U)||(ram&1U)||(clock&3U)!=1U))e=I9100_BCM_CHIP_NOT_READY;
+ if(e)return e;
+ c->core_download_ready=0;
+ e=request_reset(c,cores.cm3,0U);
+ if(!e)e=pause(c,50U);if(!e)e=wait_bits(c,cores.cm3->wrapper+RESETCTRL,1U,0);
+ if(!e)e=rmw(c,cores.cm3->wrapper+IOCTRL,3U,1U);
+ return e;
+}
+int i9100_bcm_core_quiesce_locked(struct i9100_bcm_chip *c)
+{
+ struct cores cores;int e=get_cores(c,&cores);if(e)return e;
+ if(!c->core_download_owned)return I9100_BCM_CHIP_NOT_READY;
+ c->core_download_ready=0;
+ e=hold_reset(c,cores.cm3,0);int r=hold_reset(c,cores.d11,1);if(r)e=r;
+ uint32_t cm3=0,d11=0,ram=0,clock=0;
+ r=read32(c,cores.cm3->wrapper+RESETCTRL,&cm3);if(r)e=r;
+ r=read32(c,cores.d11->wrapper+RESETCTRL,&d11);if(r)e=r;
+ r=read32(c,cores.ram->wrapper+RESETCTRL,&ram);if(r)e=r;
+ r=read32(c,cores.ram->wrapper+IOCTRL,&clock);if(r)e=r;
+ if(!e&&(!(cm3&1U)||!(d11&1U)||(ram&1U)||(clock&3U)!=1U))e=I9100_BCM_CHIP_NOT_READY;
+ if(!e)c->core_download_ready=1;
+ return e;
 }
