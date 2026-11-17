@@ -51,15 +51,23 @@ int i9100_i2c_samsung_enable(struct i9100_i2c_samsung *b,int enabled,int exclusi
   else if((rd(b,STAT)&START)||(rd(b,CON)&PENDING))e=I9100_I2C_BUS;
   else {
    b->saved[0]=rd(b,CON);b->saved[1]=rd(b,STAT);b->saved[2]=rd(b,ADD);b->saved[3]=rd(b,LC);
+   /* Own the partial register programming until explicit, verified disable.
+    * enabled/fault here is retained cleanup, not ready transaction admission. */
+   b->enabled=b->exclusive=b->fault=1;
    wr(b,CON,b->con&~IRQEN);wr(b,STAT,0);wr(b,LC,4U);
-   b->enabled=b->exclusive=1;b->fault=0;
+   if((rd(b,CON)&0xefU)!=((b->con&~IRQEN)&0xefU)||(rd(b,STAT)&0xf0U)||
+      (rd(b,LC)&7U)!=4U)e=I9100_I2C_IO;else b->fault=0;
   }
  }else if(!b->enabled)e=I9100_I2C_ARGUMENT;
  else if(rd(b,STAT)&START)e=I9100_I2C_BUS;
  else {
   wr(b,STAT,0);wr(b,CON,0);wr(b,ADD,b->saved[2]);wr(b,LC,b->saved[3]);
   wr(b,STAT,b->saved[1]&~START);wr(b,CON,b->saved[0]&~PENDING);
-  b->enabled=b->exclusive=b->fault=0;
+  if((rd(b,CON)&0xefU)!=(b->saved[0]&0xefU)||
+     (rd(b,STAT)&0xf0U)!=(b->saved[1]&0xd0U)||
+     (rd(b,ADD)&0xffU)!=(b->saved[2]&0xffU)||(rd(b,LC)&7U)!=(b->saved[3]&7U))
+   {b->fault=1;e=I9100_I2C_IO;}
+  else b->enabled=b->exclusive=b->fault=0;
  }
  b->io.unlock(b->io.cookie);return e;
 }

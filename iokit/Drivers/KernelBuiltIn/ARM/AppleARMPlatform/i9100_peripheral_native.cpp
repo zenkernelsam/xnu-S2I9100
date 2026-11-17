@@ -14,6 +14,7 @@ void absolutetime_to_nanoseconds(uint64_t,uint64_t *);
 enum {MAP_GPIO0,MAP_GPIO1,MAP_GPZ,MAP_CMU,MAP_GIC,MAP_I2C1,MAP_I2C6,MAP_I2C7,MAP_UART0,MAP_SDIO3,MAP_COUNT};
 struct native_i2c {
  struct i9100_peripheral_native *context;unsigned index,live;
+ i9100_native_transport_lease *owner;uint32_t generation,closing,borrowers;
  IOLock *outer,*controller;
  i9100_i2c_samsung bus;i9100_gpio_lease pins;i9100_clock_lease gate;
 };
@@ -75,8 +76,13 @@ static int i2c_lock(void *cookie){return thread_lock(((native_i2c *)cookie)->con
 static void i2c_unlock(void *cookie){IOLockUnlock(((native_i2c *)cookie)->controller);}
 static int window_lock(void *cookie){return thread_lock(((native_i2c *)cookie)->outer);}
 static void window_unlock(void *cookie){IOLockUnlock(((native_i2c *)cookie)->outer);}
+static int legacy_i2c_claim(void *cookie)
+{native_i2c *b=(native_i2c *)cookie;int e=window_lock(b);
+ if(!e&&(!b->live||b->owner||b->closing)){window_unlock(b);e=-1;}return e;}
 static int i2c_transfer(void *cookie,const i9100_i2c_message *messages,unsigned count,unsigned *completed)
-{native_i2c *b=(native_i2c *)cookie;return i9100_i2c_samsung_transfer(&b->bus,messages,count,completed);}
+{native_i2c *b=(native_i2c *)cookie;
+ if(!b->live||b->owner||b->closing){if(completed)*completed=0;return I9100_I2C_BUSY;}
+ return i9100_i2c_samsung_transfer(&b->bus,messages,count,completed);}
 static uint32_t uart_read32(void *cookie,unsigned off)
 {native_uart *u=(native_uart *)cookie;return read_mmio(u->context,MAP_UART0,off);}
 static uint8_t uart_read8(void *cookie,unsigned off)
@@ -114,6 +120,7 @@ static int packet_lock(void *cookie)
 static void packet_unlock(void *cookie){IOLockUnlock(((native_sdio *)cookie)->outer);}
 static bool lease_valid(i9100_native_transport_lease *l,unsigned kind)
 {return l&&l->owned&&l->self==(uintptr_t)l&&l->context&&l->kind==kind;}
+static bool i2c_kind(unsigned kind){return kind>=I9100_NATIVE_I2C1&&kind<=I9100_NATIVE_I2C7;}
 static int owned_lock(void *cookie,unsigned kind)
 {
  i9100_native_transport_lease *l=(i9100_native_transport_lease *)cookie;if(!lease_valid(l,kind))return -1;
@@ -121,6 +128,11 @@ static int owned_lock(void *cookie,unsigned kind)
   native_uart *u=&l->context->uart;int e=uart_control_lock(u);
   if(!e&&(!u->live||u->closing||u->owner!=l||u->generation!=l->generation)){IOLockUnlock(u->outer);e=-1;}return e;
  }
+ if(i2c_kind(kind)){
+  native_i2c *b=&l->context->buses[kind-I9100_NATIVE_I2C1];int e=window_lock(b);
+  if(!e&&(!b->live||b->closing||b->owner!=l||b->generation!=l->generation)){window_unlock(b);e=-1;}return e;
+ }
+ if(kind!=I9100_NATIVE_SDIO)return -1;
  native_sdio *s=&l->context->sdio;int e=sdio_control_lock(s);
  if(!e&&(!s->live||s->closing||s->owner!=l||s->generation!=l->generation)){IOLockUnlock(s->outer);e=-1;}return e;
 }
@@ -140,6 +152,26 @@ static bool lease_outputs_valid(i9100_peripheral_native *c,i9100_native_transpor
 {return c&&l&&out&&!ranges_overlap((uintptr_t)l,sizeof(*l),(uintptr_t)c,sizeof(*c))&&
  !ranges_overlap((uintptr_t)l,sizeof(*l),(uintptr_t)out,size)&&
  !ranges_overlap((uintptr_t)c,sizeof(*c),(uintptr_t)out,size);}
+static int owned_i2c_claim(void *cookie)
+{i9100_native_transport_lease *l=(i9100_native_transport_lease *)cookie;
+ return l&&i2c_kind(l->kind)?owned_lock(l,l->kind):-1;}
+static void owned_i2c_release(void *cookie)
+{i9100_native_transport_lease *l=(i9100_native_transport_lease *)cookie;
+ window_unlock(&l->context->buses[l->kind-I9100_NATIVE_I2C1]);}
+static int owned_i2c_transfer(void *cookie,const i9100_i2c_message *messages,unsigned count,unsigned *completed)
+{
+ i9100_native_transport_lease *l=(i9100_native_transport_lease *)cookie;
+ if(!l||!completed||!i2c_kind(l->kind)||!lease_valid(l,l->kind))return I9100_I2C_ARGUMENT;
+ if(!lease_outputs_valid(l->context,l,completed,sizeof(*completed)))return I9100_I2C_ARGUMENT;
+ if(!messages||!count||count>8U||!lease_outputs_valid(l->context,l,messages,count*sizeof(*messages))||
+    ranges_overlap((uintptr_t)messages,count*sizeof(*messages),(uintptr_t)completed,sizeof(*completed)))return I9100_I2C_ARGUMENT;
+ for(unsigned n=0;n<count;n++)if(!messages[n].bytes||!messages[n].length||
+    !lease_outputs_valid(l->context,l,messages[n].bytes,messages[n].length)||
+    ranges_overlap((uintptr_t)messages[n].bytes,messages[n].length,(uintptr_t)completed,sizeof(*completed)))return I9100_I2C_ARGUMENT;
+ *completed=0;native_i2c *b=&l->context->buses[l->kind-I9100_NATIVE_I2C1];
+ if(!b->live||b->closing||b->owner!=l||b->generation!=l->generation)return I9100_I2C_BUSY;
+ return i9100_i2c_samsung_transfer(&b->bus,messages,count,completed);
+}
 static void bind_lease(i9100_native_transport_lease *l,i9100_peripheral_native *c,unsigned kind,uint32_t generation)
 {if(l){memset(l,0,sizeof(*l));l->context=c;l->self=(uintptr_t)l;l->kind=kind;l->generation=generation;l->owned=1;}}
 static bool map(i9100_peripheral_native *c,unsigned index,uint32_t physical,uint32_t bytes)
@@ -202,30 +234,35 @@ struct i9100_gpio_broker *i9100_peripheral_native_gpio(i9100_peripheral_native *
 struct i9100_clock_gates *i9100_peripheral_native_clocks(i9100_peripheral_native *c){return c?&c->clocks:0;}
 struct i9100_irq_registry *i9100_peripheral_native_irqs(i9100_peripheral_native *c){return c?&c->irqs:0;}
 struct i9100_irq_cascade *i9100_peripheral_native_eint(i9100_peripheral_native *c){return c?&c->eint:0;}
-int i9100_peripheral_native_i2c_close(i9100_peripheral_native *c,unsigned index)
+static int i2c_close_for(i9100_peripheral_native *c,unsigned index,i9100_native_transport_lease *owner)
 {
  if(!c||index>=3U)return I9100_I2C_ARGUMENT;native_i2c *b=&c->buses[index];
  if(!b->live)return I9100_I2C_ARGUMENT;if(window_lock(b))return I9100_I2C_BUSY;
+ if(b->owner!=owner||(owner&&b->generation!=owner->generation)||b->borrowers){window_unlock(b);return I9100_I2C_BUSY;}
+ b->closing=1;
  int e=0;
  if(b->bus.enabled)e=i9100_i2c_samsung_enable(&b->bus,0,1);
  if(!e&&b->pins.active)e=i9100_gpio_release(&b->pins,I9100_GPIO_RESTORE);
  if(!e&&b->gate.active)e=i9100_clock_release(&b->gate);
- if(!e){b->live=0;memset(&b->bus,0,sizeof(b->bus));}
+ if(!e){b->live=b->closing=0;b->owner=0;if(owner)owner->owned=0;memset(&b->bus,0,sizeof(b->bus));}
  window_unlock(b);return e;
 }
-int i9100_peripheral_native_i2c_open(i9100_peripheral_native *c,unsigned index,uint32_t pclk,i9100_peripheral_i2c *output)
+int i9100_peripheral_native_i2c_close(i9100_peripheral_native *c,unsigned index)
+{return i2c_close_for(c,index,0);}
+static int i2c_open_for(i9100_peripheral_native *c,i9100_native_transport_lease *owner,unsigned index,uint32_t pclk,i9100_peripheral_i2c *output)
 {
  if(!c||index>=3U||!output)return I9100_I2C_ARGUMENT;memset(output,0,sizeof(*output));
  native_i2c *b=&c->buses[index];if(window_lock(b))return I9100_I2C_BUSY;
  int e=0,started=0;
  const i9100_i2c_board_bus *profile=&i9100_u1_i2c[index];
  i9100_i2c_samsung_io io={b,i2c_read,i2c_write,i2c_lock,i2c_unlock,time_ns,pause_us};
- if(b->live){e=I9100_I2C_BUSY;goto done;}
+ if(b->live||b->owner||b->generation==0xffffffffU){e=I9100_I2C_BUSY;goto done;}
  /* Polling IRQPEND requires IRQEN in the I2C block, but GIC remains masked.
   * Refuse a source already enabled by another driver; don't steal its IRQ. */
  if(read_mmio(c,MAP_GIC,0x100U+(profile->irq/32U)*4U)&(1U<<(profile->irq%32U)))
   {e=I9100_I2C_BUSY;goto done;}
  e=i9100_i2c_samsung_init(&b->bus,&io,pclk,100000);if(e)goto done;
+ b->generation++;b->owner=owner;b->closing=0;bind_lease(owner,c,I9100_NATIVE_I2C1+index,b->generation);
  b->live=1;started=1;e=i9100_clock_acquire(&c->clocks,profile->gate,&b->gate);
  if(!e)e=i9100_gpio_claim(&c->gpio,profile->bank,(1U<<profile->sda)|(1U<<profile->scl),&b->pins);
  if(!e)e=i9100_gpio_pull(&b->pins,profile->sda,3);
@@ -235,9 +272,34 @@ int i9100_peripheral_native_i2c_open(i9100_peripheral_native *c,unsigned index,u
  if(!e)e=i9100_i2c_samsung_enable(&b->bus,1,1);
 done:
  window_unlock(b);
- if(e&&started){int close=i9100_peripheral_native_i2c_close(c,index);if(close){output->cookie=b;return e;}}
- if(!e){output->cookie=b;output->transfer=i2c_transfer;output->claim=window_lock;output->release=window_unlock;output->now_ns=time_ns;output->delay_us=pause_us;}
+ if(e&&started){int close=i2c_close_for(c,index,owner);if(close){output->cookie=owner?(void *)owner:(void *)b;return e;}}
+ if(!e){output->cookie=owner?(void *)owner:(void *)b;output->transfer=owner?owned_i2c_transfer:i2c_transfer;
+  output->claim=owner?owned_i2c_claim:legacy_i2c_claim;output->release=owner?owned_i2c_release:window_unlock;
+  output->now_ns=time_ns;output->delay_us=pause_us;}
  return e;
+}
+int i9100_peripheral_native_i2c_open(i9100_peripheral_native *c,unsigned index,uint32_t pclk,i9100_peripheral_i2c *output)
+{return i2c_open_for(c,0,index,pclk,output);}
+int i9100_peripheral_native_i2c_open_owned(i9100_peripheral_native *c,i9100_native_transport_lease *owner,unsigned index,uint32_t pclk,i9100_peripheral_i2c *output)
+{return new_lease(owner)&&lease_outputs_valid(c,owner,output,sizeof(*output))?
+ i2c_open_for(c,owner,index,pclk,output):I9100_I2C_ARGUMENT;}
+int i9100_peripheral_native_i2c_recover_owned(i9100_native_transport_lease *owner)
+{
+ if(!owner||!i2c_kind(owner->kind)||!lease_valid(owner,owner->kind))return I9100_I2C_ARGUMENT;
+ if(owned_i2c_claim(owner))return I9100_I2C_BUSY;
+ native_i2c *b=&owner->context->buses[owner->kind-I9100_NATIVE_I2C1];
+ const i9100_i2c_board_bus *profile=&i9100_u1_i2c[b->index];
+ int e=0;unsigned sda=0,scl=0;
+ if(!b->bus.fault&&b->bus.enabled)e=I9100_I2C_ARGUMENT;
+ else if(!b->pins.active||!b->gate.active||
+         (read_mmio(owner->context,MAP_GIC,0x100U+(profile->irq/32U)*4U)&(1U<<(profile->irq%32U))))e=I9100_I2C_BUSY;
+ if(!e)e=i9100_gpio_level(&b->pins,profile->sda,&sda);
+ if(!e)e=i9100_gpio_level(&b->pins,profile->scl,&scl);
+ if(!e&&(!sda||!scl))e=I9100_I2C_BUS;
+ if(!e&&b->bus.enabled)e=i9100_i2c_samsung_enable(&b->bus,0,1);
+ if(!e)e=i9100_i2c_samsung_enable(&b->bus,1,1);
+ if(e&&e!=I9100_I2C_ARGUMENT)b->bus.fault=1;
+ owned_i2c_release(owner);return e;
 }
 static int uart_close_for(i9100_peripheral_native *c,i9100_native_transport_lease *owner)
 {
@@ -351,25 +413,27 @@ int i9100_peripheral_native_sdio_open_owned(i9100_peripheral_native *c,i9100_nat
 int i9100_peripheral_native_transport_close(i9100_native_transport_lease *owner)
 {
  if(!owner||!owner->owned||owner->self!=(uintptr_t)owner||!owner->context)return I9100_GPIO_OWNER;
+ if(i2c_kind(owner->kind))return i2c_close_for(owner->context,owner->kind-I9100_NATIVE_I2C1,owner);
  return owner->kind==I9100_NATIVE_UART?uart_close_for(owner->context,owner):owner->kind==I9100_NATIVE_SDIO?
         sdio_close_for(owner->context,owner):I9100_GPIO_ARGUMENT;
 }
 static int transport_hold(i9100_native_transport_hold *hold,i9100_native_transport_lease *lease,unsigned operation)
 {
  if(!hold||!lease||!lease_valid(lease,lease->kind)||
-    (lease->kind!=I9100_NATIVE_UART&&lease->kind!=I9100_NATIVE_SDIO)||
+    (lease->kind!=I9100_NATIVE_UART&&lease->kind!=I9100_NATIVE_SDIO&&!i2c_kind(lease->kind))||
     ranges_overlap((uintptr_t)hold,sizeof(*hold),(uintptr_t)lease,sizeof(*lease))||
     ranges_overlap((uintptr_t)hold,sizeof(*hold),(uintptr_t)lease->context,sizeof(*lease->context)))return I9100_GPIO_ARGUMENT;
  if(operation==0U){if(hold->owned||(hold->self&&hold->self!=(uintptr_t)hold))return I9100_GPIO_OWNER;}
  else if(!hold->owned||hold->self!=(uintptr_t)hold||hold->lease!=lease||hold->kind!=lease->kind||hold->generation!=lease->generation)
   return I9100_GPIO_OWNER;
- i9100_peripheral_native *c=lease->context;IOLock *lock=lease->kind==I9100_NATIVE_UART?c->uart.outer:c->sdio.outer;
+ i9100_peripheral_native *c=lease->context;native_i2c *bus=i2c_kind(lease->kind)?&c->buses[lease->kind-I9100_NATIVE_I2C1]:0;
+ IOLock *lock=bus?bus->outer:(lease->kind==I9100_NATIVE_UART?c->uart.outer:c->sdio.outer);
  if(thread_lock(lock))return I9100_GPIO_BUSY;
  bool uart=lease->kind==I9100_NATIVE_UART;
- uint32_t *count=uart?&c->uart.borrowers:&c->sdio.borrowers;
- bool matches=uart?(c->uart.live&&c->uart.owner==lease&&c->uart.generation==lease->generation):
+ uint32_t *count=bus?&bus->borrowers:(uart?&c->uart.borrowers:&c->sdio.borrowers);
+ bool matches=bus?(bus->live&&bus->owner==lease&&bus->generation==lease->generation):uart?(c->uart.live&&c->uart.owner==lease&&c->uart.generation==lease->generation):
   (c->sdio.live&&c->sdio.owner==lease&&c->sdio.generation==lease->generation);
- bool ready=uart?(!c->uart.closing&&c->uart.port.prepared&&!c->uart.port.fault):
+ bool ready=bus?(!bus->closing&&bus->bus.enabled&&bus->bus.exclusive&&!bus->bus.fault):uart?(!c->uart.closing&&c->uart.port.prepared&&!c->uart.port.fault):
   (!c->sdio.closing&&c->sdio.card.active&&!c->sdio.card.fault);
  int e=0;
  if(!matches)e=I9100_GPIO_OWNER;
@@ -395,6 +459,8 @@ int i9100_peripheral_native_transport_idle(i9100_peripheral_native *c,enum i9100
   int e=u->live||u->owner?I9100_GPIO_BUSY:0;h4_unlock(u);return e;}
  if(kind==I9100_NATIVE_SDIO){native_sdio *s=&c->sdio;if(sdio_control_lock(s))return I9100_GPIO_BUSY;
   int e=s->live||s->owner?I9100_GPIO_BUSY:0;packet_unlock(s);return e;}
+ if(i2c_kind(kind)){native_i2c *b=&c->buses[kind-I9100_NATIVE_I2C1];if(window_lock(b))return I9100_GPIO_BUSY;
+  int e=b->live||b->owner?I9100_GPIO_BUSY:0;window_unlock(b);return e;}
  return I9100_GPIO_ARGUMENT;
 }
 int i9100_peripheral_native_radio_bind(i9100_peripheral_native *c,i9100_native_transport_lease *uart_owner,i9100_native_transport_lease *sdio_owner)

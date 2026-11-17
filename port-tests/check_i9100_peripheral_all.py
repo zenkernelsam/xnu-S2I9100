@@ -34,7 +34,7 @@ C_SOURCES = [
     "i9100_radio_survey.c",
 ]
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
-               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp"]
+               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_sensor_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp"]
 TESTS = [
     ("i9100_peripheral_bus_test.c", C_SOURCES[:5]),
     ("i9100_peripheral_platform_test.c", ["i9100_gpio_broker.c", "i9100_clock_gates.c",
@@ -66,6 +66,10 @@ TESTS = [
         "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c", "i9100_irq_cascade.c"]),
     ("i9100_native_sdio_success_test.cpp", ["i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_irq_registry.c", "i9100_peripheral_board.c",
         "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c", "i9100_irq_cascade.c"]),
+    ("i9100_native_i2c_test.cpp", ["i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_irq_registry.c", "i9100_peripheral_board.c",
+        "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c", "i9100_irq_cascade.c"]),
+    ("i9100_sensor_worker_test.cpp", ["i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_irq_registry.c", "i9100_peripheral_board.c",
+        "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c", "i9100_irq_cascade.c", "i9100_sensors.c", "i9100_sensor_worker.cpp"]),
     ("i9100_radio_power_test.c", ["i9100_gpio_broker.c", "i9100_peripheral_board.c", "i9100_radio_power.c"]),
     ("i9100_radio_native_test.cpp", ["i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_irq_registry.c", "i9100_peripheral_board.c",
         "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c", "i9100_radio_power.c", "i9100_radio_native.cpp", "i9100_irq_cascade.c"]),
@@ -110,7 +114,8 @@ def main():
                             [name for name in sources if name.endswith(".cpp")],
                             libraries=["crypto"] if test=="i9100_bcm_worker_test.cpp" else ["pthread"] if test=="i9100_power_shared_test.cpp" else (),
                             source_overrides=shared_copies if test=="i9100_power_shared_test.cpp" else None,
-                            wrapped_functions=("i9100_sdio_init",) if test=="i9100_native_sdio_success_test.cpp" else ())
+                            wrapped_functions=("i9100_sdio_init",) if test=="i9100_native_sdio_success_test.cpp" else
+                            ("i9100_i2c_samsung_init",) if test in ("i9100_native_i2c_test.cpp","i9100_sensor_worker_test.cpp") else ())
                 if test=="i9100_power_shared_test.cpp":
                     for n in range(1,4):e.run([str(e.out/"models"),str(n)],"shared-prepare-failure-"+str(n)+"-tests")
             else:

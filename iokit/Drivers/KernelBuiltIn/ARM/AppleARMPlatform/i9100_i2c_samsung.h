@@ -24,7 +24,11 @@ int i9100_i2c_samsung_transfer(struct i9100_i2c_samsung *,const struct i9100_i2c
  * source before exclusive enable (IRQEN creates IRQPEND even when polled).
  * Input PCLK is verified externally. A timeout quarantines the controller
  * until explicit disable; arbitration loss never generates a STOP on a bus
- * owned by another master. Initialization is disabled and performs no IO. */
+ * owned by another master. Initialization is disabled and performs no IO.
+ * enabled/fault also retains partial host programming after enable/restore
+ * readback failure. Disable confirms stable CON/STAT/ADD/LC fields before
+ * clearing it; volatile pending/arbitration/NACK bits are not restore data.
+ */
 #ifdef __cplusplus
 }
 #endif

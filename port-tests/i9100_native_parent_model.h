@@ -9,6 +9,7 @@
 #include "../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_peripheral_native.cpp"
 static std::map<uint32_t,std::vector<uint32_t> > memory;
 static unsigned allocations,active_allocations,fail_alloc,barriers,drop_sdio_release;
+static unsigned drop_i2c_release,i2c_gate_seen;
 static uint64_t ns;
 static bool interrupts=true,sdio_gate_seen,freeze_model_time;
 static bool allocate(){allocations++;if(allocations==fail_alloc)return false;active_allocations++;return true;}
@@ -35,6 +36,8 @@ void OSSynchronizeIO()
   uint32_t *cmu=memory[0x10030000U].data();
   if(cmu[0xc940/4]&(1U<<8))sdio_gate_seen=true;
   if(drop_sdio_release&&sdio_gate_seen&&!(cmu[0xc940/4]&(1U<<8)))cmu[0xc940/4]|=1U<<8;
+  i2c_gate_seen|=cmu[0xc950/4]&((1U<<7)|(1U<<12)|(1U<<13));
+  cmu[0xc950/4]|=drop_i2c_release&i2c_gate_seen;
  }
 }
 IOMemoryDescriptor *IOMemoryDescriptor::withPhysicalAddress(uint32_t physical,size_t n,unsigned)
@@ -51,7 +54,7 @@ void IOMemoryMap::release(){assert(active_allocations);active_allocations--;dele
 void IOMemoryDescriptor::release(){assert(active_allocations);active_allocations--;delete this;}
 static void setup()
 {
- assert(!active_allocations);memory.clear();allocations=fail_alloc=barriers=drop_sdio_release=0;sdio_gate_seen=freeze_model_time=false;ns=0;interrupts=true;
+ assert(!active_allocations);memory.clear();allocations=fail_alloc=barriers=drop_sdio_release=0;drop_i2c_release=i2c_gate_seen=0;sdio_gate_seen=freeze_model_time=false;ns=0;interrupts=true;
  memory[0x13800000U].resize(1024);memory[0x13800000U][16/4]=4U;memory[0x13800000U][56/4]=15U;
 }
 static i9100_peripheral_native *parent()
