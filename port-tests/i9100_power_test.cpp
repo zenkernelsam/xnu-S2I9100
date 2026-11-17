@@ -123,14 +123,15 @@ static void policy_checks()
  * one known bus/address; touching another bank fails the test. */
 struct PowerGPIO {
  enum Phase {IDLE,RX,SLAVE_ACK,TX,MASTER_ACK};
- uint32_t regs[4][16384];uint8_t memory[256];
+ uint32_t regs[4][16384];uint8_t memory[256],hapticMemory[256];
+ bool withHaptic=false,dropSlaveWrite=false;unsigned currentAddress=0,dropAddress=0,dropRegister=0,dropValue=0;
  unsigned region,base,sda,scl,address;
  Phase phase=IDLE,next=IDLE;bool oldClock=true,oldData=true,slaveLow=false,expectAddress=true;
  bool readMode=false,nack=false,stuckClock=false,stuckData=false,masterACK=false,adcStuck=false;
  unsigned bits=0,ackPhase=0,rxByte=0,registerBytes=0,pointer=0,txByte=0,starts=0,stops=0,waits=0;
  unsigned enters=0,leaves=0,guard=0,adcSamples=0;std::vector<uint8_t> received;
- explicit PowerGPIO(bool fuel):region(fuel?1:0),base(fuel?0x1a0:0x40),sda(fuel?0:6),scl(fuel?1:7),address(fuel?0x36:0x66){
-  memset(regs,0,sizeof(regs));memset(memory,0,sizeof(memory));
+ explicit PowerGPIO(bool fuel,bool haptic=false):withHaptic(haptic),region(fuel?1:0),base(fuel?0x1a0:0x40),sda(fuel?0:6),scl(fuel?1:7),address(fuel?0x36:0x66){
+  memset(regs,0,sizeof(regs));memset(memory,0,sizeof(memory));memset(hapticMemory,0,sizeof(hapticMemory));currentAddress=address;
   regs[region][base/4]=0;regs[region][(base+4)/4]=0xa5a50000;
   regs[region][(base+8)/4]=0x55660000;
  }
@@ -141,11 +142,14 @@ struct PowerGPIO {
  }
  bool clock()const{return master(scl) && !stuckClock;}
  bool data()const{return master(sda) && !slaveLow && !stuckData;}
- void beginTX(){phase=TX;bits=0;txByte=memory[pointer&255];slaveLow=!(txByte&0x80);}
+ uint8_t *selectedMemory(){return currentAddress==0x48U?hapticMemory:memory;}
+ void beginTX(){phase=TX;bits=0;txByte=selectedMemory()[pointer&255];slaveLow=!(txByte&0x80);}
  void acceptedByte(){
   received.push_back((uint8_t)rxByte);next=RX;
-  if(expectAddress){expectAddress=false;assert((rxByte>>1)==address);readMode=rxByte&1;if(!readMode)registerBytes=0;if(readMode)next=TX;}
-  else if(!readMode){if(!registerBytes){pointer=rxByte;registerBytes=1;}else memory[pointer++&255]=(uint8_t)rxByte;}
+  if(expectAddress){expectAddress=false;assert((rxByte>>1)==address||(withHaptic&&(rxByte>>1)==0x48U));currentAddress=rxByte>>1;
+   readMode=rxByte&1;if(!readMode)registerBytes=0;if(readMode)next=TX;}
+  else if(!readMode){if(!registerBytes){pointer=rxByte;registerBytes=1;}else{
+   unsigned reg=pointer++&255U;if(!(dropSlaveWrite&&currentAddress==dropAddress&&reg==dropRegister&&rxByte==dropValue))selectedMemory()[reg]=(uint8_t)rxByte;}}
   phase=SLAVE_ACK;ackPhase=0;
  }
  void step(){

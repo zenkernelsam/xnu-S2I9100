@@ -4,7 +4,7 @@
     "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100Power.cpp": "2109f28c6d2ea6a1d56579d38f63c36747ce133c2a92748a4e88785f0935fb06",
     "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp": "2fd2b6e75c723a59e66660279835881ae3cbdab21a5481f5d3ab4ff70ed344ac"
   },
-  "patch_sha256": "4ca8305534e6eeb5882b18c14d260bf5813b9fb70c9e4361bf978f0194539deb",
+  "patch_sha256": "e57863894d71b93c47e13bfca377cd6f6fe8029e2ef572e5d817161618db849c",
   "applied": false,
   "default_enabled": false,
   "objects": [
@@ -13,5 +13,6 @@
     "iokit/IOS7I9100Power.cpo",
     "iokit/AppleARMPE.cpo"
   ],
-  "prerequisite": "Apply paired patch, rebuild all four objects and full relink before opt-in; common raw transfer covers Mali too"
+  "prerequisite": "Apply paired patch, rebuild all four objects and full relink before opt-in; common raw transfer covers Mali too",
+  "haptic_wire": "Fixed slave48 CONFIG2 + PMIC LDO14; shared filter before GPIO/IRQ-disabled IO"
 }

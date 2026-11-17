@@ -35,6 +35,8 @@ int i9100_vibrator_timeout(struct i9100_vibrator *); /* workloop/thread, never I
  * Early diagnostic limit250ms and ±5% about the zero-drive50% duty centre.
  * No extension/retrigger while active; failures always attempt PWM/PMIC/rail
  * shutdown and keep fault state if any part cannot be proved off.
+ * Preparation time is part of the fixed deadline. An early timer callback
+ * rearms the remaining budget; arm failure immediately attempts shutdown.
  * PMIC and PWM providers must have been separately identified/owned. */
 #ifdef __cplusplus
 }

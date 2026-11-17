@@ -56,8 +56,15 @@ int i9100_vibrator_pulse(struct i9100_vibrator *v,uint32_t ms,unsigned amplitude
  uint8_t verify=0;
  if(v->io.haptic_read(v->io.cookie,CONFIG2,&verify)||verify!=(LRA_EXTERNAL_DIV256|MOTOR_ENABLE))
   {e=I9100_VIB_IO;goto unwind;}
- if(v->io.arm_timeout(v->io.cookie,ms)||v->io.pwm_enable(v->io.cookie,1))
-  {e=I9100_VIB_IO;goto unwind;}
+ /* Preparation belongs to the original budget. Arm only the time left;
+  * a slow PMIC transaction must not extend the requested pulse. */
+ {uint64_t now=v->io.now_ns(v->io.cookie);
+  if(now<v->started||now>=v->deadline){e=I9100_VIB_TIMEOUT;goto unwind;}
+  uint32_t remaining=(uint32_t)((v->deadline-now+999999ULL)/1000000ULL);
+  if(v->io.arm_timeout(v->io.cookie,remaining)||v->io.pwm_enable(v->io.cookie,1))
+   {e=I9100_VIB_IO;goto unwind;}
+  now=v->io.now_ns(v->io.cookie);
+  if(now<v->started||now>=v->deadline){e=I9100_VIB_TIMEOUT;goto unwind;}}
  goto done;
 unwind:
  (void)shutdown(v);
@@ -77,5 +84,9 @@ int i9100_vibrator_timeout(struct i9100_vibrator *v)
  if(v->io.lock(v->io.cookie))return I9100_VIB_BUSY;
  int e=0;uint64_t now=v->io.now_ns(v->io.cookie);
  if(v->active&&(now>=v->deadline||now<v->started)){e=shutdown(v);if(!e&&now<v->started)e=I9100_VIB_TIMEOUT;}
+ else if(v->active){
+  uint32_t remaining=(uint32_t)((v->deadline-now+999999ULL)/1000000ULL);
+  if(v->io.arm_timeout(v->io.cookie,remaining)){(void)shutdown(v);e=I9100_VIB_IO;}
+ }
  v->io.unlock(v->io.cookie);return e;
 }

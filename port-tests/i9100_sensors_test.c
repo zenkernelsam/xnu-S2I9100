@@ -12,6 +12,7 @@ struct model {
  uint64_t ns;
  unsigned operations,fail_operation,sticky_failure,rail,pwm,timeout,cancel;
  uint32_t period,duty;
+ uint64_t motor_prepare_delay;unsigned pwm_starts;
 };
 static struct model m;
 static int claim(void *c){struct model *p=c;if(p->locked)return -1;p->locked=1;return 0;}
@@ -134,10 +135,10 @@ static void sensor_sticky_registers(void)
 static int operation(struct model *p)
 {p->operations++;return p->operations==p->fail_operation||p->sticky_failure?-1:0;}
 static int hread(void *c,uint8_t reg,uint8_t *v){struct model *p=c;assert(p->locked&&reg==2);int e=operation(p);if(!e)*v=p->config;return e;}
-static int hwrite(void *c,uint8_t reg,uint8_t v){struct model *p=c;assert(p->locked&&reg==2);p->config=v;return operation(p);}
+static int hwrite(void *c,uint8_t reg,uint8_t v){struct model *p=c;assert(p->locked&&reg==2);p->config=v;if(v&0x40U)p->ns+=p->motor_prepare_delay;return operation(p);}
 static int rail(void *c,int enabled){struct model *p=c;assert(p->locked);p->rail=enabled;return operation(p);}
 static int pwm_config(void *c,uint32_t period,uint32_t duty){struct model *p=c;assert(p->locked&&!p->pwm);p->period=period;p->duty=duty;return operation(p);}
-static int pwm(void *c,int enabled){struct model *p=c;assert(p->locked);p->pwm=enabled;return operation(p);}
+static int pwm(void *c,int enabled){struct model *p=c;assert(p->locked);p->pwm=enabled;if(enabled)p->pwm_starts++;return operation(p);}
 static int arm(void *c,uint32_t ms){struct model *p=c;assert(p->locked&&ms<=250);p->timeout=ms;return operation(p);}
 static void cancel(void *c){struct model *p=c;assert(p->locked);p->timeout=0;p->cancel++;}
 static struct i9100_vibrator_io vib_io={&m,claim,release,hread,hwrite,rail,pwm_config,pwm,arm,cancel,now};
@@ -168,5 +169,20 @@ static void vibration(void)
  assert(i9100_vibrator_stop(&v)==I9100_VIB_IO&&v.fault);
  assert(i9100_vibrator_pulse(&v,30,50)==I9100_VIB_BUSY);m.sticky_failure=0;assert(!i9100_vibrator_stop(&v)&&!v.fault);
 }
+static void vibration_deadlines(void)
+{
+ memset(&m,0,sizeof(m));m.config=0x83;m.motor_prepare_delay=10000000ULL;
+ struct i9100_vibrator v={0};assert(!i9100_vibrator_init(&v,&vib_io,38022)&&!i9100_vibrator_enable(&v,1));
+ assert(!i9100_vibrator_pulse(&v,50,50)&&v.deadline==50000000ULL&&m.timeout==40U);
+ m.ns=30000000ULL;assert(!i9100_vibrator_timeout(&v)&&v.active&&m.timeout==20U);
+ m.ns=50000000ULL;assert(!i9100_vibrator_timeout(&v)&&!v.active&&!m.pwm&&!m.rail);
+ memset(&m,0,sizeof(m));m.config=0x83;m.motor_prepare_delay=30000000ULL;memset(&v,0,sizeof(v));
+ assert(!i9100_vibrator_init(&v,&vib_io,38022)&&!i9100_vibrator_enable(&v,1));
+ assert(i9100_vibrator_pulse(&v,20,50)==I9100_VIB_TIMEOUT&&!v.active&&!m.pwm&&!m.rail&&!m.pwm_starts);
+ memset(&m,0,sizeof(m));m.config=0x83;memset(&v,0,sizeof(v));
+ assert(!i9100_vibrator_init(&v,&vib_io,38022)&&!i9100_vibrator_enable(&v,1)&&!i9100_vibrator_pulse(&v,50,50));
+ m.ns=10000000ULL;m.fail_operation=m.operations+1U;
+ assert(i9100_vibrator_timeout(&v)==I9100_VIB_IO&&!v.active&&!m.rail&&!m.pwm);
+}
 int main(void)
-{sensor_st(1);sensor_st(2);sensor_mag();sensor_faults();sensor_sticky_registers();vibration();puts("PASS sensor IDs/BDU/signed units/axis/ASA/ST2/data-ready/timeout/partial IO/stable-control and powerdown readback/ACK-without-write recovery; haptic duty/time cap and applied-but-failed shutdown/quarantine");return 0;}
+{sensor_st(1);sensor_st(2);sensor_mag();sensor_faults();sensor_sticky_registers();vibration();vibration_deadlines();puts("PASS sensor IDs/BDU/signed units/axis/ASA/ST2/data-ready/timeout/partial IO/stable-control and powerdown readback/ACK-without-write recovery; haptic duty/time cap,prepare budget/early rearm and applied-but-failed shutdown/quarantine");return 0;}

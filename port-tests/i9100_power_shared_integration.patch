@@ -8,16 +8,17 @@
  struct bus {
   struct i9100_power_hw *hw;
   unsigned region,base,sda,scl;
-@@ -58,6 +59,8 @@
+@@ -58,6 +59,9 @@
                      uint8_t *data,unsigned count,int writing)
  {
   if(!hw || !data || reg>255 || !count || count>2 || (fuel && writing) || slave>127)return 0;
 + struct i9100_power_bus_ticket shared={0};
 + if(!i9100_power_bus_enter(fuel,&shared))return 0;
++ if(!i9100_power_bus_filter(&shared,slave,reg,data,count,writing)){(void)i9100_power_bus_leave(&shared);return 0;}
   struct bus b={hw,fuel?1U:0U,fuel?0x1a0U:0x40U,fuel?0U:6U,fuel?1U:7U,0,0,0};
   hw->enter(hw->cookie);
   b.con=rd(&b,0);b.dat=rd(&b,4);b.pull=rd(&b,8);
-@@ -82,7 +85,7 @@
+@@ -82,12 +86,16 @@
   wr(&b,4,(rd(&b,4)&~pins)|(b.dat&pins));
   wr(&b,8,(rd(&b,8)&~pulls)|(b.pull&pulls));
   wr(&b,0,(rd(&b,0)&~mux)|(b.con&mux));
@@ -26,6 +27,15 @@
  }
  int i9100_power_pmic_read(void *hw,unsigned reg,uint8_t *value)
  {uint8_t data=0;if(!value || !transfer(hw,0,0x66,reg,&data,1,0))return 0;*value=data;return 1;}
+ int i9100_power_pmic_write(void *hw,unsigned reg,uint8_t value)
+ {return transfer(hw,0,0x66,reg,&value,1,1);}
++int i9100_power_haptic_config_read(void *hw,uint8_t *value)
++{uint8_t data=0;if(!value||!transfer(hw,0,0x48,2,&data,1,0))return 0;*value=data;return 1;}
++int i9100_power_haptic_config_write(void *hw,uint8_t value)
++{return transfer(hw,0,0x48,2,&value,1,1);}
+ /* MAX8997 MUIC lives at 0x25 (0x4a>>1) on the same GPB[6:7] bus as the PMIC. */
+ int i9100_power_muic_read(void *hw,unsigned reg,uint8_t *value)
+ {uint8_t data=0;if(!value || !transfer(hw,0,0x25,reg,&data,1,0))return 0;*value=data;return 1;}
 --- a/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100Power.cpp
 +++ b/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100Power.cpp
 @@ -9,6 +9,7 @@
@@ -45,17 +55,18 @@
   virtual void free(void);
  };
  OSDefineMetaClassAndStructors(IOS7I9100Power,IOPMPowerSource)
-@@ -103,7 +106,8 @@
+@@ -103,7 +106,9 @@
   setProperty("ChargerController",battery.use_sub?"MAX8922":"MAX8997");
   setProperty("FuelGauge","MAX17042");setProperty("ChargingPolicy","USB rate; 4.2V; thermistor and voltage checks");
   setMaxCapacity(100);setTimeRemaining(-1);
 - sample();return timer->setTimeoutMS(1000)==kIOReturnSuccess;
 + sample();if(timer->setTimeoutMS(1000)!=kIOReturnSuccess)return false;
-+ return !i9100_power_shared_enabled()||!i9100_power_shared_publish(this,&hw);
++ const i9100_power_haptic_ops haptic={i9100_power_haptic_config_read,i9100_power_haptic_config_write,1};
++ return !i9100_power_shared_enabled()||!i9100_power_shared_publish_haptic(this,&hw,&haptic);
  }
  void IOS7I9100Power::sample(void)
  {
-@@ -159,8 +163,23 @@
+@@ -159,8 +164,23 @@
    s->setIsCharging(false);s->updateStatus();IOLog("I9100 POWER timer failed; charging stopped\n");
   }
  }
