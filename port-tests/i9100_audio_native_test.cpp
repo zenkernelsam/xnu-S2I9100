@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-struct i9100_peripheral_native {i9100_gpio_broker gpio;i9100_clock_gates clocks;};
+struct i9100_peripheral_native {i9100_gpio_broker gpio;i9100_clock_gates clocks;unsigned parent_holds;};
 struct i9100_dma_native {
  i9100_dma_buffer buffer;unsigned index,locked;
  void *engine;int (*idle)(void *);

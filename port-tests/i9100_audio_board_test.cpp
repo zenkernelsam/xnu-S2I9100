@@ -17,6 +17,14 @@ int i9100_peripheral_native_i2c_open(i9100_peripheral_native *,unsigned index,ui
 }
 int i9100_peripheral_native_i2c_close(i9100_peripheral_native *,unsigned index)
 {assert(index==1U&&m.board_bus_owned);if(m.board_close_fail)return I9100_MC_IO;m.board_bus_owned=0;return 0;}
+int i9100_peripheral_native_hold_get(i9100_peripheral_native *c,i9100_native_parent_hold *h)
+{assert(c==&parent&&!h->owned);h->context=c;h->self=(uintptr_t)h;h->owned=1;c->parent_holds++;return 0;}
+int i9100_peripheral_native_hold_put(i9100_native_parent_hold *h)
+{assert(h->owned&&h->self==(uintptr_t)h&&h->context==&parent&&parent.parent_holds);h->owned=0;parent.parent_holds--;return 0;}
+int i9100_peripheral_native_i2c_open_owned(i9100_peripheral_native *c,i9100_native_transport_lease *l,unsigned index,uint32_t pclk,i9100_peripheral_i2c *out)
+{int e=i9100_peripheral_native_i2c_open(c,index,pclk,out);if(m.board_bus_owned){l->context=c;l->self=(uintptr_t)l;l->kind=I9100_NATIVE_I2C6;l->generation=l->owned=1;}return e;}
+int i9100_peripheral_native_transport_close(i9100_native_transport_lease *l)
+{assert(l->owned&&l->self==(uintptr_t)l&&l->kind==I9100_NATIVE_I2C6);int e=i9100_peripheral_native_i2c_close(l->context,1);if(!e)l->owned=0;return e;}
 static i9100_audio_board_profile profile()
 {
  i9100_audio_board_profile p;memset(&p,0,sizeof(p));p.verified_rates.xtal=24000000U;
@@ -35,7 +43,7 @@ static void board_setup()
 }
 static void board_released()
 {
- assert(!m.contexts&&!m.maps&&!m.descriptors&&!m.locks&&!m.dma_count&&!m.board_bus_owned);
+ assert(!m.contexts&&!m.maps&&!m.descriptors&&!m.locks&&!m.dma_count&&!m.board_bus_owned&&!parent.parent_holds);
  assert((m.pmu[0x3cc4/4]&7U)==0U&&m.pmu[0xa00/4]==0x12340001U);
  for(unsigned n=0;n<7;n++)assert(!parent.gpio.banks[I9100_GPZ].owners[n]);
  assert((m.codec[2][3]&0x3fU)==0x3fU&&(m.codec[3][78]&2U)&&!m.codec[4][137]);

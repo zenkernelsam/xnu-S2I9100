@@ -248,9 +248,10 @@ int i9100_peripheral_native_hold_put(i9100_native_parent_hold *hold)
 {
  if(!hold||!hold->owned||hold->self!=(uintptr_t)hold||!hold->context||!ml_get_interrupts_enabled())return I9100_GPIO_OWNER;
  i9100_peripheral_native *c=hold->context;
- for(unsigned n=0;n<1000;n++){uint32_t old=__sync_fetch_and_add(&c->children,0);if(!old)return I9100_GPIO_OWNER;
-  if(__sync_bool_compare_and_swap(&c->children,old,old-1U)){hold->owned=0;return 0;}}
- return I9100_GPIO_BUSY;
+ if(!__sync_fetch_and_add(&c->children,0))return I9100_GPIO_OWNER;
+ /* The exact live hold guarantees at least its own reference. Atomic put
+  * cannot fail from contention and touches no parent after the drop. */
+ hold->owned=0;__sync_fetch_and_sub(&c->children,1U);return 0;
 }
 int i9100_peripheral_native_irq_is_enabled(i9100_peripheral_native *c,unsigned source,unsigned *out)
 {

@@ -13,6 +13,7 @@ void absolutetime_to_nanoseconds(uint64_t,uint64_t *);
 enum {PMU,CHIP,AUDSS,I2S,PDMA,MAPS,BUILDING=1,LIVE=2,CLOSING=3};
 struct i9100_audio_board_native {
  i9100_peripheral_native *parent;i9100_audio_board_profile profile;
+ i9100_native_parent_hold parent_hold;i9100_native_transport_lease bus_lease;
  IOMemoryDescriptor *memory[MAPS];IOMemoryMap *mapping[MAPS];volatile uint8_t *regs[MAPS];
  IOLock *lifecycle,*pmu_lock,*audss_lock;
  i9100_audio_mclk mclk;i9100_audio_domain domain;i9100_audss audss;
@@ -111,6 +112,7 @@ static void dispose(i9100_audio_board_native *a)
 {
  for(unsigned n=0;n<MAPS;n++){if(a->mapping[n])a->mapping[n]->release();if(a->memory[n])a->memory[n]->release();}
  if(a->lifecycle)IOLockFree(a->lifecycle);if(a->pmu_lock)IOLockFree(a->pmu_lock);if(a->audss_lock)IOLockFree(a->audss_lock);
+ if(a->parent_hold.owned)(void)i9100_peripheral_native_hold_put(&a->parent_hold);
  IOFree(a,sizeof(*a));
 }
 static int cleanup(i9100_audio_board_native *a)
@@ -121,7 +123,7 @@ static int cleanup(i9100_audio_board_native *a)
  if(a->codec.clock_owned){e=i9100_mc1n2_clock_stop(&a->codec);if(e)return e;}
  if(a->codec.cold_owned){e=i9100_mc1n2_cold_stop(&a->codec);if(e)return e;}
  if(a->codec.enabled){e=i9100_mc1n2_enable(&a->codec,0);if(e)return e;}
- if(a->bus_owned){e=i9100_peripheral_native_i2c_close(a->parent,1);if(e)return e;a->bus_owned=0;}
+ if(a->bus_owned){e=i9100_peripheral_native_transport_close(&a->bus_lease);if(e)return e;a->bus_owned=0;}
  if(a->pins.active){e=i9100_gpio_release(&a->pins,I9100_GPIO_RESTORE);if(e)return e;}
  if(a->audss.domain_owned){e=i9100_audss_release(&a->audss);if(e)return e;}
  if(a->domain.owned){e=i9100_audio_domain_release(&a->domain);if(e)return e;}
@@ -139,6 +141,7 @@ int i9100_audio_board_open(int enabled,i9100_peripheral_native *parent,const i91
  if(!gpio||!clocks||!gpio->enabled||!clocks->enabled||gpio->count!=I9100_BANK_COUNT||clocks->count!=I9100_GATE_COUNT)return I9100_AP_DISABLED;
  i9100_audio_board_native *a=(i9100_audio_board_native *)IOMalloc(sizeof(*a));if(!a)return I9100_AP_IO;
  memset(a,0,sizeof(*a));a->parent=parent;a->profile=*profile;a->phase=BUILDING;
+ int retained=i9100_peripheral_native_hold_get(parent,&a->parent_hold);if(retained){dispose(a);return retained;}
  a->lifecycle=IOLockAlloc();a->pmu_lock=IOLockAlloc();a->audss_lock=IOLockAlloc();
  if(!a->lifecycle||!a->pmu_lock||!a->audss_lock){dispose(a);return I9100_AP_IO;}
  const uint32_t addresses[MAPS]={0x10020000U,0x10000000U,0x03810000U,0x03830000U,0x12680000U};
@@ -150,8 +153,8 @@ int i9100_audio_board_open(int enabled,i9100_peripheral_native *parent,const i91
  if(!e)e=i9100_audss_init(&a->audss,&ai,&profile->verified_rates);
  if(e){dispose(a);return e;}
  /* Establish silence before changing MCLK, including the inherited state. */
- a->stage=1;e=i9100_peripheral_native_i2c_open(parent,1,profile->verified_i2c6_pclk_hz,&a->bus);
- a->bus_owned=!e||a->bus.cookie!=0;
+ a->stage=1;e=i9100_peripheral_native_i2c_open_owned(parent,&a->bus_lease,1,profile->verified_i2c6_pclk_hz,&a->bus);
+ a->bus_owned=a->bus_lease.owned;
  if(!e)e=i9100_mc1n2_init(&a->codec,&a->bus);
  if(!e)e=i9100_mc1n2_enable(&a->codec,1);
  if(!e&&a->codec.id!=0x78U&&a->codec.id!=0x79U)e=I9100_MC_ID;

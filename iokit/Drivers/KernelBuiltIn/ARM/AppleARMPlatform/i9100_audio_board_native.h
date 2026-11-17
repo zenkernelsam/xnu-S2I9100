@@ -38,6 +38,8 @@ int i9100_audio_board_close(struct i9100_audio_board_native **);
  * reset/rail support is still required before attempting that hardware case.
  * Owns I2C6, GPIO GPZ, PMU leases, AUDSS, AA/AB cold/clock-only state and optional
  * PCM child. GPZ stays leased until codec clocks are off; PCM borrows it.
+ * I2C6 uses an exact owned lease; legacy close/callbacks cannot steal it.
+ * A parent hold protects managers/maps before and after hardware claims.
  * PCM opening requires separately measured BCLK; register-ready is not a
  * measurement. All outputs stay muted/off. The optional audio worker owns
  * scheduling/IRQ routing separately; no HAL or amplifier-enable API exists.
