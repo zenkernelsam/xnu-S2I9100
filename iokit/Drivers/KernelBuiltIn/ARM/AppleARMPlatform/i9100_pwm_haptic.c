@@ -37,7 +37,7 @@ int i9100_pwm_haptic_configure(struct i9100_pwm_haptic *p,uint32_t period,uint32
  wr(p,MUX,rd(p,MUX)&~0xf0U);wr(p,COUNT,p->count);wr(p,COMPARE,p->compare);
  uint32_t control=(rd(p,CONTROL)&~MASK)|INVERT|RELOAD;
  wr(p,CONTROL,control|UPDATE);wr(p,CONTROL,control);
- if(rd(p,COUNT)!=p->count||rd(p,COMPARE)!=p->compare||(rd(p,MUX)&0xf0U))
+ if(rd(p,COUNT)!=p->count||rd(p,COMPARE)!=p->compare||(rd(p,MUX)&0xf0U)||(rd(p,CONTROL)&MASK)!=(INVERT|RELOAD))
   {p->fault=1;e=I9100_PWM_IO;}
 done:
  p->io.unlock(p->io.cookie);return e;
@@ -50,6 +50,11 @@ int i9100_pwm_haptic_run(struct i9100_pwm_haptic *p,int enabled)
  if(enabled&&(p->fault||(rd(p,PRESCALE)&255U)+1U!=p->prescaler)){
   wr(p,CONTROL,rd(p,CONTROL)&~START);p->fault=1;
   if(rd(p,CONTROL)&START)e=I9100_PWM_IO;else{p->running=0;e=I9100_PWM_CLOCK;}goto done;
+ }
+ if(enabled&&(rd(p,COUNT)!=p->count||rd(p,COMPARE)!=p->compare||(rd(p,MUX)&0xf0U)||
+              (rd(p,CONTROL)&MASK)!=(INVERT|RELOAD|(p->running?START:0U))||(rd(p,INTERRUPT)&2U))){
+  wr(p,CONTROL,rd(p,CONTROL)&~START);p->fault=1;
+  if(!(rd(p,CONTROL)&START))p->running=0;e=I9100_PWM_IO;goto done;
  }
  wr(p,CONTROL,(rd(p,CONTROL)&~START)|(enabled?START:0U));
  if(!!(rd(p,CONTROL)&START)!=(unsigned)enabled){p->fault=1;e=I9100_PWM_IO;}else p->running=enabled;
@@ -65,7 +70,7 @@ int i9100_pwm_haptic_release(struct i9100_pwm_haptic *p)
  if(rd(p,CONTROL)&START){p->fault=1;e=I9100_PWM_IO;goto done;}
  wr(p,COUNT,p->saved_count);wr(p,COMPARE,p->saved_compare);
  wr(p,MUX,(rd(p,MUX)&~0xf0U)|p->saved_mux);wr(p,CONTROL,(rd(p,CONTROL)&~MASK)|p->saved_control);
- if(rd(p,COUNT)!=p->saved_count||rd(p,COMPARE)!=p->saved_compare||(rd(p,MUX)&0xf0U)!=p->saved_mux)
+ if(rd(p,COUNT)!=p->saved_count||rd(p,COMPARE)!=p->saved_compare||(rd(p,MUX)&0xf0U)!=p->saved_mux||(rd(p,CONTROL)&MASK)!=p->saved_control)
   {p->fault=1;e=I9100_PWM_IO;}else p->prepared=p->running=p->fault=0;
 done:
  p->io.unlock(p->io.cookie);return e;

@@ -11,13 +11,14 @@
 #include "i9100_power_test.cpp"
 #undef main
 static std::atomic<unsigned> haptic_allocations(0),haptic_live(0);
+static unsigned haptic_fail_allocation;
 static thread_local bool haptic_irq_enabled=true,haptic_in_irq=false;
 static thread_local char haptic_thread_tag;
-void *i9100_model_event_allocate(size_t n){haptic_allocations++;haptic_live++;return calloc(1,n);}
+void *i9100_model_event_allocate(size_t n){unsigned seq=++haptic_allocations;if(seq==haptic_fail_allocation)return nullptr;haptic_live++;return calloc(1,n);}
 void i9100_model_event_free(void *p){assert(p&&haptic_live);haptic_live--;free(p);}
 void *IOMalloc(size_t n){return i9100_model_event_allocate(n);}
 void IOFree(void *p,size_t){if(p)i9100_model_event_free(p);}
-IOLock *IOLockAlloc(){auto *p=(IOLock *)i9100_model_event_allocate(sizeof(IOLock));p->held=false;return p;}
+IOLock *IOLockAlloc(){auto *p=(IOLock *)i9100_model_event_allocate(sizeof(IOLock));if(p)p->held=false;return p;}
 void IOLockFree(IOLock *p){assert(!p->held);i9100_model_event_free(p);}
 bool IOLockTryLock(IOLock *p){return __sync_bool_compare_and_swap(&p->held,false,true);}
 void IOLockUnlock(IOLock *p){assert(p->held);__sync_lock_release(&p->held);}
@@ -44,7 +45,7 @@ struct HapticHardware {
  i9100_power_hw io(){i9100_power_hw hw={this,read,write,delay,enter,leave};return hw;}
  i9100_power_haptic_ops ops(){i9100_power_haptic_ops ops={read_config,write_config,1};return ops;}
 };
-static void wait_entered(HapticHardware &hardware)
+static __attribute__((unused)) void wait_entered(HapticHardware &hardware)
 {
  auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
  while(!hardware.entered.load()&&std::chrono::steady_clock::now()<deadline)std::this_thread::yield();

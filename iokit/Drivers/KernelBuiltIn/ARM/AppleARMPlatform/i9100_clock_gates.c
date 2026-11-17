@@ -55,3 +55,22 @@ int i9100_clock_release(struct i9100_clock_lease *l)
  }
  g->refs--;s->token=0;l->active=0;unlock(m);return 0;
 }
+int i9100_clock_check(struct i9100_clock_lease *l)
+{
+ if(!l||!l->active||!l->manager||l->slot>=I9100_CLOCK_MAX_LEASES)return I9100_CLOCK_OWNER;
+ struct i9100_clock_gates *m=l->manager;int e=lock(m);if(e)return e;struct i9100_clock_slot *s=&m->leases[l->slot];
+ if(!m->enabled||s->token!=l->token||s->gate>=m->count||!m->gates[s->gate].refs)e=I9100_CLOCK_OWNER;
+ else if(m->gates[s->gate].fault||!(read(m,s->gate)&m->gates[s->gate].config.mask))e=I9100_CLOCK_IO;
+ unlock(m);return e;
+}
+int i9100_clock_recover_idle(struct i9100_clock_gates *m,unsigned gate)
+{
+ if(!m||gate>=m->count)return I9100_CLOCK_ARGUMENT;int e=lock(m);if(e)return e;
+ struct i9100_clock_gate *g=&m->gates[gate];if(!m->enabled||g->refs)e=I9100_CLOCK_BUSY;
+ else if(g->fault){
+  for(unsigned n=0;n<I9100_CLOCK_MAX_LEASES;n++)if(m->leases[n].token&&m->leases[n].gate==gate)e=I9100_CLOCK_BUSY;
+  if(!e&&!!(read(m,gate)&g->config.mask)!=g->initial)e=I9100_CLOCK_IO;
+  if(!e)g->fault=0;
+ }
+ unlock(m);return e;
+}

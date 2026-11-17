@@ -12,6 +12,7 @@
 extern "C" {
 #endif
 struct i9100_peripheral_native;
+struct i9100_native_parent_hold {struct i9100_peripheral_native *context;uintptr_t self;uint32_t owned;};
 enum i9100_native_transport_kind {I9100_NATIVE_UART=1,I9100_NATIVE_SDIO=2,
  I9100_NATIVE_I2C1=3,I9100_NATIVE_I2C6=4,I9100_NATIVE_I2C7=5};
 struct i9100_native_transport_lease {
@@ -24,6 +25,14 @@ struct i9100_native_transport_hold {
 };
 int i9100_peripheral_native_create(int enabled,struct i9100_peripheral_native **);
 int i9100_peripheral_native_destroy(struct i9100_peripheral_native **);
+int i9100_peripheral_native_hold_get(struct i9100_peripheral_native *,struct i9100_native_parent_hold *);
+int i9100_peripheral_native_hold_put(struct i9100_native_parent_hold *);
+int i9100_peripheral_native_irq_is_enabled(struct i9100_peripheral_native *,unsigned source,unsigned *);
+/* Parent holds keep private maps/managers alive between child API calls,
+ * including before a hardware lease exists or after acquisition fails.
+ * Owner still serializes get/API entry against parent destruction. Put
+ * touches no parent memory after the last reference is dropped. IRQ query
+ * reads a bounded GIC source only; it neither owns nor installs that IRQ. */
 struct i9100_gpio_broker *i9100_peripheral_native_gpio(struct i9100_peripheral_native *);
 struct i9100_clock_gates *i9100_peripheral_native_clocks(struct i9100_peripheral_native *);
 struct i9100_irq_registry *i9100_peripheral_native_irqs(struct i9100_peripheral_native *);

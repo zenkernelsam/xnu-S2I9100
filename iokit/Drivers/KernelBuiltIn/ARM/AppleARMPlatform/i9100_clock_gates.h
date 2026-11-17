@@ -19,6 +19,11 @@ int i9100_clock_init(struct i9100_clock_gates *,const struct i9100_clock_io *,co
 int i9100_clock_enable(struct i9100_clock_gates *,int);
 int i9100_clock_acquire(struct i9100_clock_gates *,unsigned,struct i9100_clock_lease *);
 int i9100_clock_release(struct i9100_clock_lease *);
+int i9100_clock_check(struct i9100_clock_lease *);
+int i9100_clock_recover_idle(struct i9100_clock_gates *,unsigned gate);
+/* check is read-only. Recovery clears a failed acquisition only when no
+ * refs/lease remain and the hardware bit is again at its saved initial
+ * state; it never writes a clock or supplies a frequency measurement. */
 /* Zeroed objects; gate-only CMU operations. No CPU/MPLL reprogramming or
  * claimed frequency. Last release preserves a pre-existing enabled gate. */
 #ifdef __cplusplus

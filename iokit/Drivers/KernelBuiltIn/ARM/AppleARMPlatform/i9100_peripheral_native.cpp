@@ -38,6 +38,7 @@ struct i9100_peripheral_native {
  native_i2c buses[3];
  native_uart uart;
  native_sdio sdio;
+ volatile uint32_t children;
 };
 static int thread_lock(IOLock *lock)
 {if(!ml_get_interrupts_enabled())return -1;return IOLockTryLock(lock)?0:-1;}
@@ -221,6 +222,7 @@ int i9100_peripheral_native_create(int enabled,i9100_peripheral_native **result)
 int i9100_peripheral_native_destroy(i9100_peripheral_native **owner)
 {
  if(!owner||!*owner)return I9100_GPIO_ARGUMENT;i9100_peripheral_native *c=*owner;
+ if(__sync_fetch_and_add(&c->children,0))return I9100_GPIO_BUSY;
  if(c->uart.live||c->uart.allowed_owner)return I9100_GPIO_BUSY;
  if(c->sdio.live||c->sdio.allowed_owner)return I9100_GPIO_BUSY;
  for(unsigned n=0;n<3;n++)if(c->buses[n].live)return I9100_GPIO_BUSY;
@@ -234,6 +236,28 @@ struct i9100_gpio_broker *i9100_peripheral_native_gpio(i9100_peripheral_native *
 struct i9100_clock_gates *i9100_peripheral_native_clocks(i9100_peripheral_native *c){return c?&c->clocks:0;}
 struct i9100_irq_registry *i9100_peripheral_native_irqs(i9100_peripheral_native *c){return c?&c->irqs:0;}
 struct i9100_irq_cascade *i9100_peripheral_native_eint(i9100_peripheral_native *c){return c?&c->eint:0;}
+int i9100_peripheral_native_hold_get(i9100_peripheral_native *c,i9100_native_parent_hold *hold)
+{
+ if(!c||!hold||!ml_get_interrupts_enabled()||hold->owned||(hold->self&&hold->self!=(uintptr_t)hold)||
+    ranges_overlap((uintptr_t)c,sizeof(*c),(uintptr_t)hold,sizeof(*hold)))return I9100_GPIO_ARGUMENT;
+ for(unsigned n=0;n<1000;n++){uint32_t old=__sync_fetch_and_add(&c->children,0);if(old==0xffffffffU)return I9100_GPIO_EXHAUSTED;
+  if(__sync_bool_compare_and_swap(&c->children,old,old+1U)){hold->context=c;hold->self=(uintptr_t)hold;hold->owned=1;return 0;}}
+ return I9100_GPIO_BUSY;
+}
+int i9100_peripheral_native_hold_put(i9100_native_parent_hold *hold)
+{
+ if(!hold||!hold->owned||hold->self!=(uintptr_t)hold||!hold->context||!ml_get_interrupts_enabled())return I9100_GPIO_OWNER;
+ i9100_peripheral_native *c=hold->context;
+ for(unsigned n=0;n<1000;n++){uint32_t old=__sync_fetch_and_add(&c->children,0);if(!old)return I9100_GPIO_OWNER;
+  if(__sync_bool_compare_and_swap(&c->children,old,old-1U)){hold->owned=0;return 0;}}
+ return I9100_GPIO_BUSY;
+}
+int i9100_peripheral_native_irq_is_enabled(i9100_peripheral_native *c,unsigned source,unsigned *out)
+{
+ if(!c||!out||source<32U||source>=256U||ranges_overlap((uintptr_t)c,sizeof(*c),(uintptr_t)out,sizeof(*out)))return I9100_IRQ_ARGUMENT;
+ uint32_t saved=irq_enter(c);unsigned enabled=!!(read_mmio(c,MAP_GIC,0x100U+(source/32U)*4U)&(1U<<(source%32U)));
+ irq_leave(c,saved);*out=enabled;return 0;
+}
 static int i2c_close_for(i9100_peripheral_native *c,unsigned index,i9100_native_transport_lease *owner)
 {
  if(!c||index>=3U)return I9100_I2C_ARGUMENT;native_i2c *b=&c->buses[index];
