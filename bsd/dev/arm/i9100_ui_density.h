@@ -12,6 +12,9 @@
  * Other apps are deliberately outside this first hardware qualification. */
 volatile uint32_t i9100_ui_density_diag[3][20];
 volatile uint32_t i9100_ui_density_execution[3][12];
+/* Read-only admission evidence for the existing getpid observation. It never
+ * relaxes an execution gate or reads user memory from a rejected context. */
+volatile uint32_t i9100_ui_density_admission[3][20];
 static uint32_t i9100_ui_density_pending[3][4];
 static volatile UInt32 i9100_ui_density_guard[3];
 static const char *i9100_ui_density_names[3]={"backboardd","SpringBoard","Setup"};
@@ -176,9 +179,57 @@ int i9100_ui_density_region_completed(proc_t p,unsigned pc,unsigned cpsr,unsigne
     else return 0;
     return i9100_ui_density_install(p,pc,cpsr,1,slide,code);
 }
+static void i9100_ui_density_admission_loss(unsigned slot)
+{
+    volatile uint32_t *a=i9100_ui_density_admission[slot];
+    for(unsigned n=0;n<4;n++){
+        unsigned old=a[18];
+        if(old==UINT32_MAX || OSCompareAndSwap(old,old+1,&a[18]))return;
+    }
+}
+static void i9100_ui_density_admission_note(proc_t p,int native_slot,
+    unsigned pc,unsigned sp,unsigned phase)
+{
+    if(!p)return;
+    unsigned slot;
+    for(slot=0;slot<3;slot++)if(i9100_ui_density_diag[slot][2]==(unsigned)p->p_pid &&
+        i9100_ui_density_diag[slot][5]>=4096 && i9100_ui_density_diag[slot][5]<=0x3ffff000U)break;
+    if(slot==3)return;
+    if(!OSCompareAndSwap(0,1,&i9100_ui_density_guard[slot])){
+        i9100_ui_density_admission_loss(slot);return;
+    }
+    volatile uint32_t *a=i9100_ui_density_admission[slot],*d=i9100_ui_density_diag[slot];
+    unsigned sequence=a[1];
+    if(sequence&1U){i9100_ui_density_admission_loss(slot);i9100_ui_density_guard[slot]=0;return;}
+    a[1]=sequence+1U;a[19]=sequence+1U;OSMemoryBarrier();
+    if(a[0]!=1 || a[2]!=(unsigned)p->p_pid || a[3]!=(unsigned)p->p_idversion)
+        for(unsigned n=2;n<18;n++)a[n]=0; /* Slot busy losses remain lifetime-scoped. */
+    a[2]=p->p_pid;a[3]=p->p_idversion;
+    if(a[4]!=UINT32_MAX)a[4]++;
+    if(pc>=d[5] && pc<d[5]+192U){
+        if(a[5]!=UINT32_MAX)a[5]++;
+        unsigned irq=ml_at_interrupt_context(),enabled=ml_get_interrupts_enabled();
+        unsigned preempt=get_preemption_level();task_t task=current_task();vm_map_t map=current_map();
+        unsigned offset=phase==1?22:phase==2?86:phase==3?150:0;
+        unsigned rejected=(native_slot!=(int)slot?1U:0U)|
+            (p->task!=task?2U:0U)|(!p->task || map!=get_task_map(p->task)?4U:0U)|
+            (irq?8U:0U)|(!enabled?16U:0U)|(preempt?32U:0U)|
+            (d[0]!=3 || d[1]!=2?64U:0U)|(d[2]!=(unsigned)p->p_pid?128U:0U)|
+            (d[12]!=(unsigned)p->p_idversion?256U:0U)|
+            (!offset || pc!=d[5]+offset?512U:0U)|
+            (sp<4096 || sp>0x3fffffc0U || (sp&3U)?1024U:0U);
+        a[6]=rejected;a[7]=pc;a[8]=sp;a[9]=phase;a[10]=preempt;
+        a[11]=(irq?1U:0U)|(enabled?2U:0U);a[12]=(uint32_t)(uintptr_t)task;
+        a[13]=(uint32_t)(uintptr_t)map;a[14]=(uint32_t)native_slot;
+        a[15]=d[3]==(uint32_t)(uintptr_t)p->task;
+    }
+    a[0]=1;OSMemoryBarrier();a[19]=sequence+2U;
+    OSMemoryBarrier();a[1]=sequence+2U;OSMemoryBarrier();i9100_ui_density_guard[slot]=0;
+}
 void i9100_ui_density_note(proc_t p,unsigned pc,unsigned sp,unsigned phase)
 {
     int slot=i9100_ui_density_slot(p);
+    i9100_ui_density_admission_note(p,slot,pc,sp,phase);
     if(slot<0 || phase<1 || phase>3 || p->task!=current_task() || current_map()!=get_task_map(p->task) ||
        ml_at_interrupt_context() || !ml_get_interrupts_enabled() || get_preemption_level()!=0)return;
     volatile uint32_t *d=i9100_ui_density_diag[slot];unsigned offset=phase==1?22:phase==2?86:150;
@@ -189,7 +240,9 @@ void i9100_ui_density_note(proc_t p,unsigned pc,unsigned sp,unsigned phase)
         if(saved[7]!=0x3a283e50U+d[14])error=14;
         else error=copyin(saved[7]+44,&bits,4);
     }
-    if(!OSCompareAndSwap(0,1,&i9100_ui_density_guard[slot]))return;
+    if(!OSCompareAndSwap(0,1,&i9100_ui_density_guard[slot])){
+        i9100_ui_density_admission_loss((unsigned)slot);return;
+    }
     volatile uint32_t *e=i9100_ui_density_execution[slot];
     e[0]=1;e[1]=p->p_pid;e[2]=p->p_idversion;
     if(e[phase+2]!=UINT32_MAX)e[phase+2]++;
