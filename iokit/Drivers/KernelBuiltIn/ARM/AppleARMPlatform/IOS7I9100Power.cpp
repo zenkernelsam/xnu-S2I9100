@@ -10,8 +10,12 @@
 #include "../../../../../pexpert/arm/i9100_usb_stats.h"
 #include "i9100_power.h"
 #include "i9100_charge_diag.h"
+#include "i9100_power_budget_diag.h"
+#include "IOS7LeoGraphicsState.h"
 extern "C" {
 #include <mach/mach_time.h>
+#include <mach/processor_info.h>
+#include <kern/clock.h>
 #include <kern/thread_call.h>
 #include "../../../../../bsd/sys/reboot.h"
 extern int boot(int,int,char *);
@@ -32,6 +36,48 @@ volatile uint32_t i9100_power_revision_value=0xffffffffU;
 volatile int32_t i9100_power_temp;
 volatile int32_t i9100_power_reason=I9100_POWER_IO;
 volatile uint32_t i9100_power_policy[10];
+extern processor_t master_processor;
+extern uint32_t processor_avail_count;
+extern uint32_t hz_tick_interval;
+extern int precise_user_kernel_time;
+extern kern_return_t processor_info(processor_t, processor_flavor_t, host_t *,
+    processor_info_t, mach_msg_type_number_t *);
+volatile uint32_t i9100_cpu_load_diag[I9100_POWER_BUDGET_WORDS] = {
+    1, 0, I9100_POWER_BUDGET_STRIDE, I9100_POWER_BUDGET_CAPACITY
+};
+}
+
+/* Ask the native CPU accounting API, including its current-idle adjustment.
+ * Do not read private struct offsets or equate a timer IRQ count with load.
+ * This reports the master CPU only, with available count retained explicitly. */
+static void i9100_cpu_budget_sample(unsigned polls)
+{
+ processor_t processor=master_processor;
+ processor_cpu_load_info_data_t load={0};
+ mach_msg_type_number_t count=PROCESSOR_CPU_LOAD_INFO_COUNT;
+ host_t host=0;
+ kern_return_t result=KERN_FAILURE;
+ uint32_t tick=hz_tick_interval,available=processor_avail_count;
+ if(processor && tick && available && available<=32)
+  result=processor_info(processor,PROCESSOR_CPU_LOAD_INFO,&host,
+   (processor_info_t)&load,&count);
+ uint64_t now=mach_absolute_time();
+ uint32_t words[I9100_POWER_BUDGET_STRIDE-1U]={0};
+ words[0]=(uint32_t)now;words[1]=(uint32_t)(now>>32);words[2]=polls;
+ words[3]=result==KERN_SUCCESS && count==PROCESSOR_CPU_LOAD_INFO_COUNT;
+ words[4]=(uint32_t)result;words[5]=count;words[6]=available;
+ words[7]=load.cpu_ticks[CPU_STATE_USER];words[8]=load.cpu_ticks[CPU_STATE_SYSTEM];
+ words[9]=load.cpu_ticks[CPU_STATE_IDLE];words[10]=load.cpu_ticks[CPU_STATE_NICE];
+ words[11]=tick;words[12]=precise_user_kernel_time!=0;
+ words[13]=(uint32_t)(uintptr_t)processor;
+ LeoGraphicsState graphics={0};
+ if(ios7leo_graphics_snapshot(&graphics)){
+  words[14]=1;words[15]=graphics.last_client;
+  words[16]=graphics.send_calls;words[17]=graphics.send_success;
+  words[18]=(graphics.requested?1U:0U)|(graphics.enabled?2U:0U)|
+   (graphics.closed?4U:0U)|(graphics.port_present?8U:0U)|(graphics.callback_present?16U:0U);
+ }
+ i9100_power_budget_publish(i9100_cpu_load_diag,words);
 }
 
 class IOS7I9100Power : public IOPMPowerSource {
@@ -139,8 +185,10 @@ void IOS7I9100Power::sample(void)
   chargeTestDone=1;
   i9100_charge_probe(&battery,&hw,polls,probeSleep);
  }
- if(chargeProbe==1 && (polls==1 || polls%30==0))
+ if(chargeProbe==1 && (polls==1 || polls%30==0)){
   i9100_charge_snapshot(&battery,&hw,polls,mach_absolute_time());
+  i9100_cpu_budget_sample(polls);
+ }
  i9100_power_valid=battery.valid;i9100_power_percent=battery.percent;
  i9100_power_mv=battery.millivolts;i9100_power_connected=battery.connected;
  i9100_power_charging=battery.charging;i9100_power_temp=battery.temperature_deci_c;

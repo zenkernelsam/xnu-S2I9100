@@ -48,6 +48,7 @@ int ios7leo_display_power(uint32_t state);
 #include "IOS7LeoDisplayObservation.h"
 #endif
 #include "IOS7LeoGraphicsState.h"
+#include "i9100_power_budget_diag.h"
 #include <mach/vm_param.h>
 extern "C" {
 #include <pexpert/pexpert.h>
@@ -81,6 +82,13 @@ static volatile UInt32 leo_graphics_guard,leo_graphics_losses,leo_graphics_unkno
 static volatile UInt32 leo_graphics_client_ids;
 static LeoGraphicsState leo_graphics_state;
 static LeoGraphicsEvent leo_graphics_events[LEO_GRAPHICS_EVENT_CAPACITY];
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+extern "C" {
+volatile uint32_t i9100_display_client_power_diag[I9100_POWER_BUDGET_WORDS] = {
+    1, 0, I9100_POWER_BUDGET_STRIDE, I9100_POWER_BUDGET_CAPACITY
+};
+}
+#endif
 static void leo_graphics_inc(uint32_t *value){if(*value!=UINT32_MAX)++*value;}
 static void leo_graphics_drop(void)
 {
@@ -954,6 +962,8 @@ class IOS7LabFramebufferClient : public IOUserClient {
     uint64_t vsyncCount;
     uint64_t vsyncGeneration;
     uint32_t graphicsClient,graphicsOwnerPID;
+    unsigned powerDiagEnabled;
+    void recordDisplayPower(uint32_t state,int hardwareResult);
     LeoGraphicsEvent graphicsEvent(uint32_t kind,uint32_t selector,IOReturn result,
         const LeoGraphicsCall &note);
     void noteGraphics(uint32_t kind,uint32_t selector,IOReturn result,
@@ -1017,6 +1027,10 @@ bool IOS7LabFramebufferClient::initWithTask(task_t task, void *security,
     vsyncRequested=vsyncClosed=false;
     vsyncCount = 0;
     vsyncGeneration=1;graphicsClient=graphicsOwnerPID=0;
+    powerDiagEnabled=0;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    (void)PE_parse_boot_argn("i9100chargediag",&powerDiagEnabled,sizeof(powerDiagEnabled));
+#endif
     if (!IOUserClient::initWithTask(task, security, type, properties))
         return false;
     transactionLock = IOLockAlloc();
@@ -1032,6 +1046,34 @@ bool IOS7LabFramebufferClient::initWithTask(task_t task, void *security,
     graphicsOwnerPID=pid>0?(uint32_t)pid:0;
     leo_graphics_open(graphicsClient,graphicsOwnerPID);
     return true;
+}
+
+/* Observe this caller without changing its subscription or the native result. */
+void IOS7LabFramebufferClient::recordDisplayPower(uint32_t state,int hardwareResult)
+{
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    if(powerDiagEnabled!=1 || !transactionLock)return;
+    uint64_t now=mach_absolute_time();
+    uint32_t words[I9100_POWER_BUDGET_STRIDE-1U]={0};
+    words[0]=(uint32_t)now;words[1]=(uint32_t)(now>>32);
+    words[2]=state;words[3]=(uint32_t)hardwareResult;
+    if(!IOLockTryLock(transactionLock)){leo_graphics_drop();return;}
+    words[4]=graphicsClient;words[5]=graphicsOwnerPID;
+    words[6]=vsyncRequested;words[7]=vsyncEnabled;words[8]=vsyncClosed;
+    words[9]=IPC_PORT_VALID(vsyncPort);words[10]=vsyncCallback!=0;
+    words[11]=(uint32_t)vsyncGeneration;words[12]=(uint32_t)(vsyncGeneration>>32);
+    words[13]=(uint32_t)vsyncCount;words[14]=(uint32_t)(vsyncCount>>32);
+    words[15]=powerDiagEnabled;
+    IOLockUnlock(transactionLock);
+    /* Never hold transactionLock while entering a second diagnostic guard.
+     * A skipped diagnostic cannot change hardware or the method result. */
+    if(!leo_graphics_try())return;
+    words[17]=leo_graphics_losses;words[18]=leo_graphics_unknown;
+    i9100_power_budget_publish(i9100_display_client_power_diag,words);
+    leo_graphics_unlock();
+#else
+    (void)state;(void)hardwareResult;
+#endif
 }
 
 /* Caller holds transactionLock. Flat values only; no port or user dereference. */
@@ -1613,6 +1655,7 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
             return kIOReturnBadArgument;
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
         int result=ios7leo_display_power((uint32_t)args->scalarInput[0]);
+        recordDisplayPower((uint32_t)args->scalarInput[0],result);
         return result==0?kIOReturnSuccess:result==2?kIOReturnBusy:kIOReturnNotReady;
 #else
         return kIOReturnSuccess;
