@@ -7,6 +7,14 @@
 #define I9100_HOME_CON 0xc60U
 #define I9100_HOME_DAT 0xc64U
 #define I9100_HOME_PULL 0xc68U
+#define I9100_POWER_CON 0xc40U
+#define I9100_POWER_DAT 0xc44U
+#define I9100_POWER_PULL 0xc48U
+static inline uint32_t i9100_power_key_input_con(uint32_t con){return con&~(15U<<28);}
+static inline uint32_t i9100_power_key_input_pull(uint32_t pull){return (pull&~(3U<<14))|(3U<<14);}
+static inline uint32_t i9100_power_key_restore_con(uint32_t con,uint32_t saved){return (con&~(15U<<28))|(saved&(15U<<28));}
+static inline uint32_t i9100_power_key_restore_pull(uint32_t pull,uint32_t saved){return (pull&~(3U<<14))|(saved&(3U<<14));}
+static inline unsigned i9100_power_key_down(uint32_t dat){return (dat&(1U<<7))?0U:1U;}
 static inline uint32_t i9100_home_input_con(uint32_t con) {return con&~(15U<<20);}
 static inline uint32_t i9100_home_input_pull(uint32_t pull) {return (pull&~(3U<<10))|(3U<<10);}
 static inline uint32_t i9100_home_restore_con(uint32_t con,uint32_t saved)
@@ -29,16 +37,18 @@ struct __attribute__((packed)) I9100HomePacket {
 };
 typedef char I9100HomePacket52[sizeof(I9100HomePacket)==52?1:-1];
 typedef char I9100HomeUsageOffset[__builtin_offsetof(I9100HomePacket,key.usagePage)==44?1:-1];
-static inline bool i9100_home_packet(unsigned down,uint64_t time,uint64_t sender,I9100HomePacket *p)
+static inline bool i9100_key_packet(unsigned usage,unsigned down,uint64_t time,uint64_t sender,I9100HomePacket *p)
 {
- if(!p || down>1 || !time || !sender)return false;
+ if(!p || down>1 || !time || !sender || (usage!=0x30 && usage!=0x40))return false;
  p->header.attributeLength=0;p->key.depth=0;
  p->key.reserved[0]=p->key.reserved[1]=p->key.reserved[2]=0;
  p->header.timeStamp=time;p->header.senderID=sender;p->header.eventCount=1;
  p->header.options=1;p->key.size=24;p->key.type=3;p->key.options=1;
- p->key.usagePage=12;p->key.usage=0x40;p->key.down=down;
+ p->key.usagePage=12;p->key.usage=(uint16_t)usage;p->key.down=down;
  return true;
 }
+static inline bool i9100_home_packet(unsigned down,uint64_t time,uint64_t sender,I9100HomePacket *p)
+{return i9100_key_packet(0x40,down,time,sender,p);}
 struct I9100HomeEdge { uint64_t timestamp; unsigned down; };
 struct I9100HomeState {
  unsigned initialized,armed,stable,candidate,head,count,overflows;

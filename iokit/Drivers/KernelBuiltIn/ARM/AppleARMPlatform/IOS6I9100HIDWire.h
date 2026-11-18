@@ -75,6 +75,6 @@ static inline bool ios6_home_match(const void *bytes,uint32_t size)
  if(!bytes || size!=56)return false;
  const IOS6HomePacket *p=(const IOS6HomePacket *)bytes;
  return p->header.count==1 && p->key.base.size==40 && p->key.base.type==3 &&
-  p->key.base.depth==0 && p->key.page==12 && p->key.usage==0x40;
+  p->key.base.depth==0 && p->key.page==12 && (p->key.usage==0x40 || p->key.usage==0x30);
 }
 #endif

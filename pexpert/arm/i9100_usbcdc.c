@@ -22,6 +22,7 @@ extern unsigned i9ctl_thread_dump(char *buf, unsigned cap, const char *want);
 extern unsigned i9ctl_ports_dump(char *buf, unsigned cap, const char *want);
 extern unsigned i9100_hid_swipe(unsigned x0,unsigned y0,unsigned x1,unsigned y1,unsigned ms);
 extern unsigned i9100_hid_home(unsigned ms);
+extern unsigned i9100_hid_power(unsigned ms);
 #endif
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
@@ -346,8 +347,9 @@ static void uctl_command(void)
 				uctl_action = !strcmp(verb, "reboot-download") ? 2 : 1;
 				answer = uctl_action == 2 ? "OK reboot-download" : "OK reboot";
 			}
-		} else if (!strncmp(verb, "hid-home ", 9)) {
-            const char *p=verb+9,*start=p;unsigned ms=uctl_hex(&p);
+		} else if (!strncmp(verb, "hid-home ", 9) || !strncmp(verb,"hid-power ",10)) {
+            unsigned power=!strncmp(verb,"hid-power ",10);
+            const char *p=verb+(power?10:9),*start=p;unsigned ms=uctl_hex(&p);
             if(!uctl_enabled)answer="ERR disabled";
             else if(uctl_doff<uctl_dlen)answer="ERR busy";
             else if(p==start || p-start>4 || *p)answer="ERR input-args";
@@ -355,7 +357,7 @@ static void uctl_command(void)
 #ifdef I9100_USB_SIM
                 unsigned result=0;
 #else
-                unsigned result=i9100_hid_home(ms);
+                unsigned result=power?i9100_hid_power(ms):i9100_hid_home(ms);
 #endif
                 answer=result==1?"OK input-queued":result==2?"ERR input-args":
                     result==3?"ERR busy":result==4?"ERR input-not-ready":"ERR disabled";

@@ -47,6 +47,7 @@ volatile uint32_t i9100_touch_sender_identity[4]={1};
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 /* Input workloop owns the writes; panel diagnostics read RAM only. */
 volatile I9100HomeObservation i9100_home_observation;
+volatile I9100HomeObservation i9100_power_key_observation;
 volatile I9100TouchObservation i9100_touch_observation;
 volatile uint32_t i9100_home_test_diag[6];
 /* USB IRQ only publishes bounded requests. Event construction/queue work
@@ -56,7 +57,7 @@ static unsigned i9100_hid_request(unsigned kind,unsigned x0,unsigned y0,unsigned
 {
  if(!i9100_input_test[0])return 0;
  if(!i9100_input_valid(x0,y0,x1,y1,ms))return 2;
- if(!i9100_input_test[kind?14:12])return 4;
+ if(kind>2 || !i9100_input_test[kind==2?15:kind?14:12])return 4;
  UInt32 phase=i9100_input_test[1];
  if((phase!=1 && phase!=4 && phase!=5) ||
   !OSCompareAndSwap(phase,UINT32_MAX,&i9100_input_test[1]))return 3;
@@ -72,6 +73,8 @@ extern "C" unsigned i9100_hid_swipe(unsigned x0,unsigned y0,unsigned x1,unsigned
 {return i9100_hid_request(0,x0,y0,x1,y1,ms);}
 extern "C" unsigned i9100_hid_home(unsigned ms)
 {return i9100_hid_request(1,0,0,0,0,ms);}
+extern "C" unsigned i9100_hid_power(unsigned ms)
+{return i9100_hid_request(2,0,0,0,0,ms);}
 #endif
 static volatile UInt32 leo_touch_observer_guard,leo_touch_observer_loss,leo_touch_observer_unknown;
 static LeoTouchObservation leo_touch_observer_state;
@@ -167,11 +170,14 @@ class IOHIDEventService : public IOService {
  uint64_t inputStart,inputDuration;
  void pollInput(void);
  uint32_t homeSavedCon,homeSavedPull;
+ uint32_t powerSavedCon,powerSavedPull;
  I9100HomeState homeState;
+ I9100HomeState powerState;
  I9100HomeTest homeTest;
  I9100HomePacket lastHomePacket;
  bool lastHomeValid;
  void pollHome(void);
+ void pollPower(uint64_t now,uint64_t debounce);
  i9100_touch_bus touchBus;
  i9100_touch_state touchState;
  void updateI9100State(void);
@@ -239,7 +245,7 @@ bool IOHIDEventService::init(OSDictionary *dictionary)
  queueMemory=0;lock=0;loop=0;timer=0;queue=0;consumer=0;
  bzero(&state,sizeof(state));
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
- homeDevice=getProperty("I9100HomeButton")!=0;homeSavedCon=homeSavedPull=0;
+ homeDevice=getProperty("I9100HomeButton")!=0;homeSavedCon=homeSavedPull=powerSavedCon=powerSavedPull=0;
  int wireABI=0;PE_parse_boot_argn("i9100hidabi",&wireABI,sizeof(wireABI));ios6Wire=wireABI==6;
  inputStart=inputDuration=0;
  if(!homeDevice){
@@ -251,6 +257,7 @@ bool IOHIDEventService::init(OSDictionary *dictionary)
   i9100_input_test[1]=i9100_input_test[0]?1U:0U;
  }
  i9100_home_reset(&homeState);bzero(&lastHomePacket,sizeof(lastHomePacket));lastHomeValid=false;
+ i9100_home_reset(&powerState);
  bzero(&homeTest,sizeof(homeTest));
  if(homeDevice){int diagnostic=0,control=0,enabled=0;
   PE_parse_boot_argn("i9100hometest",&enabled,sizeof(enabled));
@@ -275,6 +282,7 @@ void IOHIDEventService::publishSnapshot(void)
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
  if(homeDevice){
   i9100_input_test[14]=opened && homeState.initialized && !homeState.stable && !homeState.count;
+  i9100_input_test[15]=opened && powerState.initialized && !powerState.stable && !powerState.count;
   i9100_home_observation.opened=opened;
   i9100_home_observation.head=queue?queue->readerHead():0;
   i9100_home_observation.tail=queue?queue->writerTail():0;
@@ -453,7 +461,11 @@ bool IOHIDEventService::start(IOService *provider)
   homeSavedCon=readRegister(this,1,I9100_HOME_CON);homeSavedPull=readRegister(this,1,I9100_HOME_PULL);
   writeRegister(this,1,I9100_HOME_CON,i9100_home_input_con(homeSavedCon));
   writeRegister(this,1,I9100_HOME_PULL,i9100_home_input_pull(homeSavedPull));
+  powerSavedCon=readRegister(this,1,I9100_POWER_CON);powerSavedPull=readRegister(this,1,I9100_POWER_PULL);
+  writeRegister(this,1,I9100_POWER_CON,i9100_power_key_input_con(powerSavedCon));
+  writeRegister(this,1,I9100_POWER_PULL,i9100_power_key_input_pull(powerSavedPull));
   i9100_home_observation.enabled=1;
+  i9100_power_key_observation.enabled=1;
   loop=IOWorkLoop::workLoop();timer=IOTimerEventSource::timerEventSource(this,tick);
   if(!loop || !timer || loop->addEventSource(timer)!=kIOReturnSuccess || !publishProperties())return false;
   if(timer->setTimeoutMS(20)!=kIOReturnSuccess)return false;
@@ -535,7 +547,10 @@ void IOHIDEventService::free(void)
  if(homeDevice && registers[1]){
   writeRegister(this,1,I9100_HOME_CON,i9100_home_restore_con(readRegister(this,1,I9100_HOME_CON),homeSavedCon));
   writeRegister(this,1,I9100_HOME_PULL,i9100_home_restore_pull(readRegister(this,1,I9100_HOME_PULL),homeSavedPull));
+  writeRegister(this,1,I9100_POWER_CON,i9100_power_key_restore_con(readRegister(this,1,I9100_POWER_CON),powerSavedCon));
+  writeRegister(this,1,I9100_POWER_PULL,i9100_power_key_restore_pull(readRegister(this,1,I9100_POWER_PULL),powerSavedPull));
   i9100_home_observation.enabled=0;
+  i9100_power_key_observation.enabled=0;
  }else i9100_touch_bus_fini(&touchBus);
 #endif
  for(unsigned n=0;n<LEO_TOUCH_REGIONS;n++){
@@ -612,6 +627,42 @@ void IOHIDEventService::pollInput(void)
   i9100_input_test[2],down?"down":"up",x,y,(unsigned)sizeof(wire));
  publishSnapshot();
 }
+/* Caller owns the existing key workloop lock. No GPIO programming pulses. */
+void IOHIDEventService::pollPower(uint64_t now,uint64_t debounce)
+{
+ unsigned physical=i9100_power_key_down(readRegister(this,1,I9100_POWER_DAT)),down=physical;
+ bool requested=i9100_input_test[0] && i9100_input_test[13]==2 &&
+  (i9100_input_test[1]==2 || i9100_input_test[1]==3);
+ if(requested){
+  if(!opened || physical){i9100_input_test[9]=2;OSMemoryBarrier();i9100_input_test[1]=5;}
+  else{
+   if(i9100_input_test[1]==2){
+    AbsoluteTime duration;nanoseconds_to_absolutetime((uint64_t)i9100_input_test[7]*1000000ULL,&duration);
+    inputDuration=__OSAbsoluteTime(duration);inputStart=now;OSMemoryBarrier();i9100_input_test[1]=3;
+   }
+   down=now-inputStart<inputDuration;
+  }
+ }
+ i9100_power_key_observation.opened=opened;i9100_power_key_observation.down=down;
+ if(!opened){i9100_home_reset(&powerState);i9100_input_test[15]=0;return;}
+ unsigned count=powerState.count;
+ i9100_home_sample_period(&powerState,down,now,debounce);
+ if(count!=powerState.count && i9100_power_key_observation.edges!=UINT32_MAX)i9100_power_key_observation.edges++;
+ for(unsigned n=0;n<16 && powerState.count;n++){
+  I9100HomeEdge *edge=&powerState.edges[powerState.head];I9100HomePacket packet;
+  if(!i9100_key_packet(0x30,edge->down,edge->timestamp,getRegistryEntryID(),&packet) || !queue->sane())break;
+  if(ios6Wire){IOS6HomePacket wire;if(!ios6_home_wire(&packet,&wire) || !queue->enqueue(&wire,sizeof(wire)))break;}
+  else if(!queue->enqueue(&packet,sizeof(packet)))break;
+  powerState.head=(powerState.head+1U)&15U;powerState.count--;
+  if(i9100_power_key_observation.enqueued!=UINT32_MAX)i9100_power_key_observation.enqueued++;
+  if(requested && i9100_input_test[1]==3)i9100_input_test[8]++;
+ }
+ i9100_power_key_observation.head=queue->readerHead();i9100_power_key_observation.tail=queue->writerTail();
+ if(requested && i9100_input_test[1]==3 && !down && !powerState.stable && !powerState.count && i9100_input_test[8]>=2){
+  OSMemoryBarrier();i9100_input_test[1]=4;
+ }
+ i9100_input_test[15]=powerState.initialized && !powerState.stable && !powerState.count;
+}
 void IOHIDEventService::pollHome(void)
 {
  IOLockLock(lock);
@@ -640,7 +691,7 @@ void IOHIDEventService::pollHome(void)
  i9100_home_test_diag[2]=physical;i9100_home_test_diag[3]=down;
  i9100_home_test_diag[4]=homeTest.phase==3;i9100_home_test_diag[5]=clientPID;
  i9100_home_observation.down=down;publishSnapshot();
- if(!opened){i9100_home_reset(&homeState);IOLockUnlock(lock);return;}
+ if(!opened){i9100_home_reset(&homeState);pollPower(now,__OSAbsoluteTime(debounceTime));IOLockUnlock(lock);return;}
  unsigned count=homeState.count;
  i9100_home_sample_period(&homeState,down,now,__OSAbsoluteTime(debounceTime));
  if(homeState.count!=count){
@@ -666,6 +717,7 @@ void IOHIDEventService::pollHome(void)
  }
  if(requested && i9100_input_test[1]==3 && !down && !homeState.stable &&
   !homeState.count && i9100_input_test[8]>=2){OSMemoryBarrier();i9100_input_test[1]=4;}
+ pollPower(now,__OSAbsoluteTime(debounceTime));
  publishSnapshot();
  IOLockUnlock(lock);
 }
@@ -767,14 +819,14 @@ void IOHIDEventService::poll(void)
 void IOHIDEventService::closeReader(void)
 {
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
- if(((homeDevice && i9100_input_test[13]==1) || (!homeDevice && !i9100_input_test[13])) &&
+ if(((homeDevice && (i9100_input_test[13]==1 || i9100_input_test[13]==2)) || (!homeDevice && !i9100_input_test[13])) &&
   (i9100_input_test[1]==2 || i9100_input_test[1]==3)){
   i9100_input_test[9]=3;OSMemoryBarrier();i9100_input_test[1]=5;
  }
 #endif
  opened=pending=previousDown=lastValid=false;
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
- if(homeDevice){i9100_home_reset(&homeState);lastHomeValid=false;}
+ if(homeDevice){i9100_home_reset(&homeState);i9100_home_reset(&powerState);i9100_input_test[15]=0;lastHomeValid=false;}
 #endif
  leo_touch_inc(&queueEpoch);
  queue->discardAll();observedHead=0;
