@@ -23,7 +23,7 @@ static struct {
  uint8_t codec[5][256],address[5];uint64_t ns;bool interrupts;
  uint32_t previous_debug;
  uint32_t previous_mode;
- unsigned board_mode,board_bus_owned,board_bus_fail,board_close_fail,board_tx_fail,board_stall_power;
+ unsigned board_mode,board_bus_owned,board_bus_fail,board_close_fail,board_tx_fail,board_stall_power,board_tx_fail_from;
  unsigned check_mclk_silence,extra_contexts;uint32_t previous_mclk;
  unsigned board_aa_unlocked;
  uint32_t pmu[4096],chip[1024],previous_power;uint64_t power_ready_at,vref_started;
@@ -155,7 +155,8 @@ static uint8_t board_codec_read(unsigned reg)
 }
 static int bus_transfer(void *,const i9100_i2c_message *msgs,unsigned count,unsigned *done)
 {
- assert(m.bus_locked&&msgs[0].address==0x3a);m.transactions++;*done=0;if(m.mute_fail&&m.transactions>6U)return -1;
+ assert(m.bus_locked&&msgs[0].address==0x3a);m.transactions++;*done=0;
+ if((m.mute_fail&&m.transactions>6U)||(m.board_tx_fail_from&&m.transactions>=m.board_tx_fail_from))return -1;
  if(m.board_mode){
   assert(m.board_bus_owned);
   if(count==1){for(unsigned n=0;n<msgs[0].length;n+=2)board_codec_write(msgs[0].bytes[n]>>1,msgs[0].bytes[n+1]);}

@@ -133,6 +133,28 @@ int main()
  assert(i9100_audio_board_close(&a)==I9100_MC_IO&&a&&parent.parent_holds&&m.maps==5U);
  assert(!i9100_audio_board_status(a,&status,0)&&status.output_owned&&status.clock_owned&&status.domain_owned);
  m.board_tx_fail=0;assert(!i9100_audio_board_close(&a));board_released();
+ /* Exact worker ownership excludes legacy mutators, a second worker, stale
+  * generations and copied leases; it persists through live PCM cleanup. */
+ board_setup();assert(!open_board(&a));i9100_audio_board_worker_lease owner={},foreign={};
+ transactions=m.transactions;allocations=m.allocations;
+ assert(!i9100_audio_board_worker_claim(a,&owner)&&owner.owned);
+ assert(i9100_audio_board_worker_claim(a,&foreign)==I9100_AP_BUSY&&!foreign.owned);
+ assert(i9100_audio_board_hold(a)==I9100_AP_BUSY&&i9100_audio_board_unhold(a)==I9100_AP_OWNER);
+ assert(i9100_audio_board_pcm_open(a,1536000)==I9100_AP_BUSY&&i9100_audio_board_pcm_close(a)==I9100_AP_BUSY);
+ assert(i9100_audio_board_output_prepare(1,a,I9100_MC_HEADPHONES,-30000)==I9100_AP_BUSY);
+ assert(i9100_audio_board_start(a)==I9100_AP_BUSY&&i9100_audio_board_output_mute(a)==I9100_AP_BUSY);
+ assert(m.transactions==transactions&&m.allocations==allocations);
+ i9100_audio_board_worker_lease copied=owner;
+ assert(i9100_audio_board_worker_pcm_open(&copied,1536000)==I9100_AP_OWNER);
+ assert(i9100_audio_board_worker_release(&copied)==I9100_AP_OWNER);
+ assert(!i9100_audio_board_worker_pcm_open(&owner,1536000));
+ assert(i9100_audio_board_worker_release(&owner)==I9100_AP_BUSY&&owner.owned);
+ assert(!i9100_audio_board_worker_pcm_close(&owner));uint32_t generation=owner.generation;
+ assert(!i9100_audio_board_worker_release(&owner));assert(i9100_audio_board_worker_start(&owner)==I9100_AP_OWNER);
+ assert(!i9100_audio_board_worker_claim(a,&owner)&&owner.generation!=generation);
+ owner.generation=generation;assert(i9100_audio_board_worker_pcm_close(&owner)==I9100_AP_OWNER);
+ owner.generation=generation+1U;assert(!i9100_audio_board_worker_release(&owner));
+ assert(!i9100_audio_board_close(&a));board_released();
  assert(!mprotect(board_audss,4096,PROT_READ|PROT_WRITE)&&!mprotect(board_i2s,4096,PROT_READ|PROT_WRITE));
  puts("PASS real audio board+PCM/host IOKit: mute-before-MCLK/power-guarded pages/all setup failures; explicit output/actual native PCM guard/failed DMA and output close retain parent/clock/domain; no C93C writes");return 0;
 }

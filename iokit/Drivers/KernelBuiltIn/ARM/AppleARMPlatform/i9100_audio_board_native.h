@@ -7,6 +7,11 @@
 extern "C" {
 #endif
 struct i9100_audio_board_native;
+struct i9100_audio_board_worker_lease {
+ struct i9100_audio_board_native *board;
+ uintptr_t self;
+ uint32_t generation,owned;
+};
 struct i9100_audio_board_profile {
  struct i9100_audss_rates verified_rates;
  struct i9100_audss_config audss_config;
@@ -18,7 +23,7 @@ struct i9100_audio_board_status {
  uint32_t codec_enabled,cold_owned,clock_owned,pcm_owned;
  uint32_t worker_holds;
  int32_t error;
- uint32_t output_owned,output_powered,output_running,output_stage;
+ uint32_t output_owned,output_powered,output_running,output_stage,codec_fault;
  int32_t output_error,output_cleanup_error,output_gain_mdb;
 };
 int i9100_audio_board_open(int enabled,struct i9100_peripheral_native *,const struct i9100_audio_board_profile *,struct i9100_audio_board_native **);
@@ -28,6 +33,7 @@ int i9100_audio_board_output_prepare(int enabled,struct i9100_audio_board_native
  enum i9100_mc1n2_output,int32_t requested_mdb);
 int i9100_audio_board_output_activate(struct i9100_audio_board_native *);
 int i9100_audio_board_output_stop(struct i9100_audio_board_native *);
+int i9100_audio_board_output_mute(struct i9100_audio_board_native *);
 int i9100_audio_board_hold(struct i9100_audio_board_native *);
 int i9100_audio_board_unhold(struct i9100_audio_board_native *);
 int i9100_audio_board_queue(struct i9100_audio_board_native *,const int16_t *,uint32_t frames);
@@ -35,6 +41,22 @@ int i9100_audio_board_start(struct i9100_audio_board_native *);
 int i9100_audio_board_service(struct i9100_audio_board_native *,uint32_t *completed_periods);
 int i9100_audio_board_status(struct i9100_audio_board_native *,struct i9100_audio_board_status *,struct i9100_pcm_status *optional_pcm);
 int i9100_audio_board_close(struct i9100_audio_board_native **);
+int i9100_audio_board_worker_claim(struct i9100_audio_board_native *,struct i9100_audio_board_worker_lease *);
+int i9100_audio_board_worker_release(struct i9100_audio_board_worker_lease *);
+int i9100_audio_board_worker_pcm_open(struct i9100_audio_board_worker_lease *,uint32_t measured_bclk);
+int i9100_audio_board_worker_pcm_close(struct i9100_audio_board_worker_lease *);
+int i9100_audio_board_worker_queue(struct i9100_audio_board_worker_lease *,const int16_t *,uint32_t frames);
+int i9100_audio_board_worker_start(struct i9100_audio_board_worker_lease *);
+int i9100_audio_board_worker_service(struct i9100_audio_board_worker_lease *,uint32_t *completed);
+int i9100_audio_board_worker_output_prepare(int enabled,struct i9100_audio_board_worker_lease *,enum i9100_mc1n2_output,int32_t requested_mdb);
+int i9100_audio_board_worker_output_activate(struct i9100_audio_board_worker_lease *);
+int i9100_audio_board_worker_output_mute(struct i9100_audio_board_worker_lease *);
+/* One exact worker lease covers PCM and output mutation. Claim requires a
+ * fresh board with no existing PCM/output or legacy holders. Unscoped legacy
+ * operations and second workers are refused until successful scoped cleanup
+ * and release. copy/stale leases cannot queue/close/unhold a live session.
+ * Status remains read-only; owner serializes lease/board pointer lifetime.
+ */
 /* Default OFF actual IOKit PMU/ChipID/AUDSS/I2S/PDMA0 maps. Exynos4210 mask
  * from plat/cpu.h; no 4x12 CMU C93C writes, PLL reprogramming, PMIC rail/gain
  * changes or automatic driver registration. Only a verified U1/24MHz board

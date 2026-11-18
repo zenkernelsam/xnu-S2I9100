@@ -62,14 +62,14 @@ static void finish(i9100_audio_worker **w,i9100_audio_board_native **b)
  assert(!i9100_audio_board_close(b));board_released();
 }
 static void prepare_worker(i9100_audio_worker *w)
-{assert(!i9100_audio_worker_prepare(w,1536000));m.extra_contexts=2;}
+{assert(!i9100_audio_worker_prepare(w,1536000));m.extra_contexts=1;}
 int main()
 {
  i9100_audio_board_native *b=nullptr;i9100_irq_registry r;i9100_audio_worker *w=nullptr;
  setup_worker(&b,&r);unsigned allocations=m.allocations;
  assert(i9100_audio_worker_create(0,nullptr,nullptr,0,0,0,&w)==I9100_AP_DISABLED&&m.allocations==allocations);
  assert(i9100_audio_worker_create(1,b,&r,1,0,250,&w)==I9100_AP_ARGUMENT);
- m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,1,1,250,&w));
+ m.extra_contexts=0;assert(!i9100_audio_worker_create(1,b,&r,1,1,250,&w));
  assert(!(m.gic[0x108/4]&(1U<<3)));assert(i9100_audio_board_close(&b)==I9100_AP_BUSY&&b);
  prepare_worker(w);assert(!i9100_audio_worker_start(w));
  assert(m.gic[0x108/4]&(1U<<3));m.pdma[0x100/4]=1;
@@ -85,31 +85,33 @@ int main()
  assert(!i9100_audio_worker_status(w,&status)&&status.completed_periods==before&&!status.running);
  finish(&w,&b);
  assert(!i9100_irq_route(67U)); /* detached worker cannot receive a stale token */
- for(unsigned point=1;point<=4U;point++){
-  setup_worker(&b,&r);event_fail=point;m.extra_contexts=1;
+ for(unsigned point=1;point<=5U;point++){
+  setup_worker(&b,&r);event_fail=point;m.extra_contexts=0;
   assert(i9100_audio_worker_create(1,b,&r,0,0,250,&w)!=0&&!w&&!event_objects);
   m.extra_contexts=0;assert(!i9100_audio_board_close(&b));board_released();
  }
  for(unsigned point=1;point<=2U;point++){
-  setup_worker(&b,&r);add_fail=point;m.extra_contexts=1;
+  setup_worker(&b,&r);add_fail=point;m.extra_contexts=0;
   assert(i9100_audio_worker_create(1,b,&r,0,0,250,&w)!=0&&!w&&!event_objects);
   m.extra_contexts=0;assert(!i9100_audio_board_close(&b));board_released();
  }
- setup_worker(&b,&r);m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));
+ setup_worker(&b,&r);m.extra_contexts=0;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));
  prepare_worker(w);timer_fail=1;assert(i9100_audio_worker_start(w)==I9100_AP_IO);
  assert(!i9100_audio_worker_status(w,&status)&&status.fault&&!status.running);timer_fail=0;finish(&w,&b);
- setup_worker(&b,&r);m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,1,1,250,&w));
+ setup_worker(&b,&r);m.extra_contexts=0;assert(!i9100_audio_worker_create(1,b,&r,1,1,250,&w));
  prepare_worker(w);assert(!i9100_audio_worker_start(w));irq_mask_fail=1;
  assert(i9100_audio_worker_destroy(&w)==I9100_IRQ_IO&&w&&event_objects&&b);
  assert(i9100_audio_board_close(&b)==I9100_AP_BUSY);irq_mask_fail=0;finish(&w,&b);
- setup_worker(&b,&r);m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,1,1,250,&w));remove_fail=1;
+ setup_worker(&b,&r);m.extra_contexts=0;assert(!i9100_audio_worker_create(1,b,&r,1,1,250,&w));remove_fail=1;
  assert(i9100_audio_worker_destroy(&w)!=0&&w&&event_objects);assert(i9100_audio_board_close(&b)==I9100_AP_BUSY);
+ assert(!i9100_audio_worker_status(w,&status)&&status.detaching&&status.cleanup_error);
+ assert(i9100_audio_worker_prepare(w,1536000)==I9100_AP_DISABLED);
  remove_fail=0;finish(&w,&b);
- setup_worker(&b,&r);m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));
+ setup_worker(&b,&r);m.extra_contexts=0;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));
  prepare_worker(w);assert(!i9100_audio_worker_start(w));m.pdma[0x100/4]=1;m.kill_stuck=1;
  assert(i9100_audio_worker_stop(w)!=0&&w);assert(i9100_audio_board_close(&b)==I9100_AP_BUSY);
  m.kill_stuck=0;m.pdma[0x100/4]=0;finish(&w,&b);
- setup_worker(&b,&r);m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));prepare_worker(w);
+ setup_worker(&b,&r);m.extra_contexts=0;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));prepare_worker(w);
  int16_t samples[1024];for(unsigned n=0;n<1024;n++)samples[n]=(int16_t)(n*401U);
  assert(!i9100_audio_worker_enqueue(w,samples,512));assert(!i9100_audio_worker_status(w,&status));
  assert(status.enqueued_frames==512&&status.staged_consumed==128&&status.staged_frames==384&&status.staging_capacity==512);
@@ -118,7 +120,7 @@ int main()
  for(unsigned turn=0;turn<6U;turn++){m.pdma[0x100/4]=0;m.pdma[0x24/4]|=1U<<3;last_loop->tick();}
  assert(!i9100_audio_worker_status(w,&status)&&status.completed_periods==6&&status.staged_frames==0&&status.staged_consumed==512);
  finish(&w,&b);
- setup_worker(&b,&r);m.extra_contexts=1;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));prepare_worker(w);
+ setup_worker(&b,&r);m.extra_contexts=0;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));prepare_worker(w);
  samples[0]=32767;samples[1]=-32768;assert(!i9100_audio_worker_enqueue(w,samples,1));assert(!i9100_audio_worker_flush(w));
  assert(!i9100_audio_worker_status(w,&status)&&status.staged_frames==0&&status.staged_consumed==1);
  assert(((int16_t *)allocation_bytes[0])[0]==1035&&((int16_t *)allocation_bytes[0])[1]==-1036);
@@ -128,6 +130,60 @@ int main()
  assert(status.last_pcm.completed_frames==64&&status.last_pcm.last_error==I9100_I2S_FIFO);
  assert(!i9100_audio_worker_stop(w));assert(!i9100_audio_worker_status(w,&status)&&status.last_pcm.i2s_fault_valid);
  finish(&w,&b);
+ /* Newly available owned output makes the old timer-fault-only scheduling
+  * stop insufficient: real PCM/DMA and codec gain must also be silenced. */
+ setup_worker(&b,&r);m.extra_contexts=0;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));prepare_worker(w);
+ unsigned output_before=m.transactions;assert(i9100_audio_worker_output_prepare(0,w,I9100_MC_SPEAKER,-30000)==I9100_MC_DISABLED);
+ assert(m.transactions==output_before);i9100_audio_worker *other=nullptr;
+ assert(i9100_audio_worker_create(1,b,&r,0,0,250,&other)==I9100_AP_BUSY&&!other);
+ assert(i9100_audio_board_pcm_close(b)==I9100_AP_BUSY&&i9100_audio_board_output_activate(b)==I9100_AP_BUSY);
+ assert(!i9100_audio_worker_output_prepare(1,w,I9100_MC_SPEAKER,-30000));assert(!i9100_audio_worker_start(w));
+ assert(i9100_audio_worker_output_activate(w)==I9100_MC_NOT_READY);
+ m.pdma[0x100/4]=0;m.pdma[0x24/4]|=1U<<3;last_loop->tick();m.pdma[0x100/4]=1;
+ assert(!i9100_audio_worker_output_activate(w));timer_fail=1;last_loop->tick();
+ assert(!i9100_audio_worker_status(w,&status)&&status.fault&&!status.running);
+ assert(!(m.codec[4][89]&0x7fU)&&!(m.codec[4][90]&0x7fU)&&!(board_i2s[0]&7U));
+ timer_fail=0;finish(&w,&b);
+ /* Producer data remains in CPU staging during actual zero pre-roll. */
+ setup_worker(&b,&r);m.extra_contexts=0;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));prepare_worker(w);
+ assert(!i9100_audio_worker_output_prepare(1,w,I9100_MC_HEADPHONES,-30000));
+ assert(!i9100_audio_worker_enqueue(w,samples,128));assert(i9100_audio_worker_queue(w,samples,64)==I9100_PCM_BUSY);
+ assert(!i9100_audio_worker_status(w,&status)&&status.staged_frames==128&&status.staged_consumed==0);
+ assert(!i9100_audio_worker_start(w));
+ for(unsigned n=0;n<256U;n++)assert(!allocation_bytes[0][n]);
+ m.pdma[0x100/4]=0;m.pdma[0x24/4]|=1U<<3;last_loop->tick();m.pdma[0x100/4]=1;
+ assert(!i9100_audio_worker_output_activate(w));
+ assert(!i9100_audio_worker_status(w,&status)&&status.output_active&&status.staged_consumed==64);
+ assert(!i9100_audio_worker_output_mute(w));assert(!i9100_audio_worker_status(w,&status)&&!status.output_active);
+ assert(!(m.codec[4][89]&0x7fU)&&!(m.codec[4][90]&0x7fU));
+ assert(!i9100_audio_worker_output_activate(w));finish(&w,&b);
+ /* IRQ failure defers silence/close to the workloop, and mask failure never
+  * blocks independent DMA/output shutdown. */
+ setup_worker(&b,&r);m.extra_contexts=0;assert(!i9100_audio_worker_create(1,b,&r,1,1,250,&w));prepare_worker(w);
+ assert(!i9100_audio_worker_output_prepare(1,w,I9100_MC_SPEAKER,-30000));assert(!i9100_audio_worker_start(w));
+ m.pdma[0x100/4]=0;m.pdma[0x24/4]|=1U<<3;last_loop->tick();m.pdma[0x100/4]=1;
+ assert(!i9100_audio_worker_output_activate(w));unsigned irq_transactions=m.transactions;irq_mask_fail=1;
+ m.interrupts=false;assert(i9100_irq_route(67U)==I9100_IRQ_IO);m.interrupts=true; /* hardware mask failure is propagated */
+ assert(m.transactions==irq_transactions);last_loop->pump();
+ assert(!i9100_audio_worker_status(w,&status)&&status.fault&&status.irq_error==I9100_IRQ_IO&&status.cleanup_error==I9100_IRQ_IO);
+ assert(!status.session_owned&&!status.output_requested&&!(board_i2s[0]&7U)&&!(m.codec[4][89]&0x7fU));
+ assert(i9100_audio_board_close(&b)==I9100_AP_BUSY);irq_mask_fail=0;finish(&w,&b);
+ /* A partial native open and failed I2C cleanup remain owned, rather than
+  * disappearing behind a failed prepare return. No automatic recovery. */
+ setup_worker(&b,&r);m.extra_contexts=0;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));
+ m.board_tx_fail_from=m.transactions+7U;assert(i9100_audio_worker_prepare(w,1536000)!=0);
+ assert(!i9100_audio_worker_status(w,&status)&&status.fault&&status.session_owned&&status.cleanup_error);
+ assert(i9100_audio_board_close(&b)==I9100_AP_BUSY&&m.maps==8U);
+ m.board_tx_fail_from=0;finish(&w,&b);
+ /* Post-pre-roll codec IO failure keeps the output and private DMA buffers
+  * quarantined until an explicit, verified close. */
+ setup_worker(&b,&r);m.extra_contexts=0;assert(!i9100_audio_worker_create(1,b,&r,0,0,250,&w));prepare_worker(w);
+ assert(!i9100_audio_worker_output_prepare(1,w,I9100_MC_SPEAKER,-30000));assert(!i9100_audio_worker_start(w));
+ m.pdma[0x100/4]=0;m.pdma[0x24/4]|=1U<<3;last_loop->tick();m.pdma[0x100/4]=1;
+ m.mute_fail=1;assert(i9100_audio_worker_output_activate(w)!=0);
+ assert(!i9100_audio_worker_status(w,&status)&&status.fault&&status.session_owned&&status.output_requested&&status.cleanup_error);
+ assert(status.last_board_valid&&status.last_board.output_owned&&m.dma_count&&!(board_i2s[0]&7U));
+ m.mute_fail=0;finish(&w,&b);
  assert(!mprotect(board_audss,4096,PROT_READ|PROT_WRITE)&&!mprotect(board_i2s,4096,PROT_READ|PROT_WRITE));
  setup_worker(&b,&r);dispatch_registry=&r;i9100_irq_lease lease={};
  assert(!i9100_irq_register_masked(&r,67,0,busy_detach,nullptr,&lease));assert(!i9100_irq_router_attach(&r));
