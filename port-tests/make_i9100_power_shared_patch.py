@@ -14,12 +14,16 @@ def replace(path,old,new):
     edited[path]=edited[path].replace(old,new,1)
 bus=base+names[0]
 replace(bus,'#include "i9100_power.h"','#include "i9100_power.h"\n#include "i9100_power_shared.h"')
-replace(bus," struct bus b={hw,"," struct i9100_power_bus_ticket shared={0};\n if(!i9100_power_bus_enter(fuel,&shared))return 0;\n struct bus b={hw,")
+replace(bus," struct bus b={hw,"," struct i9100_power_bus_ticket shared={0};\n if(!i9100_power_bus_enter(fuel,&shared))return 0;\n if(!i9100_power_bus_filter(&shared,slave,reg,data,count,writing)){(void)i9100_power_bus_leave(&shared);return 0;}\n struct bus b={hw,")
 replace(bus," hw->leave(hw->cookie);return ok;"," hw->leave(hw->cookie);if(!i9100_power_bus_leave(&shared))ok=0;return ok;")
+replace(bus,"int i9100_power_pmic_write(void *hw,unsigned reg,uint8_t value)\n{return transfer(hw,0,0x66,reg,&value,1,1);}",
+ "int i9100_power_pmic_write(void *hw,unsigned reg,uint8_t value)\n{return transfer(hw,0,0x66,reg,&value,1,1);}\n"
+ "int i9100_power_haptic_config_read(void *hw,uint8_t *value)\n{uint8_t data=0;if(!value||!transfer(hw,0,0x48,2,&data,1,0))return 0;*value=data;return 1;}\n"
+ "int i9100_power_haptic_config_write(void *hw,uint8_t value)\n{return transfer(hw,0,0x48,2,&value,1,1);}")
 power=base+names[1]
 replace(power,'#include "i9100_power.h"','#include "i9100_power.h"\n#include "i9100_power_shared.h"')
 replace(power," virtual void free(void);"," virtual void stop(IOService *);\n static IOReturn stopShared(OSObject *,void *,void *,void *,void *);\n virtual void free(void);")
-replace(power," sample();return timer->setTimeoutMS(1000)==kIOReturnSuccess;"," sample();if(timer->setTimeoutMS(1000)!=kIOReturnSuccess)return false;\n return !i9100_power_shared_enabled()||!i9100_power_shared_publish(this,&hw);")
+replace(power," sample();return timer->setTimeoutMS(1000)==kIOReturnSuccess;"," sample();if(timer->setTimeoutMS(1000)!=kIOReturnSuccess)return false;\n const i9100_power_haptic_ops haptic={i9100_power_haptic_config_read,i9100_power_haptic_config_write,1};\n return !i9100_power_shared_enabled()||!i9100_power_shared_publish_haptic(this,&hw,&haptic);")
 stop='''IOReturn IOS7I9100Power::stopShared(OSObject *owner,void *,void *,void *,void *)
 {
  IOS7I9100Power *s=(IOS7I9100Power *)owner;
@@ -53,5 +57,6 @@ destination.write_text(patch)
 manifest=dict(source_sha256={p:hashlib.sha256(b).hexdigest() for p,b in original.items()},patch_sha256=hashlib.sha256(patch.encode()).hexdigest(),applied=False,default_enabled=False,
               objects=["iokit/i9100_power_shared.cpo","iokit/i9100_power_bus.o","iokit/IOS7I9100Power.cpo","iokit/AppleARMPE.cpo"],
               prerequisite="Apply paired patch, rebuild all four objects and full relink before opt-in; common raw transfer covers Mali too")
+manifest["haptic_wire"]="Fixed slave48 CONFIG2 + PMIC LDO14; shared filter before GPIO/IRQ-disabled IO"
 (repo/"port-tests/i9100_power_shared_integration.json").write_text(json.dumps(manifest,indent=2)+"\n")
 print("PREPARED (not applied)",destination)
