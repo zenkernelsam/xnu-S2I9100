@@ -39,7 +39,8 @@ int i9100_setup_dev_finish_bootstrap(proc_t p)
  unsigned header=pending[2];memset(pending,0,sizeof(i9100_setup_dev_finish_pending));
  volatile uint32_t *d=i9100_setup_dev_finish_diag;
  d[0]=1;d[1]=1;d[2]=p->p_pid;d[3]=header;d[4]=p->p_idversion;
- unsigned site=header+0x376cU,target=header+0x2f84U,page=site&~4095U;
+ /* Original __TEXT prefers 0x1000; header is the actual mapped base. */
+ unsigned site=header+0x276cU,target=header+0x1f84U,page=site&~4095U;
  uint8_t original[8],finish[8];
  if(copyin(site,original,8) || memcmp(original,i9100_setup_run_original,8) ||
     copyin(target,finish,8) || memcmp(finish,i9100_setup_finish_original,8)){

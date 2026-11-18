@@ -30,14 +30,14 @@ static unsigned ml_at_interrupt_context(void){return irq;}static unsigned ml_get
 static unsigned get_preemption_level(void){return preempt;}static void i9100_ui_density_sync_current(void){}
 static int copyin(unsigned at,void*dst,unsigned n);
 static int bad(void){++step;return step==fail || step==again;}
-static kern_return_t vm_map_protect(vm_map_t m,unsigned a,unsigned b,unsigned f,int maximum){assert(m==&map && a==0x13000 && b==0x14000 && !maximum && (f==5 || f==19));++ops;return bad()?4:0;}
-static int copyout(const void*src,unsigned at,unsigned n){assert(at==0x1376c && n==8);int e=bad();memcpy(bytes,src,e?4:8);return e?14:0;}
-static void flush_dcache(unsigned a,unsigned n,int physical){assert(a==0x1376c && n==8 && !physical);}
+static kern_return_t vm_map_protect(vm_map_t m,unsigned a,unsigned b,unsigned f,int maximum){assert(m==&map && a==0x12000 && b==0x13000 && !maximum && (f==5 || f==19));++ops;return bad()?4:0;}
+static int copyout(const void*src,unsigned at,unsigned n){assert(at==0x1276c && n==8);int e=bad();memcpy(bytes,src,e?4:8);return e?14:0;}
+static void flush_dcache(unsigned a,unsigned n,int physical){assert(a==0x1276c && n==8 && !physical);}
 static void invalidate_icache(unsigned a,unsigned n,int physical){flush_dcache(a,n,physical);}
 #include "i9100_setup_dev_finish.h"
-static int copyin(unsigned at,void*dst,unsigned n){assert(n==8);if(at==0x1376c)memcpy(dst,bytes,8);else{assert(at==0x12f84);memcpy(dst,i9100_setup_finish_original,8);}return 0;}
+static int copyin(unsigned at,void*dst,unsigned n){assert(n==8);if(at==0x1276c)memcpy(dst,bytes,8);else{assert(at==0x11f84);memcpy(dst,i9100_setup_finish_original,8);}return 0;}
 static void reset(void){memset((void*)i9100_setup_dev_finish_diag,0,sizeof(i9100_setup_dev_finish_diag));memset(i9100_setup_dev_finish_pending,0,sizeof(i9100_setup_dev_finish_pending));memcpy(bytes,i9100_setup_run_original,8);p.p_comm="Setup";p.task=&t;p.p_pid=7;p.p_idversion=9;memcpy(p.p_uuid,i9100_setup_dev_finish_uuid,16);enabled=aks=1;abi=6;fail=again=step=ops=irq=preempt=0;t.acts=1;}
-int main(void){reset();i9100_setup_dev_finish_record(&p,0x10000);assert(!i9100_setup_dev_finish_bootstrap(&p));uint32_t b[2];memcpy(b,bytes,8);assert(b[0]==0xf000f8df && b[1]==0x12f85 && i9100_setup_dev_finish_diag[1]==2);
+int main(void){reset();i9100_setup_dev_finish_record(&p,0x10000);assert(!i9100_setup_dev_finish_bootstrap(&p));uint32_t b[2];memcpy(b,bytes,8);assert(b[0]==0xf000f8df && b[1]==0x11f85 && i9100_setup_dev_finish_diag[1]==2);
 for(unsigned n=1;n<=3;n++){reset();fail=n;i9100_setup_dev_finish_record(&p,0x10000);assert(!i9100_setup_dev_finish_bootstrap(&p));assert(!memcmp(bytes,i9100_setup_run_original,8));}
 reset();fail=2;again=4;i9100_setup_dev_finish_record(&p,0x10000);assert(i9100_setup_dev_finish_bootstrap(&p)==EIO);
 for(unsigned n=0;n<8;n++){reset();if(n==0)enabled=0;if(n==1)abi=7;if(n==2)aks=0;if(n==3)p.p_uuid[0]^=1;if(n==4)p.p_comm="Other";i9100_setup_dev_finish_record(&p,0x10000);if(n==5)t.acts=2;if(n==6)irq=1;if(n==7)preempt=1;assert(!i9100_setup_dev_finish_bootstrap(&p) && !ops);}
