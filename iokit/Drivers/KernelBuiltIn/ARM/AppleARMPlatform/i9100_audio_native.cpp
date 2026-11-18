@@ -195,6 +195,23 @@ int i9100_audio_native_status(i9100_audio_native *a,i9100_pcm_status *out)
  int e=a->pcm.initialized?i9100_pcm_stream_status(&a->pcm,out):I9100_PCM_DISABLED;
  IOLockUnlock(a->lifecycle);return e;
 }
+int i9100_audio_native_output_ready(i9100_audio_native *a,uint32_t rate)
+{
+ if(!a)return I9100_PCM_ARGUMENT;if(take(a->lifecycle))return I9100_PCM_BUSY;
+ int e=a->phase==READY?i9100_pcm_stream_output_ready(&a->pcm,rate):I9100_PCM_DISABLED;
+ IOLockUnlock(a->lifecycle);return e;
+}
+int i9100_audio_native_consumers_idle(i9100_audio_native *a)
+{
+ if(!a)return I9100_PCM_ARGUMENT;if(take(a->lifecycle))return I9100_PCM_BUSY;
+ /* A prepared private engine owns its event-enable bit before GO. Accept
+  * that exact bit, but still read every channel/fault/debug/I2S request and
+  * refuse an unconfirmed software DMA owner or gated register bank. */
+ int e=!a->gate.active||!a->dma.initialized||a->dma.active||!a->audss->active||
+  i9100_clock_check(&a->gate)?I9100_PCM_BUSY:controller_idle(a);
+ if(!e&&(read(a,I2S_MAP,0)&(7U|(1U<<18)|(1U<<25)|(1U<<23)|(1U<<16))))e=I9100_PCM_BUSY;
+ IOLockUnlock(a->lifecycle);return e;
+}
 int i9100_audio_native_close(i9100_audio_native **owner)
 {
  if(!owner||!*owner)return I9100_PCM_ARGUMENT;i9100_audio_native *a=*owner;

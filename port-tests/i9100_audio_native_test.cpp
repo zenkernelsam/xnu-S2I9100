@@ -131,7 +131,8 @@ static void board_codec_write(unsigned reg,uint8_t value)
  if(reg==0U&&value==1U){uint8_t id=m.codec[0][8];memset(m.codec,0,sizeof(m.codec));m.codec[0][8]=id;
   m.codec[1][0]=0x10;m.codec[1][1]=id==0x78U?7U:6U;m.codec[1][3]=0x1f;m.codec[3][15]=1;
   m.codec[1][14]=id==0x78U?1U:0U;m.board_aa_unlocked=0;
-  m.codec[2][2]=15;m.codec[2][3]=m.codec[2][4]=0xff;m.codec[3][78]=2;}
+  m.codec[2][2]=15;m.codec[2][3]=m.codec[2][4]=0xff;m.codec[3][78]=2;
+  m.codec[2][5]=id==0x78U?0x0fU:0x1fU;}
  unsigned index=bank(reg);
  if(reg==60U&&value==0xd9U&&m.codec[0][8]==0x78U)m.board_aa_unlocked=1;
  if(index)m.address[index]=value;
@@ -147,6 +148,8 @@ static uint8_t board_codec_read(unsigned reg)
  if(index==2U&&m.address[index]==47U){uint8_t ready=0;
   if(!(m.codec[2][2]&8U))ready|=0x80U;
   if(!(m.codec[2][2]&1U)&&m.ns>=m.vref_started+15000000ULL)ready|=0x40U;
+  unsigned da=m.codec[0][8]==0x78U?8U:0x18U;
+  if((m.codec[2][3]&0x3fU)==0x3fU&&(m.codec[2][5]&da)==da)ready|=2U;
   return ready;}
  return m.codec[index][m.address[index]];
 }

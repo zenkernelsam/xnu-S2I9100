@@ -3,6 +3,9 @@
 #include <string.h>
 static int cold_off_locked(struct i9100_mc1n2 *);
 static int clock_off_locked(struct i9100_mc1n2 *);
+static int output_silence_locked(struct i9100_mc1n2 *);
+static int valid(struct i9100_mc1n2 *c)
+{return !c||!c->initialized?I9100_MC_ARGUMENT:c->self!=(uintptr_t)c?I9100_MC_OWNER:0;}
 static int transfer(struct i9100_mc1n2 *c,struct i9100_i2c_message *m,unsigned count)
 {unsigned done=0;int e=c->io.transfer(c->io.cookie,m,count,&done);return e||done!=count?I9100_MC_IO:0;}
 static int direct_write(struct i9100_mc1n2 *c,uint8_t reg,uint8_t value)
@@ -66,11 +69,11 @@ static int mute_locked(struct i9100_mc1n2 *c)
 int i9100_mc1n2_init(struct i9100_mc1n2 *c,const struct i9100_peripheral_i2c *io)
 {
  if(!c||c->initialized||!io||!io->transfer||!io->claim||!io->release||!io->now_ns||!io->delay_us)return I9100_MC_ARGUMENT;
- memset(c,0,sizeof(*c));c->io=*io;c->initialized=1;c->actual_gain_mdb=INT32_MIN;return 0;
+ memset(c,0,sizeof(*c));c->io=*io;c->self=(uintptr_t)c;c->initialized=1;c->actual_gain_mdb=INT32_MIN;return 0;
 }
 int i9100_mc1n2_enable(struct i9100_mc1n2 *c,int enabled)
 {
- if(!c||!c->initialized||(enabled!=0&&enabled!=1))return I9100_MC_ARGUMENT;
+ int check=valid(c);if(check)return check;if(enabled!=0&&enabled!=1)return I9100_MC_ARGUMENT;
  if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
  int e=0;
  if(enabled){
@@ -80,15 +83,17 @@ int i9100_mc1n2_enable(struct i9100_mc1n2 *c,int enabled)
   /* This explicit exclusive diagnostic takeover may only mute verified MC. */
   c->enabled=1;e=mute_locked(c);
  }else if(!c->enabled)e=I9100_MC_DISABLED;
+ else if(c->output_owner)e=I9100_MC_BUSY;
  else {e=c->cold_owned?cold_off_locked(c):mute_locked(c);if(!e)c->enabled=0;}
 done:
  c->io.release(c->io.cookie);return e;
 }
 int i9100_mc1n2_mute(struct i9100_mc1n2 *c)
 {
- if(!c||!c->initialized)return I9100_MC_ARGUMENT;
+ int check=valid(c);if(check)return check;
  if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
- int e=c->enabled?mute_locked(c):I9100_MC_DISABLED;c->io.release(c->io.cookie);return e;
+ int e=!c->enabled?I9100_MC_DISABLED:c->output_owner?output_silence_locked(c):mute_locked(c);
+ c->io.release(c->io.cookie);return e;
 }
 int i9100_mc1n2_safe_gain(int32_t requested,uint8_t *code,int32_t *actual)
 {
@@ -98,10 +103,12 @@ int i9100_mc1n2_safe_gain(int32_t requested,uint8_t *code,int32_t *actual)
 int i9100_mc1n2_stage_gain(struct i9100_mc1n2 *c,enum i9100_mc1n2_output output,int32_t requested)
 {
  uint8_t code=0;int32_t actual=0;
- if(!c||!c->initialized||(output!=I9100_MC_HEADPHONES&&output!=I9100_MC_SPEAKER))return I9100_MC_ARGUMENT;
+ int check=valid(c);if(check)return check;
+ if(output!=I9100_MC_HEADPHONES&&output!=I9100_MC_SPEAKER)return I9100_MC_ARGUMENT;
  int e=i9100_mc1n2_safe_gain(requested,&code,&actual);if(e)return e;
  if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
  if(!c->enabled){e=I9100_MC_DISABLED;goto done;}
+ if(c->output_owner){e=I9100_MC_BUSY;goto done;}
  if(c->fault){e=I9100_MC_IO;goto done;}
  e=mute_locked(c);if(e)goto done;
  uint8_t old=0;
@@ -123,7 +130,8 @@ done:
 }
 int i9100_mc1n2_read(struct i9100_mc1n2 *c,enum i9100_mc1n2_bank bank,uint8_t reg,uint8_t *value)
 {
- if(!c||!c->initialized||!value||bank>I9100_MC_MIXER||bank<I9100_MC_DIRECT||(bank==I9100_MC_DIRECT&&reg>25U))return I9100_MC_ARGUMENT;
+ int check=valid(c);if(check)return check;
+ if(!value||bank>I9100_MC_MIXER||bank<I9100_MC_DIRECT||(bank==I9100_MC_DIRECT&&reg>25U))return I9100_MC_ARGUMENT;
  if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
  uint8_t data=0;int e=c->enabled?read_bank(c,bank,reg,&data):I9100_MC_DISABLED;
  if(!e)*value=data;c->io.release(c->io.cookie);return e;
@@ -148,8 +156,240 @@ static int ready(struct i9100_mc1n2 *c,uint8_t bits)
  }
  return I9100_MC_TIMEOUT;
 }
+static int output_bits(struct i9100_mc1n2 *c,enum i9100_mc1n2_bank bank,uint8_t reg,uint8_t value,uint8_t mask)
+{
+ uint8_t actual=0;int e=read_bank(c,bank,reg,&actual);
+ return e?e:(actual&mask)!=(value&mask)?I9100_MC_IO:0;
+}
+static int output_wait(struct i9100_mc1n2 *c,uint32_t us)
+{
+ uint64_t before=c->io.now_ns(c->io.cookie);int e=pause(c,us);if(e)return e;
+ uint64_t after=c->io.now_ns(c->io.cookie);
+ /* A successful delay callback alone is not evidence that a power interval
+  * elapsed. Refuse frozen/backwards clocks rather than enabling stage two. */
+ return after<before||after-before<(uint64_t)us*1000U?I9100_MC_TIMEOUT:0;
+}
+static int output_flags_clear(struct i9100_mc1n2 *c,enum i9100_mc1n2_bank bank,uint8_t left,uint8_t right,uint8_t mask)
+{
+ uint64_t before=c->io.now_ns(c->io.cookie);
+ for(unsigned n=0;n<200U;n++){
+  uint8_t l=0,r=0;int e=read_bank(c,bank,left,&l);if(!e)e=read_bank(c,bank,right,&r);if(e)return e;
+  if(!((l|r)&mask))return 0;
+  uint64_t at=c->io.now_ns(c->io.cookie);
+  if(at<before||at-before>=50000000ULL)return I9100_MC_TIMEOUT;
+  e=output_wait(c,250);if(e)return e;
+ }
+ return I9100_MC_TIMEOUT;
+}
+static uint8_t output_da_bits(struct i9100_mc1n2 *c)
+{return c->id==0x78U?0x08U:0x18U;}
+static uint8_t output_amp_bits(struct i9100_mc1n2 *c)
+{return c->output_kind==I9100_MC_HEADPHONES?0x30U:0x0fU;}
+static int output_silence_locked(struct i9100_mc1n2 *c)
+{
+ int e=0,r;uint8_t dac=0;
+ r=read_bank(c,I9100_MC_CODEC,78,&dac);if(r){e=r;dac=0;}
+ r=checked_write(c,I9100_MC_CODEC,78,dac|2U,3U);if(r)e=r;
+ for(unsigned n=0;n<4U;n++){
+  r=checked_write(c,I9100_MC_ANALOG,(uint8_t)(35U+n),(n&1U)?0U:0x60U,(n&1U)?31U:0x3fU);if(r)e=r;
+ }
+ r=checked_write(c,I9100_MC_MIXER,89,0x80U,0x7fU);if(r)e=r;
+ r=checked_write(c,I9100_MC_MIXER,90,0,0x7fU);if(r)e=r;
+ r=output_flags_clear(c,I9100_MC_ANALOG,12,13,0x18U);if(r)e=r;
+ r=output_flags_clear(c,I9100_MC_MIXER,10,11,2U);if(r)e=r;
+ c->muted=e?0U:1U;c->output_running=0;c->gain_armed=0;c->analog_gain=0;c->actual_gain_mdb=INT32_MIN;
+ if(!e&&c->output_powered&&c->output_stage==7U)c->output_stage=5;
+ if(e){c->fault=1;if(!c->output_error)c->output_error=e;}
+ /* Do not power off amps/CP or discard their owner here: PCM uses this
+  * callback both before start and on faults while DMA can still be live. */
+ return e;
+}
+static int output_lease_check(struct i9100_mc1n2_output_lease *l)
+{
+ if(!l||!l->owned||l->self!=(uintptr_t)l||!l->codec)return I9100_MC_OWNER;
+ int e=valid(l->codec);if(e)return e;
+ return l->codec->output_owner!=l||l->codec->output_generation!=l->generation?I9100_MC_OWNER:0;
+}
+static int output_live(struct i9100_mc1n2 *c,int require_idle)
+{
+ if(c->output_guard.lease_valid(c->output_guard.cookie))return I9100_MC_NOT_READY;
+ return require_idle&&c->output_guard.consumers_idle(c->output_guard.cookie)?I9100_MC_BUSY:0;
+}
+static int output_off_locked(struct i9100_mc1n2 *c)
+{
+ c->output_stage=8;int e=output_silence_locked(c),r;
+ /* Independent fail-safe power-down actions still run after a mute IO
+  * failure. Never restore an audible gain or turn off clocks on that error. */
+ r=checked_write(c,I9100_MC_ANALOG,44,c->output_saved_mode|0x30U,0x33U);if(r)e=r;
+ r=checked_write(c,I9100_MC_ANALOG,3,c->output_saved_power[1]|0x3fU,0xffU);if(r)e=r;
+ else c->output_powered=0;
+ r=output_flags_clear(c,I9100_MC_ANALOG,12,13,0x18U);if(r)e=r;
+ if(e)return e;
+ if(c->output_guard.consumers_idle(c->output_guard.cookie))return I9100_MC_BUSY;
+ /* AA has one AP_DA bit; AB has separate AP_DAL/AP_DAR. The saved upper
+  * fields are preserved instead of writing AB's reserved bit into AA. */
+ e=checked_write(c,I9100_MC_ANALOG,5,c->output_saved_power[2]|output_da_bits(c),0xffU);if(e)return e;
+ e=output_flags_clear(c,I9100_MC_MIXER,10,11,2U);if(e)return e;
+ e=checked_write(c,I9100_MC_CODEC,78,2,3);if(e)return e;
+ uint8_t power=0;e=read_bank(c,I9100_MC_ANALOG,2,&power);if(e)return e;
+ if(!(power&2U)){
+  e=ready(c,2U);if(e)return e; /* vendor manual CPPDRDY before CP down */
+  e=checked_write(c,I9100_MC_ANALOG,2,power|2U,0x0fU);if(e)return e;
+ }
+ for(unsigned n=0;n<7U;n++){
+  e=checked_write(c,I9100_MC_ANALOG,(uint8_t)(61U+n),c->output_saved_routes[n],0xffU);if(e)return e;
+ }
+ e=checked_write(c,I9100_MC_MIXER,110,c->output_saved_source,0xffU);if(e)return e;
+ e=checked_write(c,I9100_MC_MIXER,111,c->output_saved_swap,0xffU);if(e)return e;
+ e=checked_write(c,I9100_MC_ANALOG,44,c->output_saved_mode,0x33U);if(e)return e;
+ e=checked_write(c,I9100_MC_ANALOG,2,c->output_saved_power[0],0x0fU);if(e)return e;
+ e=output_bits(c,I9100_MC_ANALOG,5,c->output_saved_power[2],0xffU);if(e)return e;
+ e=output_bits(c,I9100_MC_ANALOG,3,c->output_saved_power[1],0xffU);if(e)return e;
+ e=output_bits(c,I9100_MC_ANALOG,16,7,7);if(e)return e;
+ struct i9100_mc1n2_output_lease *l=c->output_owner;
+ l->owned=0;c->output_owner=0;c->output_powered=c->output_running=c->output_stage=c->output_kind=0;
+ c->output_gain_code=0;memset(&c->output_guard,0,sizeof(c->output_guard));c->fault=0;
+ return 0;
+}
+static int output_power_check(struct i9100_mc1n2 *c,int silent)
+{
+ int e=output_live(c,0);if(e)return e;
+ e=output_bits(c,I9100_MC_ANALOG,16,7,7);if(e)return e;
+ e=output_bits(c,I9100_MC_ANALOG,2,c->output_saved_power[0]&
+  (c->output_kind==I9100_MC_HEADPHONES?(uint8_t)~2U:0xffU),0x0fU);if(e)return e;
+ e=output_bits(c,I9100_MC_ANALOG,3,c->output_saved_power[1]&~output_amp_bits(c),0xffU);if(e)return e;
+ e=output_bits(c,I9100_MC_ANALOG,5,c->output_saved_power[2]&~output_da_bits(c),0xffU);if(e)return e;
+ e=output_bits(c,I9100_MC_ANALOG,77,0,3);if(e)return e;
+ e=output_bits(c,I9100_MC_CODEC,79,0,0xffU);if(e)return e; /* no DCL boost */
+ e=output_bits(c,I9100_MC_CODEC,78,1,1);if(e)return e;
+ e=output_bits(c,I9100_MC_MIXER,110,0x30U,0xffU);if(e)return e;
+ e=output_bits(c,I9100_MC_MIXER,111,0,0xffU);if(e)return e;
+ uint8_t routes[7]={0,0,0,0,0,0,0};
+ if(c->output_kind==I9100_MC_HEADPHONES)routes[0]=routes[2]=0x40U;
+ else routes[3]=routes[4]=routes[5]=routes[6]=0x40U;
+ for(unsigned n=0;n<7U;n++){e=output_bits(c,I9100_MC_ANALOG,(uint8_t)(61U+n),routes[n],0xffU);if(e)return e;}
+ e=output_bits(c,I9100_MC_ANALOG,44,c->output_kind==I9100_MC_HEADPHONES?c->output_saved_mode:2U,0x33U);if(e)return e;
+ if(silent){
+  for(unsigned n=0;n<4U;n++){e=output_bits(c,I9100_MC_ANALOG,(uint8_t)(35U+n),0,31U);if(e)return e;}
+  e=output_bits(c,I9100_MC_MIXER,89,0,0x7fU);if(e)return e;
+  e=output_bits(c,I9100_MC_MIXER,90,0,0x7fU);if(e)return e;
+ }
+ return ready(c,0xc0U);
+}
+int i9100_mc1n2_output_prepare(int enabled,struct i9100_mc1n2 *c,
+ enum i9100_mc1n2_output kind,int32_t requested,const struct i9100_mc1n2_output_guard *g,
+ struct i9100_mc1n2_output_lease *l)
+{
+ if(enabled!=1)return I9100_MC_DISABLED;
+ int e=valid(c);if(e)return e;uint8_t gain=0;int32_t actual=0;
+ if(!l||l->owned||!g||!g->lease_valid||!g->consumers_idle||!g->stream_ready||
+    (kind!=I9100_MC_HEADPHONES&&kind!=I9100_MC_SPEAKER))return I9100_MC_ARGUMENT;
+ e=i9100_mc1n2_safe_gain(requested,&gain,&actual);if(e)return e;
+ if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
+ uint8_t power[3]={0},routes[7]={0},source=0,swap=0,mode=0,id=0;
+ if(!c->enabled||!c->cold_owned||c->cold_stage!=5U||!c->clock_owned||!c->clock_active||c->clock_stage!=4U)
+  {e=I9100_MC_DISABLED;goto done;}
+ if(c->fault||c->output_owner){e=I9100_MC_BUSY;goto done;}
+ if(c->output_generation==UINT32_MAX){e=I9100_MC_OWNER;goto done;}
+ if(g->lease_valid(g->cookie)){e=I9100_MC_NOT_READY;goto done;}
+ if(g->consumers_idle(g->cookie)){e=I9100_MC_BUSY;goto done;}
+ e=direct_read(c,8,&id);if(!e&&id!=c->id)e=I9100_MC_ID;if(e)goto done;
+ e=read_bank(c,I9100_MC_ANALOG,2,&power[0]);if(!e)e=read_bank(c,I9100_MC_ANALOG,3,&power[1]);
+ if(!e)e=read_bank(c,I9100_MC_ANALOG,5,&power[2]);if(!e)e=read_bank(c,I9100_MC_ANALOG,44,&mode);
+ if(!e&&((power[0]&15U)!=6U||(power[1]&0x3fU)!=0x3fU||
+          (power[2]&output_da_bits(c))!=output_da_bits(c)||(mode&0x30U)!=0x30U))e=I9100_MC_NOT_READY;
+ if(!e)e=output_bits(c,I9100_MC_ANALOG,16,7,7);
+ if(!e)e=output_bits(c,I9100_MC_CODEC,78,2,3);
+ if(!e)e=output_bits(c,I9100_MC_ANALOG,77,0,3);
+ if(!e)e=output_bits(c,I9100_MC_CODEC,79,0,0xffU);
+ if(!e)e=output_bits(c,I9100_MC_MIXER,137,0x4cU,0xffU);
+ if(!e)e=output_bits(c,I9100_MC_MIXER,135,c->sample_rate==48000U?0x20U:0x21U,0xffU);
+ if(!e)e=output_bits(c,I9100_MC_BASE,12,0x5eU,0xffU);
+ for(unsigned n=0;n<7U&&!e;n++)e=read_bank(c,I9100_MC_ANALOG,(uint8_t)(61U+n),&routes[n]);
+ if(!e)e=read_bank(c,I9100_MC_MIXER,110,&source);if(!e)e=read_bank(c,I9100_MC_MIXER,111,&swap);
+ if(e)goto done;
+ c->output_guard=*g;c->output_kind=kind;c->output_gain_code=gain;
+ memcpy(c->output_saved_power,power,sizeof(power));memcpy(c->output_saved_routes,routes,sizeof(routes));
+ c->output_saved_source=source;c->output_saved_swap=swap;c->output_saved_mode=mode;
+ c->output_generation++;c->output_owner=l;c->output_stage=1;
+ c->output_error=c->output_cleanup_error=0;c->output_failure_stage=0;
+ memset(l,0,sizeof(*l));l->self=(uintptr_t)l;l->codec=c;l->generation=c->output_generation;l->owned=1;
+ e=mute_locked(c);if(e)goto failed;
+ e=checked_write(c,I9100_MC_MIXER,110,0x30U,0xffU);if(!e)e=checked_write(c,I9100_MC_MIXER,111,0,0xffU);
+ for(unsigned n=0;n<7U&&!e;n++){
+  uint8_t route=kind==I9100_MC_HEADPHONES?(n==0U||n==2U?0x40U:0U):(n>=3U?0x40U:0U);
+  e=checked_write(c,I9100_MC_ANALOG,(uint8_t)(61U+n),route,0xffU);
+ }
+ if(e)goto failed;c->output_stage=2;
+ e=output_live(c,1);if(e)goto failed;
+ /* The vendor 2->3->1 transition is executed at zero digital and analog
+  * gains; safety does not depend on interpreting NSMUTE's name/polarity. */
+ e=checked_write(c,I9100_MC_CODEC,78,2,3);if(!e)e=checked_write(c,I9100_MC_CODEC,78,3,3);
+ if(!e)e=checked_write(c,I9100_MC_CODEC,78,1,3);
+ if(!e)e=checked_write(c,I9100_MC_ANALOG,5,power[2]&~output_da_bits(c),0xffU);
+ if(e)goto failed;c->output_stage=3;
+ e=output_live(c,1);if(e)goto failed;
+ if(kind==I9100_MC_HEADPHONES){
+  e=checked_write(c,I9100_MC_ANALOG,2,power[0]&~2U,15U);if(!e)e=output_wait(c,300);
+  if(!e)e=output_live(c,1);
+  if(!e)e=checked_write(c,I9100_MC_ANALOG,3,power[1]&~0x30U,0xffU);
+ }else{
+  e=checked_write(c,I9100_MC_ANALOG,44,2U,0x33U);
+  if(!e)e=checked_write(c,I9100_MC_ANALOG,3,power[1]&~0x05U,0xffU);
+  if(!e)e=output_wait(c,150);if(!e)e=output_live(c,1);
+  if(!e)e=checked_write(c,I9100_MC_ANALOG,3,power[1]&~0x0fU,0xffU);
+ }
+ if(e)goto failed;c->output_stage=4;
+ e=output_wait(c,kind==I9100_MC_HEADPHONES?9000U:13000U);
+ if(!e)e=output_flags_clear(c,I9100_MC_ANALOG,12,13,0x18U);
+ if(!e)e=output_power_check(c,1);if(!e)e=output_live(c,1);if(e)goto failed;
+ c->output_stage=5;c->output_powered=1;c->output_running=0;c->muted=1;goto done;
+failed:
+ c->output_error=e;c->output_failure_stage=c->output_stage;
+ c->output_cleanup_error=output_off_locked(c);c->fault=1;
+done:
+ c->io.release(c->io.cookie);return e;
+}
+int i9100_mc1n2_output_activate(struct i9100_mc1n2_output_lease *l)
+{
+ int e=output_lease_check(l);if(e)return e;struct i9100_mc1n2 *c=l->codec;
+ if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
+ if(c->fault||c->output_running||!c->output_powered||c->output_stage!=5U){e=I9100_MC_BUSY;goto done;}
+ if(c->output_gain_code!=1U){e=I9100_MC_NOT_READY;goto done;}
+ e=output_live(c,0);if(e)goto done;
+ if(c->output_guard.stream_ready(c->output_guard.cookie,c->sample_rate)){e=I9100_MC_NOT_READY;goto done;}
+ e=output_power_check(c,1);if(e)goto failed;
+ c->output_stage=6;c->muted=0;
+ /* Actual vendor digital volume law: register96=0dB,66=-30dB,0=mute.
+  * Keep analog at zero until the capped digital path is readback-verified. */
+ e=checked_write(c,I9100_MC_CODEC,78,1,3);
+ if(!e)e=checked_write(c,I9100_MC_MIXER,89,0x80U|66U,0x7fU);
+ if(!e)e=checked_write(c,I9100_MC_MIXER,90,66U,0x7fU);
+ uint8_t reg=c->output_kind==I9100_MC_HEADPHONES?35U:37U;
+ if(!e)e=checked_write(c,I9100_MC_ANALOG,reg,0x61U,0x3fU);
+ if(!e)e=checked_write(c,I9100_MC_ANALOG,reg+1U,1U,31U);
+ if(!e)e=output_flags_clear(c,I9100_MC_ANALOG,12,13,0x18U);
+ if(!e)e=output_live(c,0);
+ if(!e&&c->output_guard.stream_ready(c->output_guard.cookie,c->sample_rate))e=I9100_MC_NOT_READY;
+ if(e)goto failed;
+ c->output_stage=7;c->output_running=1;c->gain_armed=1;c->analog_gain=1;c->actual_gain_mdb=-36000;goto done;
+failed:
+ c->output_error=e;c->output_failure_stage=c->output_stage;
+ c->output_cleanup_error=output_silence_locked(c);c->output_stage=5;c->fault=1;
+done:
+ c->io.release(c->io.cookie);return e;
+}
+int i9100_mc1n2_output_stop(struct i9100_mc1n2_output_lease *l)
+{
+ int e=output_lease_check(l);if(e)return e;struct i9100_mc1n2 *c=l->codec;
+ if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
+ e=output_off_locked(c);c->output_cleanup_error=e;
+ if(e){c->fault=1;if(!c->output_error)c->output_error=e;}
+ c->io.release(c->io.cookie);return e;
+}
 static int cold_off_locked(struct i9100_mc1n2 *c)
 {
+ if(c->output_owner)return I9100_MC_BUSY;
  if(c->clock_owned){int off=clock_off_locked(c);c->clock_cleanup_error=off;if(off)return off;}
  int e=mute_locked(c),r;
  r=checked_write(c,I9100_MC_MIXER,137,0,0xff);if(r)e=r;
@@ -172,13 +412,14 @@ static int cold_off_locked(struct i9100_mc1n2 *c)
 }
 int i9100_mc1n2_cold_stop(struct i9100_mc1n2 *c)
 {
- if(!c||!c->initialized)return I9100_MC_ARGUMENT;
+ int check=valid(c);if(check)return check;
  if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
  int e=!c->enabled||!c->cold_owned?I9100_MC_DISABLED:cold_off_locked(c);
  c->io.release(c->io.cookie);return e;
 }
 static int clock_off_locked(struct i9100_mc1n2 *c)
 {
+ if(c->output_owner)return I9100_MC_BUSY;
  if(!c->clock_guard.lease_valid||!c->clock_guard.consumers_idle)return I9100_MC_ARGUMENT;
  if(c->clock_guard.consumers_idle(c->clock_guard.cookie))return I9100_MC_BUSY;
  int e=c->clock_guard.lease_valid(c->clock_guard.cookie)?I9100_MC_NOT_READY:0,r;
@@ -194,7 +435,7 @@ static int clock_off_locked(struct i9100_mc1n2 *c)
 }
 int i9100_mc1n2_clock_stop(struct i9100_mc1n2 *c)
 {
- if(!c||!c->initialized)return I9100_MC_ARGUMENT;
+ int check=valid(c);if(check)return check;
  if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
  int e=!c->enabled||!c->clock_owned?I9100_MC_DISABLED:clock_off_locked(c);
  c->clock_cleanup_error=e;if(e&&!c->clock_error)c->clock_error=e;
@@ -202,7 +443,8 @@ int i9100_mc1n2_clock_stop(struct i9100_mc1n2 *c)
 }
 int i9100_mc1n2_clock_start(struct i9100_mc1n2 *c,const struct i9100_mc1n2_clock_guard *g)
 {
- if(!c||!c->initialized||!g||!g->lease_valid||!g->consumers_idle)return I9100_MC_ARGUMENT;
+ int check=valid(c);if(check)return check;
+ if(!g||!g->lease_valid||!g->consumers_idle)return I9100_MC_ARGUMENT;
  if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
  int e=0;uint8_t identity=0,pad=0,start=0,fs=0,pll=0;
  if(!c->enabled||!c->cold_owned||c->cold_stage!=5U){e=I9100_MC_DISABLED;goto done;}
@@ -239,7 +481,8 @@ done:
 }
 int i9100_mc1n2_cold_init(struct i9100_mc1n2 *c,uint32_t mclk,uint32_t rate,int verified)
 {
- if(!c||!c->initialized||verified!=1||mclk!=24000000U||(rate!=44100U&&rate!=48000U))return I9100_MC_ARGUMENT;
+ int check=valid(c);if(check)return check;
+ if(verified!=1||mclk!=24000000U||(rate!=44100U&&rate!=48000U))return I9100_MC_ARGUMENT;
  if(c->io.claim(c->io.cookie))return I9100_MC_BUSY;
  int e=0;uint8_t identity=0;
  if(!c->enabled){e=I9100_MC_DISABLED;goto done;}

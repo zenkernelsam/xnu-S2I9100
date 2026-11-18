@@ -41,6 +41,7 @@ TESTS = [
         "i9100_peripheral_board.c", "i9100_i2c_samsung.c", "i9100_irq_cascade.c", "i9100_audss.c", "i9100_dma_guard.c"]),
     ("i9100_sensors_test.c", ["i9100_sensors.c", "i9100_vibrator.c"]),
     ("i9100_audio_transport_test.c", ["i9100_dma_guard.c", "i9100_pl330.c", "i9100_i2s.c", "i9100_mc1n2.c", "i9100_pcm_stream.c"]),
+    ("i9100_audio_output_test.c", ["i9100_dma_guard.c", "i9100_pl330.c", "i9100_i2s.c", "i9100_mc1n2.c", "i9100_pcm_stream.c"]),
     ("i9100_wifi_bluetooth_test.c", ["i9100_sdio.c", "i9100_bcm4330.c", "i9100_bluetooth_h4.c"]),
     ("i9100_camera_mfc_test.c", ["i9100_camera_protocol.c", "i9100_mfc.c", "i9100_video_layout.c", "i9100_sysmmu.c", "i9100_dma_guard.c"]),
     ("i9100_modem_test.c", ["i9100_modem_sipc4.c"]),
@@ -125,6 +126,10 @@ def main():
                 e.model(test, sources, libraries=["crypto"] if test in ("i9100_bcm_firmware_test.c","i9100_bcm_core_download_test.c","i9100_bcm_boot_test.c","i9100_bcm_pump_test.c") else ())
             e.out = previous
         e.result["model_suites"] = [name for name, _ in TESTS]
+        e.result["audio_model_fixtures_sha256"] = {
+            name: hashlib.sha256((REPO / "port-tests" / name).read_bytes()).hexdigest()
+            for name in ("i9100_audio_transport_test.c", "i9100_audio_native_test.cpp", "i9100_audio_board_test.cpp")
+        }
     e.cross_compile(C_SOURCES + CPP_SOURCES)
     if args.power_shared:
         if not args.models:shared_copies = prepare_shared_power(e)

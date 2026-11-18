@@ -25,6 +25,10 @@ struct model {
  unsigned aa_unlocked,aa_wrong_pll_writes,aa_dpb_sequence_errors,aa_spare_pll_writes,aa_unlock_errors;
  unsigned require_quiesce,kills,mute_calls,mute_fail;
  struct i9100_pl330 *stream_dma;
+ struct i9100_pcm_stream *output_pcm;struct i9100_mc1n2 *output_codec;
+ unsigned output_authorized,output_expected_kind,output_dac_phase,output_dac_busy,output_cp_not_ready;
+ unsigned drop_transaction,codec_delay_calls,fail_delay_call,freeze_delay_call,reverse_delay_call;
+ uint64_t output_cp_started,output_sp_started,output_amp_started;
 };
 static struct model m;
 struct buffer_cookie {struct i9100_dma_buffer b;unsigned locked,fail_sync,sync_count,released,lock_calls,fail_lock;};
@@ -68,7 +72,11 @@ static void execute(unsigned used)
 static int lock(void *c){struct model *p=c;if(p->locked)return -1;p->locked=1;return 0;}
 static void unlock(void *c){struct model *p=c;assert(p->locked);p->locked=0;}
 static uint64_t now(void *c){return ((struct model *)c)->ns;}
-static int delay(void *c,uint32_t us){struct model *p=c;if(!p->freeze_time)p->ns+=us*1000ULL;return 0;}
+static int delay(void *c,uint32_t us)
+{struct model *p=c;unsigned call=++p->codec_delay_calls;
+ if(!p->freeze_time&&call!=p->freeze_delay_call)p->ns+=us*1000ULL;
+ if(call==p->reverse_delay_call)p->ns-=us*1000ULL+1U;
+ return call==p->fail_delay_call?-1:0;}
 static uint32_t read(void *c,unsigned off){struct model *p=c;assert(off<4096U);p->reads++;return p->regs[off/4];}
 static void write(void *c,unsigned off,uint32_t value)
 {
@@ -177,6 +185,7 @@ static void codec_write(unsigned wire,uint8_t value)
   m.codec[1][0]=0x10;m.codec[1][1]=id==0x78U?7U:6U;m.codec[1][3]=0x1f;m.codec[3][15]=1;
   m.codec[1][14]=id==0x78U?1U:0U;m.aa_unlocked=0;
   m.codec[2][2]=15;m.codec[2][3]=0xff;m.codec[2][4]=0xff;m.codec[3][78]=2;
+  m.codec[2][5]=id==0x78U?0x0fU:0x1fU;
  }
  if(reg==60U&&value==0xd9U&&m.codec[0][8]==0x78U){
   if(m.bank_address[2]!=2U)m.aa_unlock_errors++;
@@ -192,8 +201,44 @@ static void codec_write(unsigned wire,uint8_t value)
    if(index==1U&&address==3U&&!(old&1U)&&(value&1U)&&((old^value)&0x1eU))m.aa_dpb_sequence_errors++;
   }
   if(index==3U&&address==78U&&(value&2U)&&m.drop_dac_mute)return;
+  if(index==3U&&address==78U){
+   if((value&3U)==2U)m.output_dac_phase=1;
+   else if((value&3U)==3U&&m.output_dac_phase==1U)m.output_dac_phase=2;
+   else if((value&3U)==1U&&m.output_dac_phase==2U)m.output_dac_phase=3;
+  }
+  if(m.output_authorized&&index==2U){
+   unsigned da=m.codec[0][8]==0x78U?8U:0x18U;
+   if(address==5U&&(old&da)&&!(value&da)){
+    assert(m.output_dac_phase==3U&&(m.codec[2][3]&0x3fU)==0x3fU);
+    assert(!(m.codec[4][89]&0x7fU)&&!(m.codec[4][90]&0x7fU));
+   }
+   if(address==2U&&(old&2U)&&!(value&2U))m.output_cp_started=m.ns;
+   if(address==2U&&!(old&2U)&&(value&2U)){
+    assert(!m.output_cp_not_ready&&(m.codec[2][3]&0x3fU)==0x3fU&&(m.codec[2][5]&da)==da);
+   }
+   if(address==3U&&(value&0x3fU)!=0x3fU){
+    assert((m.codec[2][16]&7U)==7U&&!(m.codec[2][5]&da)&&(m.codec[3][78]&1U));
+    assert(!(m.codec[2][77]&3U)&&!m.codec[3][79]&&m.codec[4][110]==0x30U);
+    for(unsigned n=35;n<=38U;n++)assert((m.codec[2][n]&31U)<=1U);
+    assert((m.codec[4][89]&0x7fU)<=66U&&(m.codec[4][90]&0x7fU)<=66U);
+    if(!(value&0x30U)){
+     assert(!(m.codec[2][2]&2U)&&m.ns>=m.output_cp_started+300000ULL);
+     assert((value&0x0fU)==0x0fU&&m.output_expected_kind==I9100_MC_HEADPHONES);
+    }else{
+     assert((value&0x30U)==0x30U&&m.output_expected_kind==I9100_MC_SPEAKER&&m.codec[2][44]==2U);
+     if((old&5U)&&!(value&5U))m.output_sp_started=m.ns;
+     if(!(value&10U))assert(m.ns>=m.output_sp_started+150000ULL);
+    }
+    if((old&0x3fU)==0x3fU)m.output_amp_started=m.ns;
+   }
+   if(address>=35U&&address<=38U&&(value&31U)){
+    assert((value&31U)==1U&&m.ns>=m.output_amp_started+
+     (m.output_expected_kind==I9100_MC_HEADPHONES?9000000ULL:13000000ULL));
+    assert((m.codec[4][89]&0x7fU)==66U&&(m.codec[4][90]&0x7fU)==66U);
+   }
+  }
   if(index==2U&&address==2U&&(old&1U)&&!(value&1U))m.vref_started=m.ns;
-  if(index==2U&&address==3U&&(value&0x3fU)!=0x3fU)m.unsafe_amplifier_writes++;
+  if(index==2U&&address==3U&&(value&0x3fU)!=0x3fU&&!m.output_authorized)m.unsafe_amplifier_writes++;
   m.codec[index][address]=value;
  }
  else m.codec[0][reg]=value;
@@ -207,15 +252,19 @@ static uint8_t codec_read(unsigned wire)
    uint8_t ready=0,power=m.codec[2][2];
    if(!(power&8U))ready|=0x80U;
    if(!(power&1U)&&m.ns>=m.vref_started+15000000ULL)ready|=0x40U;
+   unsigned da=m.codec[0][8]==0x78U?8U:0x18U;
+   if(!m.output_cp_not_ready&&(m.codec[2][3]&0x3fU)==0x3fU&&(m.codec[2][5]&da)==da)ready|=2U;
    return ready;
   }
+  if(index==4U&&(m.bank_address[index]==10U||m.bank_address[index]==11U)&&m.output_dac_busy)return 2U;
   return m.codec[index][m.bank_address[index]];}
  return m.codec[0][reg];
 }
 static int codec_transfer(void *c,const struct i9100_i2c_message *msgs,unsigned count,unsigned *done)
 {
  struct model *p=c;assert(p->bus_locked&&msgs[0].address==0x3a);*done=0;p->transactions++;
- if(count==1){assert(!msgs[0].read&&!(msgs[0].length&1U));for(unsigned n=0;n<msgs[0].length;n+=2)codec_write(msgs[0].bytes[n],msgs[0].bytes[n+1]);}
+ if(count==1){assert(!msgs[0].read&&!(msgs[0].length&1U));
+  if(p->transactions!=p->drop_transaction)for(unsigned n=0;n<msgs[0].length;n+=2)codec_write(msgs[0].bytes[n],msgs[0].bytes[n+1]);}
  else{assert(count==2&&msgs[0].length==1&&msgs[1].read&&msgs[1].length==1);msgs[1].bytes[0]=codec_read(msgs[0].bytes[0]);}
  if(p->transactions==p->fail_transaction||p->sticky_codec_error)return -1;
  *done=p->partial?count-1:count;return 0;
@@ -378,7 +427,9 @@ static int live_i2s_lock(void *c){struct model *p=c;if(p->i2s_locked)return -1;p
 static void live_i2s_unlock(void *c){struct model *p=c;assert(p->i2s_locked);p->i2s_locked=0;}
 static int live_dma_idle(void *c){return i9100_pl330_idle(((struct model *)c)->stream_dma);}
 static int live_dma_stop(void *c){struct model *p=c;assert(!(p->i2s[0]&7U));return i9100_pl330_stop(p->stream_dma);}
-static int ensure_muted(void *c){struct model *p=c;assert(p->stream_locked);p->mute_calls++;return p->mute_fail?-99:0;}
+static int ensure_muted(void *c)
+{struct model *p=c;assert(p->stream_locked);p->mute_calls++;
+ return p->mute_fail?-99:p->output_codec?i9100_mc1n2_mute(p->output_codec):0;}
 static void init_stream(struct i9100_pcm_stream *s,struct i9100_pl330 *p,struct i9100_i2s *i)
 {
  init_pl(p);memset(i,0,sizeof(*i));memset(s,0,sizeof(*s));m.stream_dma=p;m.require_quiesce=1;m.i2s[1]=0x20000000U;

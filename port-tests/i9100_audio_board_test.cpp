@@ -97,7 +97,43 @@ int main()
  m.board_close_fail=0;assert(!i9100_audio_board_close(&a));board_released();
  board_setup();assert(!open_board(&a));m.interrupts=false;
  assert(i9100_audio_board_close(&a)==I9100_AP_BUSY&&a);m.interrupts=true;assert(!i9100_audio_board_close(&a));board_released();
+ for(unsigned kind=1;kind<=2U;kind++){
+  board_setup();assert(!open_board(&a));transactions=m.transactions;
+  assert(i9100_audio_board_output_prepare(0,a,(i9100_mc1n2_output)kind,-30000)==I9100_MC_DISABLED&&m.transactions==transactions);
+  assert(!i9100_audio_board_pcm_open(a,1536000));
+  transactions=m.transactions;m.pdma[0x20/4]|=1U<<4;
+  assert(i9100_audio_board_output_prepare(1,a,(i9100_mc1n2_output)kind,-30000)==I9100_MC_BUSY&&m.transactions==transactions);
+  m.pdma[0x20/4]&=~(1U<<4);m.pdma[0x108/4]=1U;
+  assert(i9100_audio_board_output_prepare(1,a,(i9100_mc1n2_output)kind,-30000)==I9100_MC_BUSY&&m.transactions==transactions);
+  m.pdma[0x108/4]=0;m.cmu[0xc940/4]&=~1U;
+  assert(i9100_audio_board_output_prepare(1,a,(i9100_mc1n2_output)kind,-30000)==I9100_MC_BUSY&&m.transactions==transactions);
+  m.cmu[0xc940/4]|=1U;
+  assert(!i9100_audio_board_output_prepare(1,a,(i9100_mc1n2_output)kind,-30000));
+  assert(!i9100_audio_board_status(a,&status,0)&&status.output_owned&&status.output_powered&&!status.output_running);
+  assert(i9100_audio_board_output_activate(a)==I9100_MC_NOT_READY);
+  assert(!i9100_audio_board_start(a));
+  m.pdma[0x100/4]=0;m.pdma[0x24/4]|=1U<<3;
+  assert(!i9100_audio_board_service(a,&completed)&&completed==1);
+  assert(i9100_audio_board_output_activate(a)==I9100_MC_NOT_READY); /* stopped hardware CS is insufficient */
+  /* This fixture exposes a harness-driven register boundary, not a DMA VM:
+   * report the next GO's EXECUTING state without altering production active
+   * fields/counters. The separate output C suite executes the actual program. */
+  m.pdma[0x100/4]=1U;
+  assert(!i9100_audio_board_output_activate(a));
+  assert(!i9100_audio_board_status(a,&status,0)&&status.output_running&&status.output_gain_mdb==-36000);
+  assert((m.codec[4][89]&0x7fU)==66U&&(m.codec[4][90]&0x7fU)==66U);
+  m.kill_stuck=1;
+  assert(i9100_audio_board_close(&a)!=0&&a&&parent.parent_holds&&m.maps==8U);
+  assert(!i9100_audio_board_status(a,&status,0)&&status.output_owned&&status.clock_owned&&status.domain_owned);
+  assert(!(m.codec[4][89]&0x7fU)&&!(m.codec[4][90]&0x7fU));
+  m.kill_stuck=0;m.pdma[0x100/4]=0;assert(!i9100_audio_board_close(&a));board_released();
+ }
+ board_setup();assert(!open_board(&a));assert(!i9100_audio_board_output_prepare(1,a,I9100_MC_HEADPHONES,-30000));
+ m.board_tx_fail=m.transactions+1U;
+ assert(i9100_audio_board_close(&a)==I9100_MC_IO&&a&&parent.parent_holds&&m.maps==5U);
+ assert(!i9100_audio_board_status(a,&status,0)&&status.output_owned&&status.clock_owned&&status.domain_owned);
+ m.board_tx_fail=0;assert(!i9100_audio_board_close(&a));board_released();
  assert(!mprotect(board_audss,4096,PROT_READ|PROT_WRITE)&&!mprotect(board_i2s,4096,PROT_READ|PROT_WRITE));
- puts("PASS real audio board+PCM/host IOKit: mute-before-MCLK/4210 PMU/power-guarded pages/all allocations+codec transaction failures/borrowed pins/DMA-stop-before-cold-off/failed-close lifetime/no C93C writes");return 0;
+ puts("PASS real audio board+PCM/host IOKit: mute-before-MCLK/power-guarded pages/all setup failures; explicit output/actual native PCM guard/failed DMA and output close retain parent/clock/domain; no C93C writes");return 0;
 }
 #endif

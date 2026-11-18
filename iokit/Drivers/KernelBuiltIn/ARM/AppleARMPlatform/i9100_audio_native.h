@@ -19,6 +19,8 @@ int i9100_audio_native_queue(struct i9100_audio_native *,const int16_t *kernel_s
 int i9100_audio_native_start(struct i9100_audio_native *);
 int i9100_audio_native_service(struct i9100_audio_native *,uint32_t *completed_periods);
 int i9100_audio_native_status(struct i9100_audio_native *,struct i9100_pcm_status *);
+int i9100_audio_native_output_ready(struct i9100_audio_native *,uint32_t sample_rate);
+int i9100_audio_native_consumers_idle(struct i9100_audio_native *);
 int i9100_audio_native_close(struct i9100_audio_native **);
 /* Default OFF actual IOKit private PDMA0/I2S0/GIC read-only maps and DMA32 NC
  * allocations. Requires one whole PDMA0/GPZ owner; no global reset or IRQ hook.

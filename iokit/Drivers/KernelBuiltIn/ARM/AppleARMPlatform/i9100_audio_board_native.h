@@ -18,10 +18,16 @@ struct i9100_audio_board_status {
  uint32_t codec_enabled,cold_owned,clock_owned,pcm_owned;
  uint32_t worker_holds;
  int32_t error;
+ uint32_t output_owned,output_powered,output_running,output_stage;
+ int32_t output_error,output_cleanup_error,output_gain_mdb;
 };
 int i9100_audio_board_open(int enabled,struct i9100_peripheral_native *,const struct i9100_audio_board_profile *,struct i9100_audio_board_native **);
 int i9100_audio_board_pcm_open(struct i9100_audio_board_native *,uint32_t independently_measured_bclk);
 int i9100_audio_board_pcm_close(struct i9100_audio_board_native *);
+int i9100_audio_board_output_prepare(int enabled,struct i9100_audio_board_native *,
+ enum i9100_mc1n2_output,int32_t requested_mdb);
+int i9100_audio_board_output_activate(struct i9100_audio_board_native *);
+int i9100_audio_board_output_stop(struct i9100_audio_board_native *);
 int i9100_audio_board_hold(struct i9100_audio_board_native *);
 int i9100_audio_board_unhold(struct i9100_audio_board_native *);
 int i9100_audio_board_queue(struct i9100_audio_board_native *,const int16_t *,uint32_t frames);
@@ -41,8 +47,12 @@ int i9100_audio_board_close(struct i9100_audio_board_native **);
  * I2C6 uses an exact owned lease; legacy close/callbacks cannot steal it.
  * A parent hold protects managers/maps before and after hardware claims.
  * PCM opening requires separately measured BCLK; register-ready is not a
- * measurement. All outputs stay muted/off. The optional audio worker owns
- * scheduling/IRQ routing separately; no HAL or amplifier-enable API exists.
+ * measurement. Normal open keeps outputs muted/off. Explicit output_prepare
+ * powers one route at zero gain; activate checks the actual native PCM path,
+ * confirmed silence and live DMA/I2S before digital-30dB/analog-36dB output.
+ * A mute keeps the owned route available; PCM close mutes, stops DMA and then
+ * closes the output lease before clock shutdown. Failures retain the board.
+ * The optional worker schedules PCM/IRQ; output/HAL activation is separate.
  * A nonnull result on error retains failed cleanup ownership; only explicit
  * close may recover it. Parent, profile evidence and maps remain live until
  * close succeeds; owner serializes pointer lifetime with API calls.

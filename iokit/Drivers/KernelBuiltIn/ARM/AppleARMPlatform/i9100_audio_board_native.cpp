@@ -18,6 +18,7 @@ struct i9100_audio_board_native {
  IOLock *lifecycle,*pmu_lock,*audss_lock;
  i9100_audio_mclk mclk;i9100_audio_domain domain;i9100_audss audss;
  i9100_peripheral_i2c bus;i9100_mc1n2 codec;i9100_gpio_lease pins;
+ i9100_mc1n2_output_lease output;
  i9100_audio_native *pcm;
  i9100_pcm_status last_pcm;uint32_t last_pcm_valid;
  uint32_t phase,stage,temp_owned,bus_owned,worker_holds;int32_t error;
@@ -89,7 +90,8 @@ static int domain_put(void *c){return i9100_audio_domain_release(&((i9100_audio_
 static int clock_lease(void *c)
 {
  i9100_audio_board_native *a=(i9100_audio_board_native *)c;uint32_t hz=0;
- if(!a->audss.active||!a->domain.ready||i9100_audio_mclk_rate(&a->mclk,&hz)||hz!=24000000U)return -1;
+ if((rd(a,PMU,0x3cc4U)&7U)!=7U||!a->audss.active||!a->domain.ready||
+    i9100_audio_mclk_rate(&a->mclk,&hz)||hz!=24000000U)return -1;
  i9100_gpio_broker *gpio=i9100_peripheral_native_gpio(a->parent);
  if(!a->pins.active||gpio->io.lock(gpio->io.cookie))return -1;
  uint32_t con=gpio->io.read32(gpio->io.cookie,2,0);bool owned=true;
@@ -101,6 +103,16 @@ static int clock_lease(void *c)
   if(function&&!(function==2U&&(mode&0x1800U)==0x1800U))return -1;
  }
  return 0;
+}
+static int output_stream(void *c,uint32_t rate)
+{
+ i9100_audio_board_native *a=(i9100_audio_board_native *)c;
+ return a->pcm?i9100_audio_native_output_ready(a->pcm,rate):I9100_PCM_DISABLED;
+}
+static int output_idle(void *c)
+{
+ i9100_audio_board_native *a=(i9100_audio_board_native *)c;
+ return a->pcm?i9100_audio_native_consumers_idle(a->pcm):ap_idle(c);
 }
 static bool map(i9100_audio_board_native *a,unsigned n,uint32_t pa,uint32_t bytes)
 {
@@ -120,6 +132,7 @@ static int cleanup(i9100_audio_board_native *a)
  a->phase=CLOSING;int e=0;
  if(a->pcm){if(!i9100_audio_native_status(a->pcm,&a->last_pcm))a->last_pcm_valid=1;
   e=i9100_audio_native_close(&a->pcm);if(e)return e;}
+ if(a->output.owned){e=i9100_mc1n2_output_stop(&a->output);if(e)return e;}
  if(a->codec.clock_owned){e=i9100_mc1n2_clock_stop(&a->codec);if(e)return e;}
  if(a->codec.cold_owned){e=i9100_mc1n2_cold_stop(&a->codec);if(e)return e;}
  if(a->codec.enabled){e=i9100_mc1n2_enable(&a->codec,0);if(e)return e;}
@@ -191,8 +204,31 @@ int i9100_audio_board_pcm_close(i9100_audio_board_native *a)
 {
  if(!a)return I9100_AP_ARGUMENT;if(take(a->lifecycle))return I9100_AP_BUSY;
  if(a->pcm&&!i9100_audio_native_status(a->pcm,&a->last_pcm))a->last_pcm_valid=1;
- int e=a->pcm?i9100_audio_native_close(&a->pcm):0;if(e)a->error=e;
+ int e=a->pcm?i9100_audio_native_close(&a->pcm):0;
+ if(!e&&a->output.owned)e=i9100_mc1n2_output_stop(&a->output);
+ if(e)a->error=e;
  IOLockUnlock(a->lifecycle);return e;
+}
+int i9100_audio_board_output_prepare(int enabled,i9100_audio_board_native *a,
+ enum i9100_mc1n2_output kind,int32_t requested)
+{
+ if(enabled!=1)return I9100_MC_DISABLED;if(!a)return I9100_MC_ARGUMENT;
+ if(take(a->lifecycle))return I9100_MC_BUSY;
+ i9100_mc1n2_output_guard g={a,clock_lease,output_idle,output_stream};
+ int e=a->phase==LIVE?i9100_mc1n2_output_prepare(1,&a->codec,kind,requested,&g,&a->output):I9100_MC_DISABLED;
+ if(e)a->error=e;if(a->codec.fault)a->phase=CLOSING;IOLockUnlock(a->lifecycle);return e;
+}
+int i9100_audio_board_output_activate(i9100_audio_board_native *a)
+{
+ if(!a)return I9100_MC_ARGUMENT;if(take(a->lifecycle))return I9100_MC_BUSY;
+ int e=a->phase==LIVE?i9100_mc1n2_output_activate(&a->output):I9100_MC_DISABLED;
+ if(e)a->error=e;if(a->codec.fault)a->phase=CLOSING;IOLockUnlock(a->lifecycle);return e;
+}
+int i9100_audio_board_output_stop(i9100_audio_board_native *a)
+{
+ if(!a)return I9100_MC_ARGUMENT;if(take(a->lifecycle))return I9100_MC_BUSY;
+ int e=a->output.owned?i9100_mc1n2_output_stop(&a->output):0;
+ if(e)a->error=e;IOLockUnlock(a->lifecycle);return e;
 }
 int i9100_audio_board_hold(i9100_audio_board_native *a)
 {
@@ -227,6 +263,9 @@ int i9100_audio_board_status(i9100_audio_board_native *a,struct i9100_audio_boar
  value.mclk_owned=a->mclk.owned;value.domain_owned=a->domain.owned;value.audss_active=a->audss.active;
  value.pins_owned=a->pins.active;value.bus_owned=a->bus_owned;value.codec_enabled=a->codec.enabled;
  value.cold_owned=a->codec.cold_owned;value.clock_owned=a->codec.clock_owned;value.pcm_owned=a->pcm!=0;value.error=a->error;*out=value;
+ out->output_owned=a->output.owned;out->output_powered=a->codec.output_powered;out->output_running=a->codec.output_running;
+ out->output_stage=a->codec.output_stage;out->output_error=a->codec.output_error;
+ out->output_cleanup_error=a->codec.output_cleanup_error;out->output_gain_mdb=a->codec.actual_gain_mdb;
  out->worker_holds=a->worker_holds;
  int e=0;if(pcm){memset(pcm,0,sizeof(*pcm));if(a->pcm)e=i9100_audio_native_status(a->pcm,pcm);
   else if(a->last_pcm_valid)*pcm=a->last_pcm;}

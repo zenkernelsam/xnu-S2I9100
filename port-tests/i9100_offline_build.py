@@ -125,8 +125,16 @@ class Evidence:
                 if flag in ("-MF", "-MT"):
                     command[i + 1] = str(destination.with_suffix(".d") if flag == "-MF" else destination)
             command.extend(["-MF", str(destination.with_suffix(".d"))])
+            source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+            header = PLATFORM / (Path(name).stem + ".h")
+            header_sha = hashlib.sha256(header.read_bytes()).hexdigest() if header.is_file() else None
             self.run(command, "cross-" + name, env)
-            self.commands.append(dict(source=name, object=str(destination.relative_to(ROOT)), arguments=command))
+            if hashlib.sha256(source.read_bytes()).hexdigest() != source_sha or (
+                    header_sha and hashlib.sha256(header.read_bytes()).hexdigest() != header_sha):
+                raise RuntimeError("Source/module header changed while compiling: " + name)
+            self.commands.append(dict(source=name, source_file=str(source.relative_to(ROOT)), source_sha256=source_sha,
+                                      module_header=str(header.relative_to(ROOT)) if header_sha else None,
+                                      module_header_sha256=header_sha, object=str(destination.relative_to(ROOT)), arguments=command))
         (self.out / "compile-commands.json").write_text(json.dumps(self.commands, indent=2) + "\n")
         self.result["cross_compiled"] = True
 
@@ -163,6 +171,11 @@ class Evidence:
             self.result.setdefault("native_wrapped_functions", {})[test_file] = list(wrapped_functions)
 
     def finish(self, sources, scope):
+        for item in self.commands:
+            if hashlib.sha256((ROOT / item["source_file"]).read_bytes()).hexdigest() != item["source_sha256"]:
+                raise RuntimeError("Compiled source changed before final evidence: " + item["source"])
+            if item["module_header"] and hashlib.sha256((ROOT / item["module_header"]).read_bytes()).hexdigest() != item["module_header_sha256"]:
+                raise RuntimeError("Compiled module header changed before final evidence: " + item["source"])
         for name in sources:
             self.result["sources"][name] = hashlib.sha256((PLATFORM / name).read_bytes()).hexdigest()
             header = PLATFORM / (Path(name).stem + ".h")
