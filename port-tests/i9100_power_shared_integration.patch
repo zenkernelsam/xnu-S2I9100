@@ -44,9 +44,9 @@
  #include "i9100_power.h"
 +#include "i9100_power_shared.h"
  #include "i9100_charge_diag.h"
- extern "C" {
- #include <mach/mach_time.h>
-@@ -42,6 +43,8 @@
+ #include "i9100_power_budget_diag.h"
+ #include "IOS7LeoGraphicsState.h"
+@@ -99,6 +100,8 @@
  public:
   virtual bool init(void);
   virtual bool start(IOService *);
@@ -55,18 +55,17 @@
   virtual void free(void);
  };
  OSDefineMetaClassAndStructors(IOS7I9100Power,IOPMPowerSource)
-@@ -109,7 +112,9 @@
-  setProperty("ChargerController",battery.use_sub?"MAX8922":"MAX8997");
-  setProperty("FuelGauge","MAX17042");setProperty("ChargingPolicy","USB rate; 4.2V; thermistor and voltage checks");
-  setMaxCapacity(100);setTimeRemaining(-1);
-- sample();return timer->setTimeoutMS(1000)==kIOReturnSuccess;
-+ sample();if(timer->setTimeoutMS(1000)!=kIOReturnSuccess)return false;
+@@ -174,7 +177,8 @@
+    i9100_lpm_poweroff_call=thread_call_allocate(i9100_lpm_poweroff_worker,0);
+   __sync_synchronize();i9100_lpm_poweroff_ready=i9100_lpm_poweroff_call!=0;
+  }
+- return true;
 + const i9100_power_haptic_ops haptic={i9100_power_haptic_config_read,i9100_power_haptic_config_write,1};
 + return !i9100_power_shared_enabled()||!i9100_power_shared_publish_haptic(this,&hw,&haptic);
  }
  void IOS7I9100Power::sample(void)
  {
-@@ -171,8 +176,23 @@
+@@ -240,8 +244,23 @@
    s->setIsCharging(false);s->updateStatus();IOLog("I9100 POWER timer failed; charging stopped\n");
   }
  }

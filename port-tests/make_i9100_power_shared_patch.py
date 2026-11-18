@@ -23,7 +23,16 @@ replace(bus,"int i9100_power_pmic_write(void *hw,unsigned reg,uint8_t value)\n{r
 power=base+names[1]
 replace(power,'#include "i9100_power.h"','#include "i9100_power.h"\n#include "i9100_power_shared.h"')
 replace(power," virtual void free(void);"," virtual void stop(IOService *);\n static IOReturn stopShared(OSObject *,void *,void *,void *,void *);\n virtual void free(void);")
-replace(power," sample();return timer->setTimeoutMS(1000)==kIOReturnSuccess;"," sample();if(timer->setTimeoutMS(1000)!=kIOReturnSuccess)return false;\n const i9100_power_haptic_ops haptic={i9100_power_haptic_config_read,i9100_power_haptic_config_write,1};\n return !i9100_power_shared_enabled()||!i9100_power_shared_publish_haptic(this,&hw,&haptic);")
+publisher=" const i9100_power_haptic_ops haptic={i9100_power_haptic_config_read,i9100_power_haptic_config_write,1};\n return !i9100_power_shared_enabled()||!i9100_power_shared_publish_haptic(this,&hw,&haptic);"
+legacy=" sample();return timer->setTimeoutMS(1000)==kIOReturnSuccess;"
+if legacy in edited[power]:
+    replace(power,legacy," sample();if(timer->setTimeoutMS(1000)!=kIOReturnSuccess)return false;\n"+publisher)
+else:
+    # The current charger also provisions the LPM shutdown worker after its
+    # timer is armed. Keep that block and publish only at start's final return.
+    if edited[power].count(" if(timer->setTimeoutMS(1000)!=kIOReturnSuccess)return false;")!=1:
+        raise RuntimeError("Charger start timer/cleanup changed; inspect before integrating")
+    replace(power," return true;\n}\nvoid IOS7I9100Power::sample(void)",publisher+"\n}\nvoid IOS7I9100Power::sample(void)")
 stop='''IOReturn IOS7I9100Power::stopShared(OSObject *owner,void *,void *,void *,void *)
 {
  IOS7I9100Power *s=(IOS7I9100Power *)owner;

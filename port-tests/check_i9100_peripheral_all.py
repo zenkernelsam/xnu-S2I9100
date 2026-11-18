@@ -32,9 +32,10 @@ C_SOURCES = [
     "i9100_wlan_control.c",
     "i9100_bcm_pump.c",
     "i9100_radio_survey.c",
+    "i9100_audio_user_session.c",
 ]
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
-               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_sensor_worker.cpp", "i9100_haptic_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp"]
+               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_sensor_worker.cpp", "i9100_haptic_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp", "IOS6I9100AudioPCM.cpp"]
 TESTS = [
     ("i9100_peripheral_bus_test.c", C_SOURCES[:5]),
     ("i9100_peripheral_platform_test.c", ["i9100_gpio_broker.c", "i9100_clock_gates.c",
@@ -84,6 +85,17 @@ TESTS = [
     ("i9100_haptic_worker_test.cpp", ["i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_irq_registry.c", "i9100_irq_cascade.c", "i9100_peripheral_board.c",
         "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c", "i9100_pwm_haptic.c", "i9100_vibrator.c", "i9100_power_bus.c", "i9100_power.c", "i9100_power_shared.cpp", "i9100_haptic_worker.cpp"]),
     ("i9100_radio_survey_test.c", ["i9100_radio_survey.c"]),
+    ("i9100_audio_user_test.c", ["i9100_audio_user_session.c"]),
+    ("i9100_audio_user_native_test.cpp", ["i9100_audio_power.c", "i9100_audss.c", "i9100_mc1n2.c",
+        "i9100_dma_guard.c", "i9100_pl330.c", "i9100_i2s.c", "i9100_pcm_stream.c", "i9100_gpio_broker.c",
+        "i9100_clock_gates.c", "i9100_peripheral_board.c", "i9100_irq_registry.c", "i9100_irq_router.c",
+        "i9100_pcm_ring.c", "i9100_audio_user_session.c", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp",
+        "i9100_audio_worker.cpp", "IOS6I9100AudioPCM.cpp"]),
+    ("i9100_audio_pdev_test.cpp", ["i9100_audio_power.c", "i9100_audss.c", "i9100_mc1n2.c",
+        "i9100_dma_guard.c", "i9100_pl330.c", "i9100_i2s.c", "i9100_pcm_stream.c", "i9100_gpio_broker.c",
+        "i9100_clock_gates.c", "i9100_peripheral_board.c", "i9100_irq_registry.c", "i9100_irq_router.c",
+        "i9100_pcm_ring.c", "i9100_audio_user_session.c", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp",
+        "i9100_audio_worker.cpp", "IOS6I9100AudioPCM.cpp"]),
 ]
 
 
@@ -114,14 +126,27 @@ def main():
             previous = e.out
             e.out = folder
             if test.endswith(".cpp"):
-                e.model_cpp(test, [name for name in sources if name.endswith(".c")],
+                overrides=shared_copies if test in ("i9100_power_shared_test.cpp","i9100_power_haptic_test.cpp","i9100_haptic_worker_test.cpp") else None
+                extra=[]
+                if test=="i9100_audio_pdev_test.cpp":
+                    captured={}
+                    for name in ("i9100-pdev.c","i9100-pdev.h"):
+                        raw=(REPO/"userland/audio"/name).read_bytes();(folder/name).write_bytes(raw)
+                        captured[name]=hashlib.sha256(raw).hexdigest()
+                    e.result["pdev_sources"]=captured;extra=["i9100-pdev.c"]
+                    overrides={"i9100-pdev.c":folder/"i9100-pdev.c"}
+                e.model_cpp(test, [name for name in sources if name.endswith(".c")]+extra,
                             [name for name in sources if name.endswith(".cpp")],
                             libraries=["crypto"] if test=="i9100_bcm_worker_test.cpp" else ["pthread"] if test in ("i9100_power_shared_test.cpp","i9100_power_haptic_test.cpp","i9100_haptic_worker_test.cpp") else (),
-                            source_overrides=shared_copies if test in ("i9100_power_shared_test.cpp","i9100_power_haptic_test.cpp","i9100_haptic_worker_test.cpp") else None,
+                            source_overrides=overrides,
                             wrapped_functions=("i9100_sdio_init",) if test=="i9100_native_sdio_success_test.cpp" else
-                            ("i9100_i2c_samsung_init",) if test in ("i9100_native_i2c_test.cpp","i9100_sensor_worker_test.cpp") else ())
+                            ("i9100_i2c_samsung_init",) if test in ("i9100_native_i2c_test.cpp","i9100_sensor_worker_test.cpp") else
+                            ("pthread_mutex_init","pthread_mutex_lock","pthread_mutex_unlock") if test=="i9100_audio_pdev_test.cpp" else ())
                 if test=="i9100_power_shared_test.cpp":
                     for n in range(1,4):e.run([str(e.out/"models"),str(n)],"shared-prepare-failure-"+str(n)+"-tests")
+                if test=="i9100_audio_pdev_test.cpp" and any(
+                    hashlib.sha256((REPO/"userland/audio"/name).read_bytes()).hexdigest()!=sha for name,sha in captured.items()):
+                    raise RuntimeError("Pdev input changed during the model")
             else:
                 e.model(test, sources, libraries=["crypto"] if test in ("i9100_bcm_firmware_test.c","i9100_bcm_core_download_test.c","i9100_bcm_boot_test.c","i9100_bcm_pump_test.c") else ())
             e.out = previous

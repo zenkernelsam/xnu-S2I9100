@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Reproduce a verified full kernel, then replace only the current audio board/worker.
+"""Reproduce a verified full kernel, then replace/append explicit audio objects.
 
 Keeps all prior peripheral and paired Power objects; never edits shared BUILD,
 live integration patches, loader packages or hardware. Not a production build.
+The default still replaces only board/worker; opt-in lists support PCM/client
+updates against retained complete references, including frozen-path ancestry.
 """
 import argparse
 import hashlib
 import json
 import os
+import re
 import shlex
 import struct
 from pathlib import Path
@@ -45,8 +48,16 @@ def uuid_offset(data):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--base", type=Path, required=True)
+    p.add_argument("--replace", action="append", default=[], metavar="SOURCE", help="Replace a uniquely retained peripheral object")
+    p.add_argument("--append", action="append", default=[], metavar="SOURCE", help="Append a new opt-in object")
     p.add_argument("--wait-idle", type=int, default=60, choices=range(61))
     args = p.parse_args()
+    changed=tuple(args.replace) if args.replace else CHANGED
+    added=tuple(args.append)
+    if len(set(changed+added))!=len(changed+added) or any(
+            not re.fullmatch(r"[A-Za-z0-9_]+\.(c|cpp)", name) or not (REPO/"iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform"/name).is_file()
+            for name in changed+added):
+        raise RuntimeError("Use unique, existing platform source names")
     base = args.base.resolve()
     if not base.is_relative_to(REPO / "out"):
         raise RuntimeError("Reference must remain in project out")
@@ -57,10 +68,20 @@ def main():
     if digest(base / "mach_kernel.sys") != expected:
         raise RuntimeError("Reference kernel bytes changed")
     previous_inputs = [verify(ROOT / name) for name in manifest["frozen_input_manifests"]]
-    aux = previous_inputs[-1]
-    if len(aux) != 2 or any(not x["frozen"].endswith(suffix) for x, suffix in zip(aux, ("version.o", "lastkernelconstructor.o"))):
+    aux_sets=[items for items in previous_inputs if len(items)==2 and all(
+        x["frozen"].endswith(suffix) for x,suffix in zip(items,("version.o","lastkernelconstructor.o")))]
+    if len(aux_sets)!=1:
         raise RuntimeError("Auxiliary constructor/version inputs are ambiguous")
-    reference = (ROOT / manifest["kernel_reference"]).resolve()
+    aux=aux_sets[0]
+    controls=manifest;seen={base};cursor=base
+    for _ in range(8):
+        if controls.get("kernel_reference"):break
+        cursor=(ROOT/controls["base"]).resolve()
+        if cursor in seen or not cursor.is_relative_to(REPO/"out"):
+            raise RuntimeError("Invalid retained reference ancestry")
+        seen.add(cursor);controls=json.loads((cursor/"manifest.json").read_text())
+    else:raise RuntimeError("Retained link controls could not be located")
+    reference = (ROOT / controls["kernel_reference"]).resolve()
     if not reference.is_relative_to(REPO / "out"):
         raise RuntimeError("Link controls escaped project out")
     flags = reference / "link-flags.txt"
@@ -71,7 +92,7 @@ def main():
                LD64_WRAPPER=str(ROOT / "assets/i9100-toolchain/bin/ld64"), SRCROOT=str(REPO),
                OBJROOT=str(REPO / "BUILD/obj"), SYMROOT=str(REPO / "BUILD/sym"), TARGET=str(build))
     env["PATH"] = str(ROOT / "assets/i9100-toolchain/bin") + ":" + env["PATH"]
-    e = Evidence("audio-worker-link")
+    e = Evidence("audio-client-link" if args.replace or added else "audio-worker-link")
     e.wait_idle_seconds = args.wait_idle
     inputs = (base / "link.filelist").read_text().splitlines()
     if len(inputs) != len(set(inputs)):
@@ -103,16 +124,25 @@ def main():
     for item in verify(snapshot):
         if digest(ROOT / item["source"]) != item["sha256"]:
             raise RuntimeError("Original reference input changed during reproduction")
-    e.cross_compile(list(CHANGED))
+    e.cross_compile(list(changed+added))
     replaced = {}
-    for name in CHANGED:
-        matches = [i for i, path in enumerate(inputs) if Path(path).name == name + ".cpo"]
+    def object_name(path):return re.sub(r"^(?:[0-9]{4}-)+","",Path(path).name)
+    for name in changed:
+        suffix=name+(".cpo" if name.endswith(".cpp") else ".o")
+        matches = [i for i, path in enumerate(inputs) if object_name(path) == suffix]
         if len(matches) != 1:
             raise RuntimeError("Replacement is missing or ambiguous: " + name)
         item = next(x for x in e.commands if x["source"] == name)
         index = matches[0]
         replaced[name] = dict(previous=inputs[index], current=item["object"])
         captured[index] = str(ROOT / item["object"])
+    appended={}
+    for name in added:
+        suffix=name+(".cpo" if name.endswith(".cpp") else ".o")
+        if any(object_name(path)==suffix for path in inputs):
+            raise RuntimeError("New object is already retained: "+name)
+        item=next(x for x in e.commands if x["source"]==name)
+        appended[name]=item["object"];captured.append(str(ROOT/item["object"]))
     idle()
     final_inputs, final_snapshot = freeze(captured, e.out / "frozen-final")
     filelist = e.out / "link.filelist"
@@ -125,12 +155,13 @@ def main():
     if digest(flags) != flags_sha or digest(base / "mach_kernel.sys") != expected:
         raise RuntimeError("Reference kernel/link controls changed during assembly")
     e.result.update(base=str(base.relative_to(ROOT)), reproduced_sha256=expected,
-                    replaced_objects=replaced, total_link_objects=len(inputs),
-                    retained_peripheral_objects=manifest.get("peripheral_objects"),
+                    replaced_objects=replaced, appended_objects=appended,total_link_objects=len(captured),
+                    kernel_reference=str(reference.relative_to(ROOT)),
+                    retained_peripheral_objects=manifest.get("peripheral_objects",manifest.get("retained_peripheral_objects")),
                     reference_sha256=expected, link_flags_sha256=flags_sha,
                     linked_kernel_sha256=digest(kernel), kernel_bytes=kernel.stat().st_size,
                     frozen_input_manifests=[str(x.relative_to(ROOT)) for x in (snapshot, aux_snapshot, final_snapshot)])
-    e.finish(list(CHANGED), "Full reference reproduced except LC_UUID; exact bytes verified after UUID normalization; two current audio objects replaced; no live main/loader/hardware changes")
+    e.finish(list(changed+added), "Full retained reference reproduced except LC_UUID; exact bytes verified after normalization; only explicit audio objects replaced/appended; no live BUILD/loader/hardware changes")
     result = json.loads((e.out / "manifest.json").read_text())
     result["complete_kernel_link"] = True
     (e.out / "manifest.json").write_text(json.dumps(result, indent=2) + "\n")
