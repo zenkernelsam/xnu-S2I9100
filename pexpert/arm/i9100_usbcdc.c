@@ -181,6 +181,11 @@ static unsigned int i9100_usb_out_arms, i9100_usb_reset_errors;
 #define UWAIT(r, m, v) i9100_usb_wait((r), (m), (v))
 #endif
 static int uctl_reset_action;
+#ifdef I9100_USB_SIM
+static volatile unsigned i9100_lpm_poweroff_ready,i9100_lpm_poweroff_request;
+#else
+extern volatile unsigned i9100_lpm_poweroff_ready,i9100_lpm_poweroff_request;
+#endif
 static uint64_t uctl_reset_at;
 static unsigned int i9100_usb_bulk_mps = 512;
 /* Lost EP1-IN completion would wedge uctl_flight forever: while a reply is
@@ -331,6 +336,10 @@ static void uctl_command(void)
             answer = "ERR panic-readonly";
 		else if (!strcmp(verb, "root-status"))
 			answer = uctl_root_status();
+		else if (!strcmp(verb,"poweroff-charge")) {
+            if(!uctl_enabled || !i9100_lpm_poweroff_ready)answer="ERR disabled";
+            else {uctl_action=4;answer="OK poweroff-charge";}
+        }
 		else if (!strcmp(verb, "reboot") || !strcmp(verb, "reboot-download")) {
 			if (!uctl_enabled || !i9100_pmu_map) answer = "ERR disabled";
 			else {
@@ -577,6 +586,11 @@ static void uctl_reset_poll(void)
 	}
     if (!action || UCTL_NOW() < uctl_reset_at) return;
 	uctl_reset_action = 0;
+    if (action == 4) {
+        i9100_lpm_poweroff_request=1;
+        uctl_reset_action=0;
+        return;
+    }
     if (action == 3) {
         ios7i9100_recovery_test_panic();
         return;

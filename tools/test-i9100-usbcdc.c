@@ -471,6 +471,27 @@ static void panic_tests(void)
     CHECK(i9100_usb_h==ring && i9100_usb_mode==USB_DEAD);
 }
 
+static void charging_shutdown_tests(void)
+{
+    i9100_usb_mode=USB_OURS;i9100_usb_panic_mode=0;i9100_usb_disconnect_at=0;
+    fake_timebase_ready=1;i9100_usb_configured=1;uctl_started=uctl_enabled=1;
+    i9100_pmu_map=1;uctl_cancel();uctl_reset_action=0;uctl_last=0;
+    i9100_usb_h=i9100_usb_t=0;i9100_usb_busy1=0;UDTXFSTS(1)=384;
+    i9100_lpm_poweroff_ready=i9100_lpm_poweroff_request=0;pmu_count=0;
+    command("I9CTL1 00000001 poweroff-charge\n");
+    CHECK(!uctl_action && strstr(uctl_reply,"ERR disabled"));uctl_cancel();
+    i9100_lpm_poweroff_ready=1;
+    command("I9CTL1 00000002 poweroff-charge\n");
+    CHECK(uctl_action==4 && !i9100_lpm_poweroff_request);
+    i9100_usb_drain();uctl_complete(UEPINT_AHBERR|UEPINT_XFC);
+    CHECK(!i9100_lpm_poweroff_request && !uctl_reset_action);i9100_usb_busy1=0;
+    command("I9CTL1 00000003 poweroff-charge\n");i9100_usb_drain();uctl_complete(UEPINT_XFC);
+    CHECK(uctl_reset_action==4 && !i9100_lpm_poweroff_request);
+    fake_ticks+=UCTL_ACK_TICKS-1;uctl_reset_poll();CHECK(!i9100_lpm_poweroff_request && !pmu_count);
+    fake_ticks++;uctl_reset_poll();
+    CHECK(i9100_lpm_poweroff_request==1 && !uctl_reset_action && !pmu_count);
+    CHECK(!fake_panic_calls);
+}
 int main(void)
 {
     i9100_usb_map = 1;
@@ -560,6 +581,7 @@ int main(void)
     readmem_tests();
     init_recovery_tests();
     panic_tests();
+    fake_panic_calls=0;charging_shutdown_tests();
     printf("kernel CDC: %u checks, %u failures (no hardware emulation)\n", checks, fails);
     return fails ? 1 : 0;
 }

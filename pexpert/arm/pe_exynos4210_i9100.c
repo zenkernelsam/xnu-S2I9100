@@ -195,11 +195,34 @@ void __attribute__((noreturn)) ios7i9100_recovery_test_panic(void)
     ios7i9100_panic_recovery_wait();
 }
 static int i9100_os_reboot_download;
+static int i9100_lpm_loader_supported;
+static vm_offset_t i9100_lpm_gpio;
+extern volatile uint32_t i9100_power_connected;
 static int i9100_halt_restart(unsigned int action)
 {
     /* Called by halt_all_cpus after the ordinary BSD shutdown/sync path.
      * The old unregistered PE callback left reboot(0) spinning forever. */
-    if (action != kPERestartCPU || !i9100_trace_pmu) return -1;
+    if(!i9100_trace_pmu)return -1;
+    if(action==kPEHaltCPU && i9100_lpm_loader_supported){
+        (void)ml_set_interrupts_enabled(FALSE);
+        for(;;){
+            unsigned cable=i9100_lpm_gpio?
+                !(*(volatile uint32_t*)(i9100_lpm_gpio+0x104)&(1U<<5)):i9100_power_connected;
+            if(cable){
+                *(volatile uint32_t*)(i9100_trace_pmu+0x808)=0;
+                *(volatile uint32_t*)(i9100_trace_pmu+0x80c)=0;
+                __asm__ volatile("dsb sy" ::: "memory");
+                *(volatile uint32_t*)(i9100_trace_pmu+0x400)=1;
+                for(;;)__asm__ volatile("wfi");
+            }
+            if(!i9100_lpm_gpio || (*(volatile uint32_t*)(i9100_lpm_gpio+0xc44)&(1U<<7))){
+                *(volatile uint32_t*)(i9100_trace_pmu+0x330c)&=~256U;
+                __asm__ volatile("dsb sy" ::: "memory");
+            }
+            __asm__ volatile("wfi");
+        }
+    }
+    if (action != kPERestartCPU) return -1;
     (void)ml_set_interrupts_enabled(FALSE);
     i9100_pmu_reset_registers(i9100_trace_pmu, i9100_os_reboot_download);
     for (;;) __asm__ volatile("wfi");
@@ -745,6 +768,9 @@ void PE_init_SocSupport_stub(void)
     vm_offset_t fb;
     static ios7lab_i9100_handoff i9100_default_handoff;
     i9100_trace_pmu=ml_io_map(0x10020000, 0x4000);
+    int lpm_loader=0;
+    i9100_lpm_loader_supported=PE_parse_boot_argn("i9100lpmloader",&lpm_loader,4) && lpm_loader==1;
+    if(i9100_lpm_loader_supported)i9100_lpm_gpio=ml_io_map(0x11000000,4096);
     i9100_trace_cell=ml_io_map(0x7ffe0000, 0x1000);
     int panic_recovery = 0;
     i9100_panic_recovery_enabled =

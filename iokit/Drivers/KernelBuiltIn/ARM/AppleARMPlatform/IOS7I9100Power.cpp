@@ -12,6 +12,17 @@
 #include "i9100_charge_diag.h"
 extern "C" {
 #include <mach/mach_time.h>
+#include <kern/thread_call.h>
+#include "../../../../../bsd/sys/reboot.h"
+extern int boot(int,int,char *);
+volatile uint32_t i9100_lpm_poweroff_ready,i9100_lpm_poweroff_request;
+static thread_call_t i9100_lpm_poweroff_call;
+static void i9100_lpm_poweroff_worker(thread_call_param_t unused0,thread_call_param_t unused1)
+{
+ (void)unused0;(void)unused1;
+ int result=boot(0,RB_HALT,0);
+ i9100_lpm_poweroff_request=result?4:3;
+}
 void _disable_preemption(void);
 void _enable_preemption(void);
 /* Read-only panel diagnostics; one power workloop is the sole writer. */
@@ -109,10 +120,20 @@ bool IOS7I9100Power::start(IOService *provider)
  setProperty("ChargerController",battery.use_sub?"MAX8922":"MAX8997");
  setProperty("FuelGauge","MAX17042");setProperty("ChargingPolicy","USB rate; 4.2V; thermistor and voltage checks");
  setMaxCapacity(100);setTimeRemaining(-1);
- sample();return timer->setTimeoutMS(1000)==kIOReturnSuccess;
+ sample();
+ if(timer->setTimeoutMS(1000)!=kIOReturnSuccess)return false;
+ int lpm_supported=0;
+ if(PE_parse_boot_argn("i9100lpmloader",&lpm_supported,4) && lpm_supported==1){
+  if(!i9100_lpm_poweroff_call)
+   i9100_lpm_poweroff_call=thread_call_allocate(i9100_lpm_poweroff_worker,0);
+  __sync_synchronize();i9100_lpm_poweroff_ready=i9100_lpm_poweroff_call!=0;
+ }
+ return true;
 }
 void IOS7I9100Power::sample(void)
 {
+ if(i9100_lpm_poweroff_ready && OSCompareAndSwap(1,2,&i9100_lpm_poweroff_request))
+  thread_call_enter(i9100_lpm_poweroff_call);
  (void)i9100_power_poll(&battery);polls++;
  if(chargeProbe==1 && chargeTest==1 && !chargeTestDone && polls>=90){
   chargeTestDone=1;
