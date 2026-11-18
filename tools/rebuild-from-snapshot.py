@@ -16,7 +16,7 @@ p.add_argument('--baseline',type=Path,required=True);p.add_argument('--expect-sh
 p.add_argument('--output',type=Path,required=True);p.add_argument('objects',nargs='+')
 a=p.parse_args();base=a.baseline.resolve();out=a.output.resolve()
 assert base.is_relative_to(repo/'out') and out.is_relative_to(repo/'out') and not out.exists()
-assert len(set(a.objects))==len(a.objects) and all(len(Path(x).parts)==2 and Path(x).suffix=='.o' and '..' not in Path(x).parts for x in a.objects)
+assert len(set(a.objects))==len(a.objects) and all(len(Path(x).parts)==2 and Path(x).suffix in ('.o','.cpo') and '..' not in Path(x).parts for x in a.objects)
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def normalized(path):
     raw=bytearray(path.read_bytes());assert struct.unpack_from('<I',raw)[0]==0xfeedface

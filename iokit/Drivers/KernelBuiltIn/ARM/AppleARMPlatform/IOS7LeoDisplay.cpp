@@ -37,6 +37,7 @@ int ios7i9100_display_ready(void);
 int ios7i9100_display_present(const unsigned char *px,unsigned int bytes,unsigned int row,
                              unsigned int fmt,unsigned long long *seq);
 int ios7i9100_display_completed(unsigned long long seq);
+int ios7i9100_display_render_size(uint32_t *width,uint32_t *height,uint32_t *row);
 int ios7leo_display_power(uint32_t state);
 }
 #define ios7leo_display_ready ios7i9100_display_ready
@@ -249,7 +250,7 @@ static uint32_t primaryBytes;
 static IOMemoryMap *primaryKernelPixels;
 static uint64_t scanoutSequence;
 static uint32_t displayBudget;
-static const uint32_t leoWidth=480,leoHeight=800,leoRow=1920;
+static uint32_t leoWidth=480,leoHeight=800,leoRow=1920;
 static const uint32_t primarySurfaceID = 1;
 static uint32_t activeScanoutSurfaceID = primarySurfaceID;
 enum { IOS7LAB_MAX_OFFSCREEN = 64 };
@@ -274,7 +275,7 @@ extern "C" void ios7leo_primary_observe(LeoDisplayObservation *out)
 {
  if(!out || out->version!=1 || !primaryLock)return;
  if(!IOLockTryLock(primaryLock)){out->known|=LEO_OBS_PRIMARY_LOCK_BUSY;return;}
- if(primaryKernelPixels && primaryPixels && primaryControl && primaryBytes==1536000U &&
+ if(primaryKernelPixels && primaryPixels && primaryControl && primaryBytes==leoRow*leoHeight &&
     primaryKernelPixels->getAddress() && primaryKernelPixels->getLength()>=primaryBytes &&
     primaryControl->getBytesNoCopy()){
   volatile const uint32_t *pixels=(volatile const uint32_t *)primaryKernelPixels->getAddress();
@@ -282,7 +283,7 @@ extern "C" void ios7leo_primary_observe(LeoDisplayObservation *out)
   out->primary_bytes=primaryBytes;out->primary_seed_before=control[2];out->active_surface=activeScanoutSurfaceID;
   uint32_t hash=2166136261U,rgb=0,alpha=0;
   for(unsigned y=0;y<32;y++)for(unsigned x=0;x<32;x++){
-   unsigned index=((y*799U)/31U)*480U+(x*479U)/31U;
+   unsigned index=((y*(leoHeight-1U))/31U)*leoWidth+(x*(leoWidth-1U))/31U;
    uint32_t value=pixels[index];hash=(hash^value)*16777619U;
    if(value&0x00ffffffU)++rgb;if(value&0xff000000U)++alpha;
   }
@@ -292,7 +293,7 @@ extern "C" void ios7leo_primary_observe(LeoDisplayObservation *out)
  }
  IOLockUnlock(primaryLock);
 }
-static const uint32_t offscreenPixelBytes = 1536000U;
+static uint32_t offscreenPixelBytes = 1536000U;
 static bool ios7leo_memory_room(uint32_t additional)
 {
  uint64_t managed=sane_size>>12,freePages=vm_page_free_count;
@@ -384,8 +385,8 @@ static bool ios7lab_fullframe_scanout_layout(const uint32_t *words, uint32_t sur
     memcpy(expected, words, 6 * sizeof(uint32_t)); /* Three original UInt64 timestamp pairs, not a synthetic physical-vblank event. */
     expected[6] = words[6];                       /* Separately validated transaction. */
     expected[7] = surfaceID;
-    expected[13] = expected[29] = expected[53] = (uint32_t)PE_state.video.v_width;
-    expected[14] = expected[30] = expected[54] = (uint32_t)PE_state.video.v_height;
+    expected[13] = expected[29] = expected[53] = leoWidth;
+    expected[14] = expected[30] = expected[54] = leoHeight;
     expected[43] = 1;
     expected[67] = words[67];
     expected[68] = words[68];
@@ -801,8 +802,8 @@ IOReturn IOS7LabSurfaceClient::describe(IOExternalMethodArguments *args)
     info[2] = (uint32_t)controlMap->getAddress();
     info[4] = primarySurfaceID;
     info[5] = primaryBytes;
-    info[6] = (uint32_t)PE_state.video.v_width;
-    info[7] = (uint32_t)PE_state.video.v_height;
+    info[6] = leoWidth;
+    info[7] = leoHeight;
     info[8] = leoRow;
     info[10] = 0x42475241U; /* BGRA */
     info[14] = 0x01010004U; /* uint16 bytes=4, uint8 elementWidth=1, uint8 elementHeight=1 */
@@ -1726,8 +1727,8 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
     }
     /* Original 7.1.2 GetDisplaySize: two uint64 output values. */
     if (selector == 8 && args->scalarOutput && args->scalarOutputCount == 2) {
-        args->scalarOutput[0] = PE_state.video.v_width;
-        args->scalarOutput[1] = PE_state.video.v_height;
+        args->scalarOutput[0] = leoWidth;
+        args->scalarOutput[1] = leoHeight;
         return kIOReturnSuccess;
     }
     /* Original GetMainDisplay filters selector18 for the primary display. */
@@ -2230,6 +2231,13 @@ void ios7leo_register_display(IOService *platform)
     if (!ios7leo_display_ready())return;
     if (!PE_state.video.v_baseAddr || !PE_state.video.v_width || !PE_state.video.v_height)
         return;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    if(primaryPixels || primaryControl || primaryKernelPixels)return;
+    if(!ios7i9100_display_render_size(&leoWidth,&leoHeight,&leoRow))return;
+    if(!((leoWidth==480 && leoHeight==800 && leoRow==1920) ||
+         (leoWidth==360 && leoHeight==600 && leoRow==1440)))return;
+    offscreenPixelBytes=leoRow*leoHeight;
+#endif
     primaryLock = IOLockAlloc();
     if (!primaryLock) return;
     uint64_t managed=sane_size>>12,freePages=vm_page_free_count;

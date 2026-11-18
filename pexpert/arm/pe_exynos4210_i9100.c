@@ -15,6 +15,7 @@
 #include "i9100_timer.h"
 #include "i9100_pmu_reset.h"
 #include "i9100_framebuffer_copy.h"
+#include "i9100_scaled_frame.h"
 #include "../../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_home_observation.h"
 #include "../../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_touch_observation.h"
 #include <machine/machine_routines.h>
@@ -682,6 +683,15 @@ int ios7i9100_display_ready(void)
         PE_state.video.v_rowBytes==1920 && PE_state.video.v_depth==32;
 }
 
+int ios7i9100_display_render_size(uint32_t *width,uint32_t *height,uint32_t *row)
+{
+ int canvas=0;
+ if(!width || !height || !row || !ios7i9100_display_ready())return 0;
+ PE_parse_boot_argn("i9100uicanvas",&canvas,sizeof(canvas));
+ *width=canvas==360?360U:480U;*height=canvas==360?600U:800U;*row=*width*4U;
+ return 1;
+}
+
 int ios7i9100_display_present(const uint8_t *px, uint32_t bytes, uint32_t row,
                              uint32_t fmt, uint64_t *seq)
 {
@@ -691,7 +701,11 @@ int ios7i9100_display_present(const uint8_t *px, uint32_t bytes, uint32_t row,
     uint64_t began = I9100_get_timebase();
     /* Use the ARM burst-copy implementation instead of 1.5M byte iterations
      * in the unoptimized kernel. Validate the full pitched source footprint. */
-    if(!i9100_copy_frame((void *)(uintptr_t)i9100_pixels,px,bytes,row,i9100_frame_copy)) return 0;
+    uint32_t render_width,render_height,render_row;
+    if(!ios7i9100_display_render_size(&render_width,&render_height,&render_row))return 0;
+    if(render_width==360){
+        if(!i9100_expand_canvas((volatile uint32_t *)i9100_pixels,px,bytes,row))return 0;
+    }else if(!i9100_copy_frame((void *)(uintptr_t)i9100_pixels,px,bytes,row,i9100_frame_copy))return 0;
     __asm__ volatile("dsb sy" ::: "memory");
     uint64_t ended = I9100_get_timebase();
     struct I9100TimerSnapshot timer;
