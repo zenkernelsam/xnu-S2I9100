@@ -37,6 +37,9 @@ static uint32_t gpio(void *c, unsigned region, unsigned reg) {
     assert(c==(void*)2 && region==1 && (reg==0x100 || reg==0x104 || reg==0x108));
     return 0xabcdef00U+reg;
 }
+int i9100_power_charge_adc_read(void *c,unsigned *v) {
+    assert(c && v);if(++reads==fail)return 0;*v=600;return 1;
+}
 int main(void) {
     struct i9100_power_state s={0};struct i9100_power_hw hw={0};
     s.ready=s.valid=s.enabled=s.connected=s.charging=1;
@@ -52,18 +55,19 @@ int main(void) {
     for(unsigned n=0;n<=15;n++) {
         reads=0;fail=n;
         i9100_charge_snapshot(&s,&hw,n+1,31000000000ULL);
-        volatile uint32_t *r=&i9100_charge_diag[4+n*36];
-        assert(reads==15 && writes==0 && !memcmp(&s,&before,sizeof(s)));
+        volatile uint32_t *r=&i9100_charge_diag[4+n*40];
+        assert(reads==16 && writes==0 && !memcmp(&s,&before,sizeof(s)));
         assert(r[0]==n+1 && r[4]==14 && r[5]==1 && r[8]==60 && r[17]==30);
-        uint32_t valid=n ? (0x7fffU & ~(1U<<(n-1))) : 0x7fffU;
+        uint32_t valid=n ? (0xffffU & ~(1U<<(n-1))) : 0xffffU;
         assert(r[6]==(0x80000000U|valid));
         if(n)assert(r[17+n]==0xffffffffU);
         assert(r[33]==0xabcdf000U && r[34]==0xabcdf004U && r[35]==0xabcdf008U);
     }
-    fail=reads=0;i9100_charge_snapshot(&s,&hw,99,0);
+    fail=16;reads=0;i9100_charge_snapshot(&s,&hw,99,0);
     assert(i9100_charge_diag[1]==17 && i9100_charge_diag[4]==17 && i9100_charge_diag[21]==0);
+    assert(i9100_charge_diag[4+36]==0xffffffffU && !(i9100_charge_diag[4+6]&0x8000U));
     assert(!writes && !memcmp(&s,&before,sizeof(s)));
-    puts("PASS fixed non-IRQ reads, 15 read failures, publication/wrap and unchanged charger policy");
+    puts("PASS fixed non-IRQ reads, 16 read failures, publication/wrap and unchanged charger policy");
 }
 '''
 (out/'check.c').write_text(source)

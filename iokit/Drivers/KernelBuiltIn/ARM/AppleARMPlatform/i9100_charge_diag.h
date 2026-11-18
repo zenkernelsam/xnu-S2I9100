@@ -9,8 +9,10 @@ extern "C" {
 /* The existing Power workloop is the only caller/writer. Fixed, non-IRQ
  * registers only; no new bus instance, charger writes or current-mode pulses.
  * Current/AvgCurrent remain raw: their calibration must be proved on U1.
- * {version, sequence, stride, capacity}, then 16 published 36-word samples. */
-volatile uint32_t i9100_charge_diag[4 + 16 * 36] = {1, 0, 36, 16};
+ * v2 adds raw ADC1 and the bounded probe phase/result. No calibrated mA claim.
+ * {version, sequence, stride, capacity}, then 16 published 40-word samples. */
+volatile uint32_t i9100_charge_diag[4 + 16 * 40] = {2, 0, 40, 16};
+static unsigned i9100_charge_phase, i9100_charge_probe_result;
 
 static void i9100_charge_snapshot(const struct i9100_power_state *s,
     struct i9100_power_hw *hw, unsigned polls, uint64_t now)
@@ -23,9 +25,9 @@ static void i9100_charge_snapshot(const struct i9100_power_state *s,
         !s->io.pmic_read || !hw->read32) return;
     unsigned sequence = i9100_charge_diag[1] + 1U;
     if (!sequence) sequence = 1;
-    volatile uint32_t *r = &i9100_charge_diag[4 + ((sequence - 1U) & 15U) * 36];
+    volatile uint32_t *r = &i9100_charge_diag[4 + ((sequence - 1U) & 15U) * 40];
     r[0] = 0;
-    for (unsigned n = 1; n < 36; n++) r[n] = 0;
+    for (unsigned n = 1; n < 40; n++) r[n] = 0;
     r[1] = polls; r[2] = (uint32_t)now; r[3] = (uint32_t)(now >> 32);
     r[4] = s->revision; r[5] = s->use_sub;
     r[6] = s->valid ? 0x80000000U : 0;
@@ -60,8 +62,43 @@ static void i9100_charge_snapshot(const struct i9100_power_state *s,
     /* Retain GPL2 configuration and levels without changing their mux/pull. */
     for (unsigned n = 0; n < 3; n++)
         r[33 + n] = hw->read32(hw->cookie, 1, 0x100 + n * 4);
+    unsigned adc=0;
+    r[36]=0xffffffffU;
+    if(i9100_power_charge_adc_read(hw,&adc)){r[36]=adc;r[6]|=1U<<15;}
+    r[37]=i9100_charge_phase;r[38]=i9100_charge_probe_result;
     __sync_synchronize(); r[0] = sequence;
     __sync_synchronize(); i9100_charge_diag[1] = sequence;
+}
+/* Explicit development probe, once per boot, on the original Power owner.
+ * One second disabled, then the ORIGINAL policy decides whether to restore.
+ * Do not reset safety deadlines or generate TA programming pulses. */
+static void i9100_charge_probe(struct i9100_power_state *s,
+    struct i9100_power_hw *hw,unsigned polls,void (*sleep_ms)(unsigned))
+{
+    i9100_charge_probe_result=0;
+    if(!s || !hw || !sleep_ms || !s->ready || !s->io.now_ns || !s->valid || !s->present || !s->connected ||
+       !s->enabled || !s->charging || !s->use_sub || s->revision!=14 ||
+       s->percent<20 || s->millivolts<3700 || s->temperature_deci_c<50 || s->temperature_deci_c>400 ||
+       s->full || s->timeout || s->thermal_block){
+        i9100_charge_phase=4;i9100_charge_probe_result=1;
+        if(s && hw && s->io.now_ns)i9100_charge_snapshot(s,hw,polls,s->io.now_ns(s->io.cookie));
+        i9100_charge_phase=0;return;
+    }
+    i9100_charge_phase=1;
+    i9100_charge_snapshot(s,hw,polls,s->io.now_ns(s->io.cookie));
+    if(!i9100_power_stop(s)){
+        i9100_charge_phase=4;i9100_charge_probe_result=2;
+        i9100_charge_snapshot(s,hw,polls,s->io.now_ns(s->io.cookie));
+        i9100_charge_phase=0;return;
+    }
+    sleep_ms(1000);
+    i9100_charge_phase=2;
+    i9100_charge_snapshot(s,hw,polls,s->io.now_ns(s->io.cookie));
+    int result=i9100_power_poll(s);
+    i9100_charge_phase=3;
+    if(result || !s->enabled || !s->charging)i9100_charge_probe_result=3;
+    i9100_charge_snapshot(s,hw,polls,s->io.now_ns(s->io.cookie));
+    i9100_charge_phase=0;
 }
 #ifdef __cplusplus
 }

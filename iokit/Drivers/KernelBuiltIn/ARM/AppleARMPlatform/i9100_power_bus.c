@@ -106,10 +106,10 @@ unsigned i9100_power_revision(struct i9100_power_hw *hw)
  }
  return revision;
 }
-int i9100_power_adc_read(void *cookie,unsigned channel,unsigned *value)
+static int i9100_power_adc_sample(void *cookie,unsigned channel,unsigned *value)
 {
  struct i9100_power_hw *hw=cookie;
- if(!value || (channel!=6 && channel!=7))return 0;
+ if(!hw || !value || (channel!=1 && channel!=6 && channel!=7))return 0;
  uint32_t gate=hw->read32(hw->cookie,2,0xc950);
  hw->write32(hw->cookie,2,0xc950,gate|(1U<<15));
  uint32_t con=hw->read32(hw->cookie,3,0),mux=hw->read32(hw->cookie,3,0x1c);
@@ -135,6 +135,15 @@ int i9100_power_adc_read(void *cookie,unsigned channel,unsigned *value)
  hw->write32(hw->cookie,3,0x1c,mux);hw->write32(hw->cookie,3,0,con);
  if(!(gate&(1U<<15)))hw->write32(hw->cookie,2,0xc950,hw->read32(hw->cookie,2,0xc950)&~(1U<<15));
  if(ok)*value=(total-minimum-maximum)/3U;return ok;
+}
+int i9100_power_adc_read(void *cookie,unsigned channel,unsigned *value)
+{
+ if(channel!=6 && channel!=7)return 0;
+ return i9100_power_adc_sample(cookie,channel,value);
+}
+int i9100_power_charge_adc_read(void *cookie,unsigned *value)
+{
+ return i9100_power_adc_sample(cookie,1,value);
 }
 int i9100_power_sub_read(void *cookie,unsigned *connected,unsigned *charging)
 {

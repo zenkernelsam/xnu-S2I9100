@@ -30,7 +30,8 @@ class IOS7I9100Power : public IOPMPowerSource {
  IOWorkLoop *loop;IOTimerEventSource *timer;
  i9100_power_hw hw;i9100_power_state battery;
  unsigned polls;int lastReason;unsigned lastConnected,lastCharging;
- unsigned chargeProbe;
+ unsigned chargeProbe,chargeTest,chargeTestDone;
+ static void probeSleep(unsigned ms){IOSleep(ms);}
  static uint32_t read32(void *,unsigned,unsigned);
  static void write32(void *,unsigned,unsigned,uint32_t);
  static void delay(void *,unsigned);
@@ -49,7 +50,8 @@ bool IOS7I9100Power::init(void)
  if(!IOPMPowerSource::init())return false;
  bzero(device,sizeof(device));bzero(mapping,sizeof(mapping));bzero(regs,sizeof(regs));
  bzero(&battery,sizeof(battery));loop=0;timer=0;polls=0;
- lastReason=999;lastConnected=lastCharging=0xffffffffU;chargeProbe=0;
+ lastReason=999;lastConnected=lastCharging=0xffffffffU;
+ chargeProbe=chargeTest=chargeTestDone=0;
  hw.cookie=this;hw.read32=read32;hw.write32=write32;hw.delay_us=delay;
  hw.enter=enter;hw.leave=leave;return true;
 }
@@ -89,6 +91,7 @@ bool IOS7I9100Power::start(IOService *provider)
  if(!PE_parse_boot_argn("i9100rev",&revision,sizeof(revision)))revision=i9100_power_revision(&hw);
  i9100_power_revision_value=revision;
  PE_parse_boot_argn("i9100chargediag",&chargeProbe,sizeof(chargeProbe));
+ PE_parse_boot_argn("i9100chargeprobe",&chargeTest,sizeof(chargeTest));
  i9100_power_io io;
  io.cookie=&hw;io.pmic_read=i9100_power_pmic_read;io.pmic_write=i9100_power_pmic_write;
  io.muic_read=i9100_power_muic_read;io.muic_write=i9100_power_muic_write;
@@ -111,6 +114,10 @@ bool IOS7I9100Power::start(IOService *provider)
 void IOS7I9100Power::sample(void)
 {
  (void)i9100_power_poll(&battery);polls++;
+ if(chargeProbe==1 && chargeTest==1 && !chargeTestDone && polls>=90){
+  chargeTestDone=1;
+  i9100_charge_probe(&battery,&hw,polls,probeSleep);
+ }
  if(chargeProbe==1 && (polls==1 || polls%30==0))
   i9100_charge_snapshot(&battery,&hw,polls,mach_absolute_time());
  i9100_power_valid=battery.valid;i9100_power_percent=battery.percent;

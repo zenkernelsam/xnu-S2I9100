@@ -4,6 +4,7 @@
 #include <cstring>
 #include <vector>
 #include "i9100_power.h"
+#include "i9100_charge_diag.h"
 
 struct BatteryModel {
  uint8_t pmic[256];uint16_t fuel[256];unsigned adc6=937,adc7=989;
@@ -218,6 +219,9 @@ static void bus_checks()
  m.regs[2][0xc950/4]=0xa501; m.regs[3][0]=4;m.regs[3][0x1c/4]=2;
  unsigned adc;assert(i9100_power_adc_read(&hw,7,&adc) && adc==989 && m.adcSamples==5);
  assert(m.regs[2][0xc950/4]==0xa501 && m.regs[3][0]==4 && m.regs[3][0x1c/4]==2);
+ assert(!i9100_power_adc_read(&hw,1,&adc));
+ assert(i9100_power_charge_adc_read(&hw,&adc));
+ assert(m.regs[2][0xc950/4]==0xa501 && m.regs[3][0]==4 && m.regs[3][0x1c/4]==2);
  m.adcStuck=true;assert(!i9100_power_adc_read(&hw,6,&adc) && m.regs[2][0xc950/4]==0xa501 && m.regs[3][0]==4);
  m.regs[1][0x100/4]=0xabcdef00;m.regs[1][0x104/4]=0x88;
  assert(i9100_power_sub_enable(&hw,1) && (m.regs[1][0x104/4]&4));
@@ -226,4 +230,49 @@ static void bus_checks()
  unsigned connected,charging;assert(i9100_power_sub_read(&hw,&connected,&charging) && connected && charging);
  puts("Power hardware: dedicated addresses, repeated START, ACK/NACK, little-endian fuel words, open-drain/pin restoration, bounded timeout, ADC clock/config restoration, revision and charger GPIO masks passed");
 }
-int main(){policy_checks();bus_checks();return 0;}
+static BatteryModel *probeModel;
+static unsigned sleepCalls,probeFailure;
+static void probe_sleep(unsigned ms)
+{
+ assert(ms==1000);sleepCalls++;probeModel->time+=1000000000ULL;
+ if(probeFailure==1)probeModel->failAt=probeModel->ops+14;
+ if(probeFailure==2)probeModel->adc7=600;
+}
+static void probe_checks()
+{
+ for(unsigned mode=0;mode<4;mode++){
+  BatteryModel m;PowerGPIO gpio(false);auto hw=gpio.io();auto io=m.io();i9100_power_state s;
+  assert(!i9100_power_init(&s,&io,14) && !i9100_power_poll(&s));
+  if(mode==3)m.time=18000ULL*1000000000ULL;
+  unsigned count=i9100_charge_diag[1],writes=m.subWrites;uint64_t start=s.charge_start;
+  probeModel=&m;probeFailure=mode;sleepCalls=0;
+  i9100_charge_probe(&s,&hw,90,probe_sleep);
+  assert(sleepCalls==1 && i9100_charge_diag[1]==count+3);
+  auto row=[&](unsigned n){return &i9100_charge_diag[4+((count+n-1)&15)*40];};
+  assert(row(1)[37]==1 && row(2)[37]==2 && row(3)[37]==3);
+  assert(!row(2)[11] && !row(2)[13]);
+  assert(s.charge_start==start);
+  if(mode==0)assert(s.enabled && s.charging && m.sub && m.subWrites==writes+2 && !row(3)[38]);
+  else assert(!s.enabled && !s.charging && !m.sub && row(3)[38]==3);
+ }
+ for(unsigned mode=0;mode<9;mode++){
+  BatteryModel m;PowerGPIO gpio(false);auto hw=gpio.io();auto io=m.io();i9100_power_state s;
+  assert(!i9100_power_init(&s,&io,14) && !i9100_power_poll(&s));
+  if(mode==0)s.percent=19;if(mode==1)s.temperature_deci_c=401;
+  if(mode==2)s.full=1;if(mode==3)s.timeout=1;if(mode==4)s.connected=0;
+  if(mode==5)s.valid=0;if(mode==6)s.revision=13;if(mode==7)s.thermal_block=1;
+  if(mode==8)s.millivolts=3699;
+  unsigned writes=m.subWrites;probeModel=&m;sleepCalls=0;
+  i9100_charge_probe(&s,&hw,90,probe_sleep);
+  assert(!sleepCalls && m.subWrites==writes && i9100_charge_probe_result==1);
+ }
+ {
+  BatteryModel m;PowerGPIO gpio(false);auto hw=gpio.io();auto io=m.io();i9100_power_state s;
+  assert(!i9100_power_init(&s,&io,14) && !i9100_power_poll(&s));
+  m.failAt=m.ops+14;probeModel=&m;sleepCalls=0;
+  i9100_charge_probe(&s,&hw,90,probe_sleep);
+  assert(!sleepCalls && !m.sub && !s.enabled && i9100_charge_probe_result==2);
+ }
+ puts("Charge probe: ADC1 restoration, bounded pause, original-policy restore, thermal/timeout/IO refusal and unchanged safety deadline passed");
+}
+int main(){policy_checks();bus_checks();probe_checks();return 0;}

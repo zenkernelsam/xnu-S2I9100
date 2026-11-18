@@ -49,6 +49,8 @@ int i9100_power_muic_read(void *,unsigned,uint8_t *);
 int i9100_power_muic_write(void *,unsigned,uint8_t);
 int i9100_power_fuel_read(void *,unsigned,uint16_t *);
 int i9100_power_adc_read(void *,unsigned,unsigned *);
+/* EUR U1 charge-current sense, fixed ADC1; thermistor API remains ADC6/7. */
+int i9100_power_charge_adc_read(void *,unsigned *);
 int i9100_power_sub_read(void *,unsigned *,unsigned *);
 int i9100_power_sub_enable(void *,unsigned);
 unsigned i9100_power_revision(struct i9100_power_hw *);
