@@ -25,6 +25,7 @@ static struct {
  uint32_t previous_mode;
  unsigned board_mode,board_bus_owned,board_bus_fail,board_close_fail,board_tx_fail,board_stall_power,board_tx_fail_from;
  unsigned check_mclk_silence,extra_contexts;uint32_t previous_mclk;
+ unsigned ring_vm_mode; /* explicit alternate hardware facade; production has no such field */
  unsigned board_aa_unlocked;
  uint32_t pmu[4096],chip[1024],previous_power;uint64_t power_ready_at,vref_started;
 } m;
@@ -34,7 +35,7 @@ static uint32_t *i2s_regs(){return m.board_mode?board_i2s:m.i2s;}
 static i9100_peripheral_native parent;
 static i9100_audss audss;
 static i9100_mc1n2 codec;
-static uint8_t allocation_bytes[3][16384] __attribute__((aligned(4096)));
+static uint8_t allocation_bytes[4][16384] __attribute__((aligned(4096)));
 static bool allocation_fails(){return ++m.allocations==m.fail_allocation;}
 void *IOMalloc(size_t bytes){if(allocation_fails())return 0;m.contexts++;return calloc(1,bytes);}
 void IOFree(void *p,size_t){assert(m.contexts);m.contexts--;free(p);}
@@ -74,6 +75,7 @@ void OSSynchronizeIO()
  if((m.previous_mode&0x1800U)==0x1800U&&(port[1]&0x1800U)!=0x1800U)
   for(unsigned n=0;n<3;n++)assert(((m.gpio[2][0]>>(n*4U))&15U)!=2U);
  m.previous_mode=port[1];
+ if(m.ring_vm_mode)return; /* gated pipeline's independent ISA VM owns PDMA events/queues */
  /* Memory-backed facade: acknowledge W1C and an observed KILL request. GO
   * completion is deliberately harness-driven, not a second encoder oracle. */
  if(m.pdma[0x2c/4]){m.pdma[0x24/4]&=~m.pdma[0x2c/4];m.pdma[0x2c/4]=0;}
@@ -93,11 +95,13 @@ static int buffer_sync(void *c,uintptr_t cpu,uint32_t pa,uint32_t bytes,unsigned
  return ++m.sync_calls==m.fail_sync?-1:0;}
 static void buffer_release(void *c,uintptr_t,uint32_t,uint32_t)
 {i9100_dma_native *n=(i9100_dma_native *)c;assert(!n->locked&&!m.pdma[0x100/4]&&!(i2s_regs()[0]&7U));
- assert(m.cmu[0xc940/4]&1U);assert(m.maps==(m.board_mode?8U:3U)&&m.contexts==(m.board_mode?2U:1U)+m.extra_contexts);m.dma_releases++;}
+ assert(m.cmu[0xc940/4]&1U);
+ assert(m.maps==(m.ring_vm_mode?9U:m.board_mode?8U:3U)&&m.contexts==(m.ring_vm_mode?3U:m.board_mode?2U:1U)+m.extra_contexts);m.dma_releases++;}
 int i9100_dma_native_allocate(int enabled,uint32_t bytes,void *engine,int (*idle)(void *),i9100_dma_native **out)
 {
  assert(enabled==1&&bytes>=4096&&bytes<=16384&&!(*out));if(allocation_fails())return I9100_DMA_IO;
- unsigned index=0;for(unsigned n=0;n<3;n++)if(!((m.dma_count>>n)&1U)){index=n;break;}
+ unsigned limit=m.ring_vm_mode?4U:3U,index=limit;for(unsigned n=0;n<limit;n++)if(!((m.dma_count>>n)&1U)){index=n;break;}
+ assert(index<limit);
  i9100_dma_native *a=new i9100_dma_native{};a->index=index;a->engine=engine;a->idle=idle;m.dma_count|=1U<<index;
  i9100_dma_io io={a,buffer_lock,buffer_unlock,buffer_sync,buffer_idle,buffer_release};
  assert(!i9100_dma_bind(&a->buffer,&io,(uintptr_t)allocation_bytes[index],0x41000000U+index*0x10000U,bytes));*out=a;return 0;

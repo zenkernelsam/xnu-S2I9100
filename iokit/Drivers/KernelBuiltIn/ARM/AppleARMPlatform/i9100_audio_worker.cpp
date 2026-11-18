@@ -35,6 +35,7 @@ struct audio_worker_state {
  i9100_pcm_ring ring;int16_t *storage,*scratch;uint32_t storage_bytes,period_frames;
  struct i9100_audio_board_status last_board;uint32_t last_board_valid;
  uint32_t output_requested,output_prepared,output_active,closed,detaching;int32_t cleanup_error,irq_error;
+ uint32_t gated,flush_pending;
 };
 struct i9100_audio_worker : public OSObject {
  OSDeclareDefaultStructors(i9100_audio_worker)
@@ -61,14 +62,16 @@ static void fault(i9100_audio_worker *w,int e)
 static int feed(i9100_audio_worker *w,int flush)
 {
  if(!w->s.storage)return 0;
+ flush=flush||w->s.flush_pending;
  if(w->s.output_prepared&&!w->s.output_active)return 0; /* hold producer data during real zero pre-roll/mute */
  for(unsigned attempt=0;attempt<2U;attempt++){
   uint32_t frames=w->s.ring.frames<w->s.period_frames?w->s.ring.frames:w->s.period_frames;
-  if(!frames||(!flush&&frames<w->s.period_frames))return 0;
+  if(!frames){w->s.flush_pending=0;return 0;}if(!flush&&frames<w->s.period_frames)return 0;
   int e=i9100_pcm_ring_peek(&w->s.ring,w->s.scratch,frames);if(e)return e;
   e=i9100_audio_board_worker_queue(&w->s.board_lease,w->s.scratch,frames);if(e==I9100_PCM_BUSY)return 0;if(e)return e;
   e=i9100_pcm_ring_consume(&w->s.ring,frames);if(e)return e;
  }
+ if(!w->s.ring.frames)w->s.flush_pending=0;
  return 0;
 }
 static int capture_pcm(i9100_audio_worker *w)
@@ -88,6 +91,8 @@ static void process(i9100_audio_worker *w)
  if(completed){if(w->s.completions>~(uint64_t)0-completed){fault(w,I9100_PCM_OVERFLOW);return;}w->s.completions+=completed;}
  if(e&&e!=I9100_PCM_BUSY){fault(w,e);return;}
  e=feed(w,0);if(e){fault(w,e);return;}
+ if(w->s.gated){e=i9100_audio_board_worker_release_period(&w->s.board_lease);
+  if(e&&e!=I9100_PCM_BUSY){fault(w,e);return;}capture_pcm(w);}
  if(completed&&w->s.irq.active){e=i9100_irq_unmask(&w->s.irq);if(e){fault(w,e);return;}}
  if(w->s.timer->setTimeoutUS(w->s.poll_us)!=kIOReturnSuccess)fault(w,I9100_AP_IO);
 }
@@ -123,6 +128,7 @@ static int stop(i9100_audio_worker *w)
  int e=halt(w);w->s.cleanup_error=e;if(e)return e;
  if(w->s.storage){memset(&w->s.ring,0,sizeof(w->s.ring));
   e=i9100_pcm_ring_init(&w->s.ring,w->s.storage,w->s.period_frames*8U);if(e)return e;}
+ w->s.flush_pending=0;
  IOInterruptState s=enter(w);w->s.fault=w->s.stopping=0;w->s.irq_error=0;leave(w,s);return 0;
 }
 static IOReturn control(OSObject *target,void *operation,void *arg0,void *arg1,void *)
@@ -170,6 +176,7 @@ static IOReturn control(OSObject *target,void *operation,void *arg0,void *arg1,v
   value.enqueued_frames=w->s.ring.written;value.staged_consumed=w->s.ring.consumed;
   value.output_requested=w->s.output_requested;value.output_prepared=w->s.output_prepared;value.output_active=w->s.output_active;
   value.closed=w->s.closed;value.detaching=w->s.detaching;value.cleanup_error=w->s.cleanup_error;value.irq_error=w->s.irq_error;
+  value.gated_dma=w->s.gated;
   value.last_board=w->s.last_board;value.last_board_valid=w->s.last_board_valid;
   *(struct i9100_audio_worker_status *)arg0=value;return 0;}
  case DETACH:
@@ -186,6 +193,7 @@ static IOReturn control(OSObject *target,void *operation,void *arg0,void *arg1,v
   e=i9100_pcm_ring_write(&w->s.ring,(const int16_t *)arg0,(uint32_t)(uintptr_t)arg1);
   if(e)return e;{int queued=feed(w,0);if(queued)fault(w,queued);}return 0;
  case FLUSH:
+  w->s.flush_pending=1;
   if(!w->s.storage||!w->s.session_owned||w->s.stopping||w->s.fault)return I9100_AP_DISABLED;
   e=feed(w,1);if(e)fault(w,e);return e;
  case OUTPUT_PREPARE:{
@@ -228,8 +236,10 @@ int i9100_audio_worker_create(int enabled,i9100_audio_board_native *board,i9100_
  if(!out)return I9100_AP_ARGUMENT;if(*out)return I9100_AP_BUSY;if(enabled!=1)return I9100_AP_DISABLED;
  if(!board||!ml_get_interrupts_enabled()||(use_irq!=0&&use_irq!=1)||poll_us<50U||poll_us>2000U||
     (use_irq&&(!registry||hook!=1)))return I9100_AP_ARGUMENT;
+ uint32_t gated=0;int mode=i9100_audio_board_gated_enabled(board,&gated);if(mode)return mode;
+ if(gated&&use_irq)return I9100_AP_ARGUMENT; /* independent ring native transport currently polls with GIC masked */
  auto *w=new i9100_audio_worker;if(!w)return I9100_AP_IO;
- if(!w->initialize()){w->release();return I9100_AP_IO;}w->s.board=board;w->s.poll_us=poll_us;w->s.guard=IOSimpleLockAlloc();
+ if(!w->initialize()){w->release();return I9100_AP_IO;}w->s.board=board;w->s.poll_us=poll_us;w->s.gated=gated;w->s.guard=IOSimpleLockAlloc();
  if(!w->s.guard){dispose(w);return I9100_AP_IO;}
  int e=i9100_audio_board_worker_claim(board,&w->s.board_lease);if(e){dispose(w);return e;}w->s.board_held=1;
  w->s.loop=IOWorkLoop::workLoop();w->s.event=new I9100AudioEvents;

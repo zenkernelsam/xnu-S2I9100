@@ -22,6 +22,8 @@ int i9100_pl330_ring_native_queue(struct i9100_pl330_ring_native *,const int16_t
 int i9100_pl330_ring_native_release_period(struct i9100_pl330_ring_native *);
 int i9100_pl330_ring_native_status(struct i9100_pl330_ring_native *,struct i9100_pl330_ring_status *);
 int i9100_pl330_ring_native_close(struct i9100_pl330_ring_native **);
+int i9100_pl330_ring_native_output_ready(struct i9100_pl330_ring_native *,uint32_t sample_rate);
+int i9100_pl330_ring_native_consumers_idle(struct i9100_pl330_ring_native *);
 /* Default OFF actual PDMA0/I2S0/GIC maps and four real wired DMA32 NC
  * allocations. One parent hold + PDMA clock lease; GPIO/AUDSS/codec leases
  * remain with the verified consumer until successful close. Read-back

@@ -8,7 +8,10 @@ sources = ["i9100_audio_power.c", "i9100_audss.c", "i9100_mc1n2.c", "i9100_dma_g
            "i9100_clock_gates.c", "i9100_peripheral_board.c", "i9100_irq_registry.c",
            "i9100_irq_router.c", "i9100_pcm_ring.c", "i9100_audio_user_session.c"]
 cpp = ["i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "IOS6I9100AudioPCM.cpp"]
+sources += ["i9100_pl330_ring.c"]
+cpp += ["i9100_audio_gated.cpp", "i9100_pl330_ring_native.cpp", "i9100_pl330_ring_mmio.cpp"]
 e = Evidence("audio-pdev-offline")
+e.wait_idle_seconds = 60
 copies = {}
 for name in ("i9100-pdev.c", "i9100-pdev.h"):
     original = REPO / "userland/audio" / name

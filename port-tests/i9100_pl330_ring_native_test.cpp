@@ -104,15 +104,32 @@ static void finish_native(i9100_pl330_ring_native **n)
 int main()
 {
  hw_setup();i9100_pl330_ring_native *n=nullptr;
- assert(i9100_pl330_ring_native_open(0,nullptr,nullptr,0,0,&n)==I9100_RING_DISABLED&&!native.allocations);
+ assert(i9100_pl330_ring_native_open(0,nullptr,nullptr,0,0,&n)==I9100_PDMA_DISABLED&&!native.allocations);
  assert(!i9100_pl330_ring_native_open(1,&parent,&consumer,48000,64,&n));
  assert(native.maps==3&&native.dma_count==4&&parent.holds==1);
+ assert(!i9100_pl330_ring_native_consumers_idle(n));
+ assert(i9100_pl330_ring_native_output_ready(n,48000)!=0);
  int start_error=i9100_pl330_ring_native_start(n);
  if(start_error){struct i9100_pl330_ring_status debug={};(void)i9100_pl330_ring_native_status(n,&debug);
   fprintf(stderr,"native start=%d primary=%d cleanup=%d ringphase=%u cs=%x pc=%x events=%x inten=%x held=%x\n",
    start_error,debug.error,debug.cleanup_error,debug.phase,debug.cs,debug.cpc,debug.events,debug.interrupts,debug.held_mask);}
  assert(!start_error);
+ assert(i9100_pl330_ring_native_output_ready(n,48000)==I9100_PDMA_BUSY);
  uint32_t completed=0;assert(!i9100_pl330_ring_native_poll(n,&completed)&&completed==1);
+ assert(!i9100_pl330_ring_native_output_ready(n,48000));
+ assert(i9100_pl330_ring_native_output_ready(n,44100)==I9100_PDMA_BUSY);
+ assert(i9100_pl330_ring_native_consumers_idle(n)==I9100_PDMA_BUSY);
+ /* Qualification may run inside the codec I2C ownership window. Even a
+  * failing predicate must not recursively mute, stop or mutate the stream. */
+ unsigned predicate_writes=m.writes;native.mute_bad=1;
+ assert(!i9100_pl330_ring_native_output_ready(n,48000));native.mute_bad=0;
+ ((int16_t *)memory_bytes[0])[0]=32767;
+ assert(i9100_pl330_ring_native_output_ready(n,48000)==I9100_PDMA_OWNER);
+ ((int16_t *)memory_bytes[0])[0]=0;
+ native.verify_bad=1;unsigned predicate_reads=m.reads;
+ assert(i9100_pl330_ring_native_output_ready(n,48000)==I9100_PDMA_OWNER&&m.reads==predicate_reads);
+ native.verify_bad=0;
+ assert(m.writes==predicate_writes&&!m.kills&&!i9100_pl330_ring_native_output_ready(n,48000));
  int16_t samples[128];for(unsigned k=0;k<128;k++)samples[k]=(int16_t)(k*491U);
  for(unsigned k=0;k<64;k++){
   assert(!i9100_pl330_ring_native_queue(n,samples,64));assert(!i9100_pl330_ring_native_release_period(n));
@@ -126,7 +143,7 @@ int main()
  }
  /* Callback success is insufficient if actual requests did not start/stop. */
  hw_setup();assert(!i9100_pl330_ring_native_open(1,&parent,&consumer,48000,64,&n));native.start_bad=1;
- assert(i9100_pl330_ring_native_start(n)==I9100_RING_OWNER);native.start_bad=0;finish_native(&n);
+ assert(i9100_pl330_ring_native_start(n)==I9100_PDMA_OWNER);native.start_bad=0;finish_native(&n);
  hw_setup();assert(!i9100_pl330_ring_native_open(1,&parent,&consumer,48000,64,&n));assert(!i9100_pl330_ring_native_start(n));native.quiesce_bad=1;
  assert(i9100_pl330_ring_native_close(&n)!=0&&n&&native.dma_count==4&&parent.holds==1&&!m.kills);
  native.quiesce_bad=0;finish_native(&n);
@@ -134,23 +151,23 @@ int main()
  assert(i9100_pl330_ring_native_close(&n)!=0&&n&&native.dma_count==4&&!(m.regs[0x100/4]&15U));
  native.mute_bad=0;finish_native(&n);
  hw_setup();assert(!i9100_pl330_ring_native_open(1,&parent,&consumer,48000,64,&n));assert(!i9100_pl330_ring_native_start(n));m.kill_stuck=1;
- assert(i9100_pl330_ring_native_close(&n)==I9100_RING_TIMEOUT&&n&&native.maps==3&&parent.holds==1);
+ assert(i9100_pl330_ring_native_close(&n)==I9100_PDMA_TIMEOUT&&n&&native.maps==3&&parent.holds==1);
  m.kill_stuck=0;finish_native(&n);
  hw_setup();assert(!i9100_pl330_ring_native_open(1,&parent,&consumer,48000,64,&n));native.put_bad=1;
  assert(i9100_pl330_ring_native_close(&n)!=0&&n&&!native.maps&&!native.dma_count&&parent.holds==1);
  native.put_bad=0;finish_native(&n);
  hw_setup();assert(!i9100_pl330_ring_native_open(1,&parent,&consumer,48000,64,&n));assert(!i9100_pl330_ring_native_start(n));
  native.verify_bad=1;unsigned reads=m.reads;
- assert(i9100_pl330_ring_native_poll(n,&completed)==I9100_RING_OWNER&&m.reads==reads&&parent.holds==1);
- assert(i9100_pl330_ring_native_close(&n)==I9100_RING_OWNER&&n&&native.maps==3);
+ assert(i9100_pl330_ring_native_poll(n,&completed)==I9100_PDMA_OWNER&&m.reads==reads&&parent.holds==1);
+ assert(i9100_pl330_ring_native_close(&n)==I9100_PDMA_OWNER&&n&&native.maps==3);
  native.verify_bad=0;finish_native(&n);
  hw_setup();assert(!i9100_pl330_ring_native_open(1,&parent,&consumer,48000,64,&n));assert(!i9100_pl330_ring_native_start(n));
  native.gic[0x108/4]|=1U<<3;
- assert(i9100_pl330_ring_native_poll(n,&completed)==I9100_RING_OWNER&&!completed&&!(m.regs[0x100/4]&15U));
+ assert(i9100_pl330_ring_native_poll(n,&completed)==I9100_PDMA_OWNER&&!completed&&!(m.regs[0x100/4]&15U));
  finish_native(&n);assert(native.gic[0x108/4]&(1U<<3)); /* foreign GIC bit was not rewritten */
  hw_setup();assert(!i9100_pl330_ring_native_open(1,&parent,&consumer,48000,64,&n));assert(!i9100_pl330_ring_native_start(n));
  native.i2s[0]|=1U<<17;
- assert(i9100_pl330_ring_native_poll(n,&completed)==I9100_RING_OWNER&&!completed&&!(m.regs[0x100/4]&15U));
+ assert(i9100_pl330_ring_native_poll(n,&completed)==I9100_PDMA_OWNER&&!completed&&!(m.regs[0x100/4]&15U));
  finish_native(&n);assert(native.i2s[0]&(1U<<17)); /* no false FIFO ACK */
  puts("PASS real ring native IO/control with register/DMA allocator facades: actual core VM, zero start, 4 buffers, start/stop readback, failure retention, parent/clock lifetime");return 0;
 }

@@ -80,6 +80,7 @@ int IOS6I9100AudioPCM::snapshot(void *cookie,i9100_audio_user_reply *out)
  if(w.closed||d->s.closing)v.flags|=I9100_AU_CLOSED;
  if(w.output_prepared)v.flags|=I9100_AU_OUTPUT_PREPARED;
  if(w.output_active)v.flags|=I9100_AU_OUTPUT_ACTIVE;
+ if(w.gated_dma)v.flags|=I9100_AU_GATED_DMA;
  v.cleanup_error=w.cleanup_error?w.cleanup_error:d->s.cleanup_error;v.last_error=w.error;
  v.staged_frames=w.staged_frames;v.capacity_frames=w.staging_capacity;
  if(w.last_pcm_valid){const auto &pcm=w.last_pcm;

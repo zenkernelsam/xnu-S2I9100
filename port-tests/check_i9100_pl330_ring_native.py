@@ -9,6 +9,7 @@ a=p.parse_args()
 c=["i9100_dma_guard.c","i9100_i2s.c","i9100_clock_gates.c","i9100_peripheral_board.c","i9100_pl330_ring.c"]
 cpp=["i9100_pl330_ring_native.cpp","i9100_pl330_ring_mmio.cpp"]
 e=Evidence("pl330-ring-native-offline")
+e.wait_idle_seconds=60
 e.model_cpp("i9100_pl330_ring_native_test.cpp",c,cpp,
  wrapped_functions=("i9100_ring_mmio_read","i9100_ring_mmio_write"))
 e.result["vm_fixture_sha256"]=hashlib.sha256((REPO/"port-tests/i9100_pl330_ring_test.c").read_bytes()).hexdigest()

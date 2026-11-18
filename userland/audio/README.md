@@ -10,12 +10,20 @@ callees: 15 exports, byte-sized Boolean output, property length pointers,
 two by-value doubles and the seventh stream-buffer argument. See the project
 research `AUDIO-PDEV-INTEGRATION-20261118.md` for evidence and limits.
 
+An explicit kernel board profile `use_gated_dma=1` now selects the guarded
+PL330 loop through the same worker/user-client/pdev ABI. Its default remains
+zero. Userspace cannot select that mode or grant output permission. The gated
+path currently polls with its GIC sources masked; `use_irq=1` is rejected.
+See project research `AUDIO-GATED-PIPELINE-20261119.md` for the current complete
+link, source audit and real-device acceptance steps.
+
 Build in WSL, under the project CPU envelope:
 
 ```sh
 python3 -B userland/audio/build.py
 python3 -B port-tests/check_i9100_audio_pdev.py
 python3 -B port-tests/check_i9100_pdev_abi.py
+python3 -B port-tests/check_i9100_audio_gated_pdev.py
 ```
 
 Each tool applies the CPU envelope and writes retained evidence under repo
@@ -39,6 +47,8 @@ into the real user client and workloop; no user DMA address is exposed.
 GetZeroTimeStamp uses confirmed FIFO completion frames and native clock
 observations, not an elapsed-time completion estimate. These timestamps do
 not establish DAC or acoustic position, and finite jobs may still underrun.
+The gated path confirms a single hardware fence, feeds data or zeros, then
+releases one period. Real workloop/FIFO latency and continuity remain unproven.
 
 Publication callbacks run outside the pdev mutex; in-flight callbacks and
 teardown are guarded. A late buffer release is allowed after shutdown starts,

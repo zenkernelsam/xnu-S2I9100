@@ -55,14 +55,14 @@ static int quiesce(void *cookie)
 }
 static int consumer_valid(i9100_pl330_ring_native *n,int running)
 {
- if(n->consumer.verify_resources(n->consumer.cookie)||i9100_clock_check(&n->clock))return I9100_RING_OWNER;
+ if(n->consumer.verify_resources(n->consumer.cookie)||i9100_clock_check(&n->clock))return I9100_PDMA_OWNER;
  if((i9100_ring_native_read(n,RN_GIC,0x108)&(1U<<3))||
-    (i9100_ring_native_read(n,RN_GIC,0x110)&(1U<<1)))return I9100_RING_OWNER;
+    (i9100_ring_native_read(n,RN_GIC,0x110)&(1U<<1)))return I9100_PDMA_OWNER;
  uint32_t control=i9100_ring_native_read(n,RN_I2S,0),mode=i9100_ring_native_read(n,RN_I2S,4);
  if((control&((1U<<17)|(1U<<24)|(1U<<26)))||!(control&(1U<<31))||
-    (mode&0xc0001fffU)!=0xc0001c00U||i9100_ring_native_read(n,RN_I2S,12))return I9100_RING_OWNER;
- if(running){if((control&(0x7fU|(1U<<18)))!=0x2dU)return I9100_RING_OWNER;}
- else if(control&7U)return I9100_RING_BUSY;
+    (mode&0xc0001fffU)!=0xc0001c00U||i9100_ring_native_read(n,RN_I2S,12))return I9100_PDMA_OWNER;
+ if(running){if((control&(0x7fU|(1U<<18)))!=0x2dU)return I9100_PDMA_OWNER;}
+ else if(control&7U)return I9100_PDMA_BUSY;
  return 0;
 }
 static void save(i9100_pl330_ring_native *n)
@@ -73,11 +73,11 @@ static int stop_transport(i9100_pl330_ring_native *n)
  int e=0;
  if(n->ring.active||n->ring.held_mask)e=i9100_pl330_ring_stop(&n->ring);
  else n->mute_error=n->consumer.mute(n->consumer.cookie);
- save(n);if(!e&&n->mute_error)e=I9100_RING_IO;n->cleanup_error=e;return e;
+ save(n);if(!e&&n->mute_error)e=I9100_PDMA_IO;n->cleanup_error=e;return e;
 }
 static int cleanup(i9100_pl330_ring_native *n)
 {
- if(n->clock.active&&(i9100_clock_check(&n->clock)||n->consumer.verify_resources(n->consumer.cookie)))return I9100_RING_OWNER;
+ if(n->clock.active&&(i9100_clock_check(&n->clock)||n->consumer.verify_resources(n->consumer.cookie)))return I9100_PDMA_OWNER;
  if(n->ring.initialized&&n->regs[RN_PDMA]&&n->clock.active){int e=stop_transport(n);if(e)return e;}
  if(n->ring.owned){int e=i9100_pl330_ring_enable(&n->ring,0);if(e)return e;}
  for(unsigned k=0;k<4;k++)if(n->allocation[k]){
@@ -94,28 +94,28 @@ static int cleanup(i9100_pl330_ring_native *n)
 int i9100_pl330_ring_native_open(int enabled,i9100_peripheral_native *parent,const i9100_ring_consumer *consumer,
  uint32_t rate,uint32_t frames,i9100_pl330_ring_native **out)
 {
- if(!out||*out||(enabled!=0&&enabled!=1))return I9100_RING_ARGUMENT;
- if(!enabled)return I9100_RING_DISABLED;
+ if(!out||*out||(enabled!=0&&enabled!=1))return I9100_PDMA_ARGUMENT;
+ if(!enabled)return I9100_PDMA_DISABLED;
  if(!parent||!consumer||!consumer->verify_resources||!consumer->mute||!consumer->start_requests||
     !consumer->quiesce_requests||(rate!=44100U&&rate!=48000U)||frames<16U||frames>512U||
-    !ml_get_interrupts_enabled())return I9100_RING_ARGUMENT;
- if(consumer->verify_resources(consumer->cookie))return I9100_RING_OWNER;
- i9100_pl330_ring_native *n=(i9100_pl330_ring_native *)IOMalloc(sizeof(*n));if(!n)return I9100_RING_IO;
+    !ml_get_interrupts_enabled())return I9100_PDMA_ARGUMENT;
+ if(consumer->verify_resources(consumer->cookie))return I9100_PDMA_OWNER;
+ i9100_pl330_ring_native *n=(i9100_pl330_ring_native *)IOMalloc(sizeof(*n));if(!n)return I9100_PDMA_IO;
  memset(n,0,sizeof(*n));n->parent=parent;n->consumer=*consumer;n->phase=RN_BUILDING;
  int e=i9100_peripheral_native_hold_get(parent,&n->parent_hold);
  if(e){IOFree(n,sizeof(*n));return e;}
  *out=n;n->lifecycle=IOLockAlloc();n->engine=IOLockAlloc();
- if(!n->lifecycle||!n->engine){e=I9100_RING_IO;goto failed;}
+ if(!n->lifecycle||!n->engine){e=I9100_PDMA_IO;goto failed;}
  {
   i9100_clock_gates *clocks=i9100_peripheral_native_clocks(parent);
-  if(!clocks){e=I9100_RING_OWNER;goto failed;}
+  if(!clocks){e=I9100_PDMA_OWNER;goto failed;}
   e=i9100_clock_acquire(clocks,I9100_GATE_PDMA0,&n->clock);if(e)goto failed;
  }
  for(unsigned k=0;k<RN_MAPS;k++){
   const uint32_t address[RN_MAPS]={0x12680000U,0x03830000U,0x10490000U};
   n->memory[k]=IOMemoryDescriptor::withPhysicalAddress(address[k],4096,kIODirectionInOut);
   n->mapping[k]=n->memory[k]?n->memory[k]->map(kIOMapInhibitCache):0;
-  if(!n->mapping[k]||!n->mapping[k]->getAddress()){e=I9100_RING_IO;goto failed;}
+  if(!n->mapping[k]||!n->mapping[k]->getAddress()){e=I9100_PDMA_IO;goto failed;}
   n->regs[k]=(volatile uint8_t *)n->mapping[k]->getAddress();
  }
  e=consumer_valid(n,0);if(e)goto failed;
@@ -140,9 +140,9 @@ failed:
 }
 static int run(i9100_pl330_ring_native *n,unsigned op,const int16_t *samples,uint32_t frames,uint32_t *completed)
 {
- if(completed)*completed=0;if(!n||!n->lifecycle)return I9100_RING_ARGUMENT;if(take(n->lifecycle))return I9100_RING_BUSY;
+ if(completed)*completed=0;if(!n||!n->lifecycle)return I9100_PDMA_ARGUMENT;if(take(n->lifecycle))return I9100_PDMA_BUSY;
  int e=0;
- if(n->phase!=RN_READY||n->fault){e=I9100_RING_FAULT;goto done;}
+ if(n->phase!=RN_READY||n->fault){e=I9100_PDMA_FAULT;goto done;}
  e=consumer_valid(n,op!=1U);if(e)goto failed;
  switch(op){
  case 1:
@@ -152,9 +152,9 @@ static int run(i9100_pl330_ring_native *n,unsigned op,const int16_t *samples,uin
  case 2:e=i9100_pl330_ring_poll(&n->ring,completed);break;
  case 3:e=i9100_pl330_ring_queue(&n->ring,samples,frames);break;
  case 4:e=i9100_pl330_ring_release_period(&n->ring);break;
- default:e=I9100_RING_ARGUMENT;break;
+ default:e=I9100_PDMA_ARGUMENT;break;
  }
- if(e&&e!=I9100_RING_BUSY&&e!=I9100_RING_ARGUMENT&&e!=I9100_RING_DISABLED)goto failed;
+ if(e&&e!=I9100_PDMA_BUSY&&e!=I9100_PDMA_ARGUMENT&&e!=I9100_PDMA_DISABLED)goto failed;
  goto done;
 failed:
  if(!n->fault)n->error=e;n->fault=1;(void)stop_transport(n);
@@ -162,19 +162,36 @@ done:save(n);IOLockUnlock(n->lifecycle);return e;
 }
 int i9100_pl330_ring_native_start(i9100_pl330_ring_native *n){return run(n,1,0,0,0);}
 int i9100_pl330_ring_native_poll(i9100_pl330_ring_native *n,uint32_t *out)
-{if(!out)return I9100_RING_ARGUMENT;return run(n,2,0,0,out);}
+{if(!out)return I9100_PDMA_ARGUMENT;return run(n,2,0,0,out);}
 int i9100_pl330_ring_native_queue(i9100_pl330_ring_native *n,const int16_t *samples,uint32_t frames){return run(n,3,samples,frames,0);}
 int i9100_pl330_ring_native_release_period(i9100_pl330_ring_native *n){return run(n,4,0,0,0);}
+int i9100_pl330_ring_native_output_ready(i9100_pl330_ring_native *n,uint32_t rate)
+{
+ if(!n||!n->lifecycle)return I9100_PDMA_ARGUMENT;if(take(n->lifecycle))return I9100_PDMA_BUSY;
+ int e=n->phase!=RN_READY||n->fault?I9100_PDMA_BUSY:consumer_valid(n,1);
+ if(!e)e=i9100_pl330_ring_output_ready(&n->ring,rate);
+ /* Codec qualification may already own its I2C window. Never mute/stop
+  * or take that window recursively from this read-only predicate. */
+ IOLockUnlock(n->lifecycle);return e;
+}
+int i9100_pl330_ring_native_consumers_idle(i9100_pl330_ring_native *n)
+{
+ if(!n||!n->lifecycle)return I9100_PDMA_ARGUMENT;if(take(n->lifecycle))return I9100_PDMA_BUSY;
+ int e=consumer_valid(n,0);struct i9100_pl330_ring_status state={};
+ if(!e)e=i9100_pl330_ring_status(&n->ring,&state);
+ if(!e&&(state.active||state.fault||(state.cs&15U)||state.manager_fault||state.channel_fault))e=I9100_PDMA_BUSY;
+ IOLockUnlock(n->lifecycle);return e;
+}
 int i9100_pl330_ring_native_status(i9100_pl330_ring_native *n,struct i9100_pl330_ring_status *out)
 {
- if(!n||!out||!n->lifecycle)return I9100_RING_ARGUMENT;if(take(n->lifecycle))return I9100_RING_BUSY;
+ if(!n||!out||!n->lifecycle)return I9100_PDMA_ARGUMENT;if(take(n->lifecycle))return I9100_PDMA_BUSY;
  save(n);*out=n->saved;if(n->fault){out->fault=1;out->error=n->error;}out->cleanup_error=n->cleanup_error;
  IOLockUnlock(n->lifecycle);return 0;
 }
 int i9100_pl330_ring_native_close(i9100_pl330_ring_native **owner)
 {
- if(!owner||!*owner)return I9100_RING_ARGUMENT;i9100_pl330_ring_native *n=*owner;
- if(n->lifecycle&&take(n->lifecycle))return I9100_RING_BUSY;n->phase=RN_CLOSING;
+ if(!owner||!*owner)return I9100_PDMA_ARGUMENT;i9100_pl330_ring_native *n=*owner;
+ if(n->lifecycle&&take(n->lifecycle))return I9100_PDMA_BUSY;n->phase=RN_CLOSING;
  int e=cleanup(n);if(e){n->cleanup_error=e;if(n->lifecycle)IOLockUnlock(n->lifecycle);return e;}
  if(n->lifecycle){IOLockUnlock(n->lifecycle);IOLockFree(n->lifecycle);}if(n->engine)IOLockFree(n->engine);
  IOFree(n,sizeof(*n));*owner=0;return 0;

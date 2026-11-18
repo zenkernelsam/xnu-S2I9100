@@ -117,7 +117,7 @@ static void finish(struct i9100_pl330_ring *r)
 static void first_fence(struct i9100_pl330_ring *r,int early)
 {
  assert(!i9100_pl330_ring_start(r));assert((m.regs[0x100/4]&15U)==7U);m.requests=1;vm(early?1U:0U);
- uint32_t n=99;if(early){assert(i9100_pl330_ring_poll(r,&n)==I9100_RING_BUSY&&!n&&m.buffers[0].b.state==I9100_DMA_DEVICE);vm(0);}
+ uint32_t n=99;if(early){assert(i9100_pl330_ring_poll(r,&n)==I9100_PDMA_BUSY&&!n&&m.buffers[0].b.state==I9100_DMA_DEVICE);vm(0);}
  m.ns+=1000000ULL;assert(!i9100_pl330_ring_poll(r,&n)&&n==1&&r->completed_periods==1);
  assert(m.buffers[0].b.state==I9100_DMA_CPU&&m.buffers[1].b.state==I9100_DMA_DEVICE&&m.buffers[2].b.state==I9100_DMA_DEVICE);
  assert(i9100_dma_release(&m.buffers[0].b)==I9100_DMA_BUSY);
@@ -130,9 +130,9 @@ static void data_and_gates(void)
   for(unsigned n=0;n<frames[k];n++)assert(!fifo[n]);
   for(unsigned turn=0;turn<32U;turn++){
    for(unsigned n=0;n<frames[k]*2U;n++)samples[n]=(int16_t)(turn*517U+n*811U);
-   uint32_t completed=99;assert(i9100_pl330_ring_poll(&r,&completed)==I9100_RING_BUSY&&!completed);
-   assert(!i9100_pl330_ring_queue(&r,samples,frames[k]));assert(i9100_pl330_ring_queue(&r,samples,frames[k])==I9100_RING_BUSY);
-   assert(!i9100_pl330_ring_release_period(&r));assert(i9100_pl330_ring_release_period(&r)==I9100_RING_BUSY);
+   uint32_t completed=99;assert(i9100_pl330_ring_poll(&r,&completed)==I9100_PDMA_BUSY&&!completed);
+   assert(!i9100_pl330_ring_queue(&r,samples,frames[k]));assert(i9100_pl330_ring_queue(&r,samples,frames[k])==I9100_PDMA_BUSY);
+   assert(!i9100_pl330_ring_release_period(&r));assert(i9100_pl330_ring_release_period(&r)==I9100_PDMA_BUSY);
    m.ns+=1000000ULL;assert(!i9100_pl330_ring_poll(&r,&completed)&&completed==1&&r.completed_periods==turn+2U);
   }
   assert(m.fifo_words==frames[k]*33U);
@@ -159,40 +159,40 @@ static void failures(void)
 {
  struct i9100_pl330_ring r;setup(&r,64);first_fence(&r,0);m.gate_delay=1;
  assert(!i9100_pl330_ring_release_period(&r)&&(m.regs[0x24/4]&GATE4));
- uint32_t n;assert(i9100_pl330_ring_poll(&r,&n)==I9100_RING_BUSY&&!n);
+ uint32_t n;assert(i9100_pl330_ring_poll(&r,&n)==I9100_PDMA_BUSY&&!n);
  /* KILL leaves the internal event; separate drain consumes it with requests off. */
  finish(&r);assert(!(m.regs[0x24/4]&GATE4)&&m.kills==1);
  setup(&r,64);first_fence(&r,0);m.drop_debug_op=0x34;
- assert(i9100_pl330_ring_release_period(&r)==I9100_RING_IO&&r.fault&&r.active&&r.held_mask==15U);
- unsigned writes=m.writes;assert(i9100_pl330_ring_release_period(&r)==I9100_RING_FAULT&&m.writes==writes);
+ assert(i9100_pl330_ring_release_period(&r)==I9100_PDMA_IO&&r.fault&&r.active&&r.held_mask==15U);
+ unsigned writes=m.writes;assert(i9100_pl330_ring_release_period(&r)==I9100_PDMA_FAULT&&m.writes==writes);
  m.drop_debug_op=0xffffffffU;finish(&r);
  setup(&r,64);first_fence(&r,0);m.quiesce_fail=1;
- assert(i9100_pl330_ring_stop(&r)==I9100_RING_IO&&r.active&&r.held_mask==15U&&!m.kills);
+ assert(i9100_pl330_ring_stop(&r)==I9100_PDMA_IO&&r.active&&r.held_mask==15U&&!m.kills);
  m.quiesce_fail=0;finish(&r);
  setup(&r,64);first_fence(&r,0);m.kill_stuck=m.freeze_time=1;
- assert(i9100_pl330_ring_stop(&r)==I9100_RING_TIMEOUT&&r.active&&r.held_mask==15U&&m.delay_calls>=25000U);
+ assert(i9100_pl330_ring_stop(&r)==I9100_PDMA_TIMEOUT&&r.active&&r.held_mask==15U&&m.delay_calls>=25000U);
  m.kill_stuck=m.freeze_time=0;finish(&r);
  setup(&r,64);first_fence(&r,0);m.gate_delay=1;assert(!i9100_pl330_ring_release_period(&r));m.drain_stuck=1;
- assert(i9100_pl330_ring_stop(&r)==I9100_RING_TIMEOUT&&r.active&&r.held_mask==15U&&m.buffers[3].b.state==I9100_DMA_DEVICE);
+ assert(i9100_pl330_ring_stop(&r)==I9100_PDMA_TIMEOUT&&r.active&&r.held_mask==15U&&m.buffers[3].b.state==I9100_DMA_DEVICE);
  m.drain_stuck=0;finish(&r);
  setup(&r,64);first_fence(&r,0);m.ns+=100000000ULL;
- assert(i9100_pl330_ring_poll(&r,&n)==I9100_RING_TIMEOUT&&!n&&r.fault);finish(&r);
+ assert(i9100_pl330_ring_poll(&r,&n)==I9100_PDMA_TIMEOUT&&!n&&r.fault);finish(&r);
  setup(&r,64);assert(!i9100_pl330_ring_start(&r));m.requests=1;vm(0);m.regs[0x104/4]+=2;
- assert(i9100_pl330_ring_poll(&r,&n)==I9100_RING_BUSY&&!n&&m.buffers[0].b.state==I9100_DMA_DEVICE);finish(&r);
+ assert(i9100_pl330_ring_poll(&r,&n)==I9100_PDMA_BUSY&&!n&&m.buffers[0].b.state==I9100_DMA_DEVICE);finish(&r);
  setup(&r,64);first_fence(&r,0);m.buffers[0].fail_sync=m.buffers[0].syncs+1U;
- assert(i9100_pl330_ring_release_period(&r)==I9100_RING_IO&&m.buffers[0].b.state==I9100_DMA_QUARANTINED);
+ assert(i9100_pl330_ring_release_period(&r)==I9100_PDMA_IO&&m.buffers[0].b.state==I9100_DMA_QUARANTINED);
  m.buffers[0].fail_sync=0;finish(&r);
  setup(&r,64);memory_bytes[2][0]=0;first_fence(&r,0);assert(memory_bytes[2][0]==0xbc);finish(&r);
- setup(&r,64);struct i9100_pl330_ring copy=r;assert(i9100_pl330_ring_start(&copy)==I9100_RING_OWNER);finish(&r);
+ setup(&r,64);struct i9100_pl330_ring copy=r;assert(i9100_pl330_ring_start(&copy)==I9100_PDMA_OWNER);finish(&r);
  /* An event and a plausible WFE state cannot certify altered data/code. */
  setup(&r,64);assert(!i9100_pl330_ring_start(&r));m.requests=1;vm(0);memory_bytes[0][0]=1;
- assert(i9100_pl330_ring_poll(&r,&n)==I9100_RING_OWNER&&!n&&!r.completed_periods);memory_bytes[0][0]=0;finish(&r);
+ assert(i9100_pl330_ring_poll(&r,&n)==I9100_PDMA_OWNER&&!n&&!r.completed_periods);memory_bytes[0][0]=0;finish(&r);
  setup(&r,64);first_fence(&r,0);memory_bytes[2][r.program_bytes-2U]=0;
- assert(i9100_pl330_ring_release_period(&r)==I9100_RING_OWNER&&r.active&&r.held_mask==15U);finish(&r);
+ assert(i9100_pl330_ring_release_period(&r)==I9100_PDMA_OWNER&&r.active&&r.held_mask==15U);finish(&r);
  setup(&r,64);first_fence(&r,0);m.regs[(0x100+8)/4]=1;
- assert(i9100_pl330_ring_poll(&r,&n)==I9100_RING_FAULT&&!n);m.regs[(0x100+8)/4]=0;finish(&r);
+ assert(i9100_pl330_ring_poll(&r,&n)==I9100_PDMA_FAULT&&!n);m.regs[(0x100+8)/4]=0;finish(&r);
  setup(&r,64);first_fence(&r,0);m.regs[0x20/4]|=1U<<8;
- assert(i9100_pl330_ring_release_period(&r)==I9100_RING_OWNER);m.regs[0x20/4]&=~(1U<<8);finish(&r);
+ assert(i9100_pl330_ring_release_period(&r)==I9100_PDMA_OWNER);m.regs[0x20/4]&=~(1U<<8);finish(&r);
 }
 int main(void)
 {

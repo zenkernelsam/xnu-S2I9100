@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "i9100_audio_board_native.h"
+#include "i9100_audio_gated.h"
 #include <IOKit/IOLib.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOMemoryDescriptor.h>
@@ -21,6 +22,7 @@ struct i9100_audio_board_native {
  i9100_mc1n2_output_lease output;
  i9100_audio_board_worker_lease *worker_owner;uint32_t worker_generation;
  i9100_audio_native *pcm;
+ i9100_audio_gated *gated;
  i9100_pcm_status last_pcm;uint32_t last_pcm_valid;
  uint32_t phase,stage,temp_owned,bus_owned,worker_holds;int32_t error;
 };
@@ -65,7 +67,7 @@ static int ap_idle(void *c)
 static int owners_idle(void *c)
 {
  i9100_audio_board_native *a=(i9100_audio_board_native *)c;
- return a->pcm||a->codec.enabled||a->codec.cold_owned||a->codec.clock_owned?-1:ap_idle(c);
+ return a->pcm||a->gated||a->codec.enabled||a->codec.cold_owned||a->codec.clock_owned?-1:ap_idle(c);
 }
 static int transition_get(void *c)
 {
@@ -108,11 +110,13 @@ static int clock_lease(void *c)
 static int output_stream(void *c,uint32_t rate)
 {
  i9100_audio_board_native *a=(i9100_audio_board_native *)c;
+ if(a->gated)return i9100_audio_gated_output_ready(a->gated,rate);
  return a->pcm?i9100_audio_native_output_ready(a->pcm,rate):I9100_PCM_DISABLED;
 }
 static int output_idle(void *c)
 {
  i9100_audio_board_native *a=(i9100_audio_board_native *)c;
+ if(a->gated)return i9100_audio_gated_consumers_idle(a->gated);
  return a->pcm?i9100_audio_native_consumers_idle(a->pcm):ap_idle(c);
 }
 static bool map(i9100_audio_board_native *a,unsigned n,uint32_t pa,uint32_t bytes)
@@ -131,6 +135,8 @@ static void dispose(i9100_audio_board_native *a)
 static int cleanup(i9100_audio_board_native *a)
 {
  a->phase=CLOSING;int e=0;
+ if(a->gated){if(!i9100_audio_gated_status(a->gated,&a->last_pcm))a->last_pcm_valid=1;
+  e=i9100_audio_gated_close(&a->gated);if(e)return e;}
  if(a->pcm){if(!i9100_audio_native_status(a->pcm,&a->last_pcm))a->last_pcm_valid=1;
   e=i9100_audio_native_close(&a->pcm);if(e)return e;}
  if(a->output.owned){e=i9100_mc1n2_output_stop(&a->output);if(e)return e;}
@@ -149,7 +155,8 @@ int i9100_audio_board_open(int enabled,i9100_peripheral_native *parent,const i91
  if(!out)return I9100_AP_ARGUMENT;if(*out)return I9100_AP_BUSY;if(enabled!=1)return I9100_AP_DISABLED;
  if(!parent||!profile||!ml_get_interrupts_enabled()||profile->exclusive_u1_rails_clocks_verified!=1||
     profile->verified_rates.xtal!=24000000U||!profile->verified_i2c6_pclk_hz||profile->use_config>1U||
-    (profile->sample_rate!=44100U&&profile->sample_rate!=48000U)||profile->period_frames<16U||profile->period_frames>4096U)
+    (profile->sample_rate!=44100U&&profile->sample_rate!=48000U)||profile->period_frames<16U||profile->period_frames>4096U||
+    profile->use_gated_dma>1U||(profile->use_gated_dma&&profile->period_frames>512U))
   return I9100_AP_ARGUMENT;
  i9100_gpio_broker *gpio=i9100_peripheral_native_gpio(parent);i9100_clock_gates *clocks=i9100_peripheral_native_clocks(parent);
  if(!gpio||!clocks||!gpio->enabled||!clocks->enabled||gpio->count!=I9100_BANK_COUNT||clocks->count!=I9100_GATE_COUNT)return I9100_AP_DISABLED;
@@ -187,7 +194,7 @@ int i9100_audio_board_open(int enabled,i9100_peripheral_native *parent,const i91
  if(e){a->error=e;int off=cleanup(a);if(off)*out=a;else dispose(a);return e;}
  a->phase=LIVE;*out=a;return 0;
 }
-enum {PCM_OPEN=1,PCM_CLOSE,PCM_QUEUE,PCM_START,PCM_SERVICE,OUTPUT_PREPARE,OUTPUT_ACTIVATE,OUTPUT_STOP,OUTPUT_MUTE};
+enum {PCM_OPEN=1,PCM_CLOSE,PCM_QUEUE,PCM_START,PCM_SERVICE,OUTPUT_PREPARE,OUTPUT_ACTIVATE,OUTPUT_STOP,OUTPUT_MUTE,PCM_RELEASE};
 static int authorized(i9100_audio_board_native *a,i9100_audio_board_worker_lease *l)
 {
  if(!l)return a->worker_owner?I9100_AP_BUSY:0;
@@ -201,22 +208,30 @@ static int request(i9100_audio_board_native *a,i9100_audio_board_worker_lease *l
  int e=authorized(a,l);if(e){IOLockUnlock(a->lifecycle);return e;}
  switch(operation){
  case PCM_OPEN:
-  e=a->phase!=LIVE?I9100_AP_DISABLED:a->pcm?I9100_AP_BUSY:
+  e=a->phase!=LIVE?I9100_AP_DISABLED:(a->pcm||a->gated)?I9100_AP_BUSY:
+   a->profile.use_gated_dma?i9100_audio_gated_open(1,a->parent,&a->audss,&a->codec,&a->pins,a->profile.sample_rate,a->profile.period_frames,value,&a->gated):
    i9100_audio_native_open_with_pins(1,a->parent,&a->audss,&a->codec,&a->pins,a->profile.sample_rate,a->profile.period_frames,value,1,&a->pcm);
   if(e&&e!=I9100_AP_BUSY&&e!=I9100_AP_DISABLED){a->error=e;a->phase=CLOSING;}break;
  case PCM_CLOSE:
+  if(a->gated&&!i9100_audio_gated_status(a->gated,&a->last_pcm))a->last_pcm_valid=1;
   if(a->pcm&&!i9100_audio_native_status(a->pcm,&a->last_pcm))a->last_pcm_valid=1;
-  e=a->pcm?i9100_audio_native_close(&a->pcm):0;
+  e=a->gated?i9100_audio_gated_close(&a->gated):a->pcm?i9100_audio_native_close(&a->pcm):0;
   if(!e&&a->output.owned)e=i9100_mc1n2_output_stop(&a->output);
-  if(e)a->error=e;break;
+  if(e)a->error=e;
+  if(!e&&a->last_pcm_valid){a->last_pcm.prepared=a->last_pcm.started=a->last_pcm.held_mask=a->last_pcm.ready_mask=0;a->last_pcm.in_flight=2;}
+  break;
  case PCM_QUEUE:
-  e=a->phase==LIVE&&a->pcm?i9100_audio_native_queue(a->pcm,samples,value):I9100_AP_DISABLED;break;
+  e=a->phase!=LIVE?I9100_AP_DISABLED:a->gated?i9100_audio_gated_queue(a->gated,samples,value):a->pcm?i9100_audio_native_queue(a->pcm,samples,value):I9100_AP_DISABLED;break;
  case PCM_START:
-  e=a->phase==LIVE&&a->pcm?i9100_audio_native_start(a->pcm):I9100_AP_DISABLED;
+  e=a->phase!=LIVE?I9100_AP_DISABLED:a->gated?i9100_audio_gated_start(a->gated):a->pcm?i9100_audio_native_start(a->pcm):I9100_AP_DISABLED;
   if(e&&e!=I9100_AP_DISABLED&&e!=I9100_PCM_BUSY){a->error=e;a->phase=CLOSING;}break;
  case PCM_SERVICE:
-  e=!completed?I9100_AP_ARGUMENT:a->phase==LIVE&&a->pcm?i9100_audio_native_service(a->pcm,completed):I9100_AP_DISABLED;
+  e=!completed?I9100_AP_ARGUMENT:a->phase!=LIVE?I9100_AP_DISABLED:a->gated?i9100_audio_gated_service(a->gated,completed):a->pcm?i9100_audio_native_service(a->pcm,completed):I9100_AP_DISABLED;
+  if(a->gated&&!i9100_audio_gated_status(a->gated,&a->last_pcm))a->last_pcm_valid=1;
   if(a->pcm&&!i9100_audio_native_status(a->pcm,&a->last_pcm))a->last_pcm_valid=1;
+  if(e&&e!=I9100_PCM_BUSY&&e!=I9100_AP_DISABLED){a->error=e;a->phase=CLOSING;}break;
+ case PCM_RELEASE:
+  e=a->phase!=LIVE?I9100_AP_DISABLED:a->gated?i9100_audio_gated_release(a->gated):0;
   if(e&&e!=I9100_PCM_BUSY&&e!=I9100_AP_DISABLED){a->error=e;a->phase=CLOSING;}break;
  case OUTPUT_PREPARE:{
   i9100_mc1n2_output_guard g={a,clock_lease,output_idle,output_stream};
@@ -265,7 +280,7 @@ int i9100_audio_board_service(i9100_audio_board_native *a,uint32_t *completed)
 int i9100_audio_board_worker_claim(i9100_audio_board_native *a,i9100_audio_board_worker_lease *l)
 {
  if(!a||!l||l->owned)return I9100_AP_ARGUMENT;if(take(a->lifecycle))return I9100_AP_BUSY;
- int e=a->phase!=LIVE||a->pcm||a->output.owned||a->worker_holds||a->worker_owner?I9100_AP_BUSY:0;
+ int e=a->phase!=LIVE||a->pcm||a->gated||a->output.owned||a->worker_holds||a->worker_owner?I9100_AP_BUSY:0;
  if(!e&&a->worker_generation==0xffffffffU)e=I9100_AP_OWNER;
  if(!e){memset(l,0,sizeof(*l));l->self=(uintptr_t)l;l->board=a;l->generation=++a->worker_generation;l->owned=1;
   a->worker_owner=l;a->worker_holds=1;}
@@ -275,7 +290,7 @@ int i9100_audio_board_worker_release(i9100_audio_board_worker_lease *l)
 {
  if(!l||!l->owned||l->self!=(uintptr_t)l||!l->board)return I9100_AP_OWNER;
  auto *a=l->board;if(take(a->lifecycle))return I9100_AP_BUSY;int e=authorized(a,l);
- if(!e&&(a->pcm||a->output.owned))e=I9100_AP_BUSY;
+ if(!e&&(a->pcm||a->gated||a->output.owned))e=I9100_AP_BUSY;
  if(!e&&a->worker_holds!=1U)e=I9100_AP_OWNER;
  if(!e){l->owned=0;a->worker_owner=0;a->worker_holds=0;}
  IOLockUnlock(a->lifecycle);return e;
@@ -286,6 +301,9 @@ int i9100_audio_board_worker_queue(i9100_audio_board_worker_lease *l,const int16
 int i9100_audio_board_worker_start(i9100_audio_board_worker_lease *l){return worker_request(l,PCM_START);}
 int i9100_audio_board_worker_service(i9100_audio_board_worker_lease *l,uint32_t *completed)
 {return !completed?I9100_AP_ARGUMENT:worker_request(l,PCM_SERVICE,0,0,0,completed);}
+int i9100_audio_board_worker_release_period(i9100_audio_board_worker_lease *l){return worker_request(l,PCM_RELEASE);}
+int i9100_audio_board_gated_enabled(i9100_audio_board_native *a,uint32_t *out)
+{if(!a||!out)return I9100_AP_ARGUMENT;if(take(a->lifecycle))return I9100_AP_BUSY;*out=a->profile.use_gated_dma;IOLockUnlock(a->lifecycle);return 0;}
 int i9100_audio_board_worker_output_prepare(int enabled,i9100_audio_board_worker_lease *l,enum i9100_mc1n2_output kind,int32_t gain)
 {return enabled!=1?I9100_MC_DISABLED:worker_request(l,OUTPUT_PREPARE,0,kind,gain);}
 int i9100_audio_board_worker_output_activate(i9100_audio_board_worker_lease *l){return worker_request(l,OUTPUT_ACTIVATE);}
@@ -296,13 +314,14 @@ int i9100_audio_board_status(i9100_audio_board_native *a,struct i9100_audio_boar
  struct i9100_audio_board_status value;memset(&value,0,sizeof(value));value.phase=a->phase;value.stage=a->stage;
  value.mclk_owned=a->mclk.owned;value.domain_owned=a->domain.owned;value.audss_active=a->audss.active;
  value.pins_owned=a->pins.active;value.bus_owned=a->bus_owned;value.codec_enabled=a->codec.enabled;
- value.cold_owned=a->codec.cold_owned;value.clock_owned=a->codec.clock_owned;value.pcm_owned=a->pcm!=0;value.error=a->error;*out=value;
+ value.cold_owned=a->codec.cold_owned;value.clock_owned=a->codec.clock_owned;value.pcm_owned=a->pcm!=0||a->gated!=0;value.error=a->error;*out=value;
  out->output_owned=a->output.owned;out->output_powered=a->codec.output_powered;out->output_running=a->codec.output_running;
  out->output_stage=a->codec.output_stage;out->output_error=a->codec.output_error;
  out->codec_fault=a->codec.fault;
  out->output_cleanup_error=a->codec.output_cleanup_error;out->output_gain_mdb=a->codec.actual_gain_mdb;
  out->worker_holds=a->worker_holds;
- int e=0;if(pcm){memset(pcm,0,sizeof(*pcm));if(a->pcm)e=i9100_audio_native_status(a->pcm,pcm);
+ int e=0;if(pcm){memset(pcm,0,sizeof(*pcm));if(a->gated)e=i9100_audio_gated_status(a->gated,pcm);
+  else if(a->pcm)e=i9100_audio_native_status(a->pcm,pcm);
   else if(a->last_pcm_valid)*pcm=a->last_pcm;}
  IOLockUnlock(a->lifecycle);return e;
 }

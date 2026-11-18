@@ -16,6 +16,7 @@ struct i9100_audio_worker_status {
  uint32_t output_requested,output_prepared,output_active,closed,detaching;
  int32_t cleanup_error,irq_error;
  struct i9100_audio_board_status last_board;uint32_t last_board_valid;
+ uint32_t gated_dma;
 };
 int i9100_audio_worker_create(int enabled,struct i9100_audio_board_native *,struct i9100_irq_registry *,
  int use_irq,int verified_dispatch_hook,uint32_t poll_us,struct i9100_audio_worker **);

@@ -10,7 +10,10 @@ sources = ["i9100_audio_power.c", "i9100_audss.c", "i9100_mc1n2.c", "i9100_dma_g
            "i9100_pl330.c", "i9100_i2s.c", "i9100_pcm_stream.c", "i9100_gpio_broker.c",
            "i9100_clock_gates.c", "i9100_peripheral_board.c"]
 cpp = ["i9100_audio_native.cpp", "i9100_audio_board_native.cpp"]
+sources += ["i9100_pl330_ring.c"]
+cpp += ["i9100_audio_gated.cpp", "i9100_pl330_ring_native.cpp", "i9100_pl330_ring_mmio.cpp"]
 e = Evidence("audio-board-offline")
+e.wait_idle_seconds = 60
 e.model_cpp("i9100_audio_board_test.cpp", sources, cpp)
 e.result["model_includes"] = {"i9100_audio_native_test.cpp": hashlib.sha256((REPO / "port-tests/i9100_audio_native_test.cpp").read_bytes()).hexdigest()}
 if a.cross_compile:

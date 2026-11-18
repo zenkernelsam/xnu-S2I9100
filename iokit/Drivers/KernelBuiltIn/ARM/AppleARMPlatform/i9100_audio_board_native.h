@@ -17,6 +17,7 @@ struct i9100_audio_board_profile {
  struct i9100_audss_config audss_config;
  uint32_t verified_i2c6_pclk_hz,sample_rate,period_frames,use_config;
  int exclusive_u1_rails_clocks_verified;
+ uint32_t use_gated_dma; /* default zero preserves finite PCM; polling only */
 };
 struct i9100_audio_board_status {
  uint32_t phase,stage,mclk_owned,domain_owned,audss_active,pins_owned,bus_owned;
@@ -48,6 +49,8 @@ int i9100_audio_board_worker_pcm_close(struct i9100_audio_board_worker_lease *);
 int i9100_audio_board_worker_queue(struct i9100_audio_board_worker_lease *,const int16_t *,uint32_t frames);
 int i9100_audio_board_worker_start(struct i9100_audio_board_worker_lease *);
 int i9100_audio_board_worker_service(struct i9100_audio_board_worker_lease *,uint32_t *completed);
+int i9100_audio_board_worker_release_period(struct i9100_audio_board_worker_lease *);
+int i9100_audio_board_gated_enabled(struct i9100_audio_board_native *,uint32_t *enabled);
 int i9100_audio_board_worker_output_prepare(int enabled,struct i9100_audio_board_worker_lease *,enum i9100_mc1n2_output,int32_t requested_mdb);
 int i9100_audio_board_worker_output_activate(struct i9100_audio_board_worker_lease *);
 int i9100_audio_board_worker_output_mute(struct i9100_audio_board_worker_lease *);

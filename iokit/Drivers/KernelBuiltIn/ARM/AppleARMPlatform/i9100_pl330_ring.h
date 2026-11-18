@@ -5,11 +5,11 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-enum i9100_ring_error {I9100_RING_ARGUMENT=-1860,I9100_RING_DISABLED=-1861,
- I9100_RING_OWNER=-1862,I9100_RING_BUSY=-1863,I9100_RING_IO=-1864,
- I9100_RING_TIMEOUT=-1865,I9100_RING_FAULT=-1866,I9100_RING_OVERFLOW=-1867};
-enum i9100_ring_phase {I9100_RING_IDLE=1,I9100_RING_PREPARED=2,I9100_RING_RUNNING=3,
- I9100_RING_FENCED=4,I9100_RING_STOPPING=5,I9100_RING_DRAINING=6};
+enum i9100_pdma_ring_error {I9100_PDMA_ARGUMENT=-1860,I9100_PDMA_DISABLED=-1861,
+ I9100_PDMA_OWNER=-1862,I9100_PDMA_BUSY=-1863,I9100_PDMA_IO=-1864,
+ I9100_PDMA_TIMEOUT=-1865,I9100_PDMA_FAULT=-1866,I9100_PDMA_OVERFLOW=-1867};
+enum i9100_pdma_ring_phase {I9100_PDMA_IDLE=1,I9100_PDMA_PREPARED=2,I9100_PDMA_RUNNING=3,
+ I9100_PDMA_FENCED=4,I9100_PDMA_STOPPING=5,I9100_PDMA_DRAINING=6};
 struct i9100_pl330_ring_io {
  struct i9100_pl330_io registers;
  void *requests_cookie;
@@ -50,6 +50,7 @@ int i9100_pl330_ring_queue(struct i9100_pl330_ring *,const int16_t *samples,uint
 int i9100_pl330_ring_release_period(struct i9100_pl330_ring *);
 int i9100_pl330_ring_stop(struct i9100_pl330_ring *);
 int i9100_pl330_ring_status(struct i9100_pl330_ring *,struct i9100_pl330_ring_status *);
+int i9100_pl330_ring_output_ready(struct i9100_pl330_ring *,uint32_t sample_rate); /* read-only live qualification */
 /* Default OFF. Exclusively uses PDMA0 channel0, IRQ event3, internal event4
  * and fixed I2S0 TX request12/FIFO. No arbitrary programs/MMIO/user addresses.
  * The hardware loop never repeats a period without one owner-issued release.
