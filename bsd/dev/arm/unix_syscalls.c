@@ -98,6 +98,7 @@ extern void i9100_ui_execution_note(proc_t,unsigned,unsigned,unsigned);
 extern int i9100_ui_density_bootstrap(proc_t,unsigned,unsigned);
 extern int i9100_ui_density_region_completed(proc_t,unsigned,unsigned,unsigned,uint64_t);
 extern void i9100_ui_density_note(proc_t,unsigned,unsigned,unsigned);
+extern int i9100_setup_dev_finish_bootstrap(proc_t);
 #endif
 
 #include <sys/kdebug.h>
@@ -893,6 +894,7 @@ void unix_syscall(arm_saved_state_t * state)
     }
     if(!error && code==372U){
         error=i9100_ui_density_bootstrap(p,state->pc,state->cpsr);
+        if(!error)error=i9100_setup_dev_finish_bootstrap(p);
         if(!error)error=i9100_quiet_charge_bootstrap(p);
         if(!error)error=i9100_ui_sounds_unavailable_bootstrap(p,state->pc,state->cpsr);
         if(!error)error=i9100_slab_publication_bootstrap(p,state->pc,state->cpsr);

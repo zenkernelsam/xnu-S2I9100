@@ -45,6 +45,18 @@ static unsigned i9100_ui_density_option(void)
     PE_parse_boot_argn("i9100setupnative",&native,4);
     return abi==6 && native==1 && (value==1333 || value==1500)?(unsigned)value:0;
 }
+static void i9100_ui_density_sync_current(void)
+{
+#if defined(I9100_DENSITY_TEST_SYNC)
+    I9100_DENSITY_TEST_SYNC();
+#elif defined(__arm__)
+    uint32_t zero=0;
+    /* Single CPU's full I+D TLB invalidation includes old global translations.
+     * Existing D-side clean/I-side alias synchronization remains unchanged. */
+    __asm__ volatile("dsb sy\n\tmcr p15,0,%0,c8,c7,0\n\tdsb sy\n\tisb sy"
+        ::"r"(zero):"memory");
+#endif
+}
 static void i9100_ui_density_record(proc_t p,user_addr_t header)
 {
     int n=i9100_ui_density_slot(p);unsigned option=i9100_ui_density_option();
@@ -149,6 +161,7 @@ static int i9100_ui_density_install(proc_t p,unsigned pc,unsigned cpsr,int suppl
       result=vm_map_protect(map,page,page+4096,VM_PROT_READ|VM_PROT_EXECUTE,FALSE);d[7]=result;
       if(result!=KERN_SUCCESS)goto failed;
     }
+    i9100_ui_density_sync_current();
     d[10]++;d[11]=3;OSMemoryBarrier();d[1]=2;i9100_ui_density_guard[slot]=0;return 0;
 failed:
     for(unsigned n=0;n<2;n++)if(touched&(1U<<n)){
@@ -159,6 +172,7 @@ failed:
         kern_return_t protect=vm_map_protect(map,page,page+4096,VM_PROT_READ|VM_PROT_EXECUTE,FALSE);
         if(restore!=KERN_SUCCESS || protect!=KERN_SUCCESS){d[9]=restore?restore:protect;error=EIO;}
     }
+    i9100_ui_density_sync_current();
     if(allocated && !touched)vm_map_remove(map,address,address+4096,0);
     OSMemoryBarrier();d[1]=3;i9100_ui_density_guard[slot]=0;return error;
 }

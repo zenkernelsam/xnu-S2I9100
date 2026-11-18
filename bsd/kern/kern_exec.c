@@ -213,6 +213,7 @@ extern struct savearea *get_user_regs(thread_t);
 #include "../dev/arm/i9100_ui_execution_trace.h"
 #include "../dev/arm/i9100_ui_density.h"
 #include "../dev/arm/i9100_setup_native_layout.h"
+#include "../dev/arm/i9100_setup_dev_finish.h"
 #endif
 
 
@@ -1121,6 +1122,7 @@ grade:
 	i9100_slab_publication_record(p,load_result.mach_header);
 	i9100_ui_execution_record(p,load_result.mach_header);
 	i9100_ui_density_record(p,load_result.mach_header);
+    i9100_setup_dev_finish_record(p,(unsigned)load_result.mach_header);
 #endif
 
 #if !CONFIG_EMBEDDED
