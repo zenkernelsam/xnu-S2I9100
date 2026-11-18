@@ -33,9 +33,10 @@ C_SOURCES = [
     "i9100_bcm_pump.c",
     "i9100_radio_survey.c",
     "i9100_audio_user_session.c",
+    "i9100_pl330_ring.c",
 ]
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
-               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_sensor_worker.cpp", "i9100_haptic_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp", "IOS6I9100AudioPCM.cpp"]
+               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_sensor_worker.cpp", "i9100_haptic_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp", "IOS6I9100AudioPCM.cpp", "i9100_pl330_ring_native.cpp", "i9100_pl330_ring_mmio.cpp"]
 TESTS = [
     ("i9100_peripheral_bus_test.c", C_SOURCES[:5]),
     ("i9100_peripheral_platform_test.c", ["i9100_gpio_broker.c", "i9100_clock_gates.c",
@@ -86,6 +87,9 @@ TESTS = [
         "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c", "i9100_pwm_haptic.c", "i9100_vibrator.c", "i9100_power_bus.c", "i9100_power.c", "i9100_power_shared.cpp", "i9100_haptic_worker.cpp"]),
     ("i9100_radio_survey_test.c", ["i9100_radio_survey.c"]),
     ("i9100_audio_user_test.c", ["i9100_audio_user_session.c"]),
+    ("i9100_pl330_ring_test.c", ["i9100_dma_guard.c","i9100_i2s.c","i9100_pl330_ring.c"]),
+    ("i9100_pl330_ring_native_test.cpp", ["i9100_dma_guard.c","i9100_i2s.c","i9100_clock_gates.c",
+        "i9100_peripheral_board.c","i9100_pl330_ring.c","i9100_pl330_ring_native.cpp","i9100_pl330_ring_mmio.cpp"]),
     ("i9100_audio_user_native_test.cpp", ["i9100_audio_power.c", "i9100_audss.c", "i9100_mc1n2.c",
         "i9100_dma_guard.c", "i9100_pl330.c", "i9100_i2s.c", "i9100_pcm_stream.c", "i9100_gpio_broker.c",
         "i9100_clock_gates.c", "i9100_peripheral_board.c", "i9100_irq_registry.c", "i9100_irq_router.c",
@@ -141,7 +145,8 @@ def main():
                             source_overrides=overrides,
                             wrapped_functions=("i9100_sdio_init",) if test=="i9100_native_sdio_success_test.cpp" else
                             ("i9100_i2c_samsung_init",) if test in ("i9100_native_i2c_test.cpp","i9100_sensor_worker_test.cpp") else
-                            ("pthread_mutex_init","pthread_mutex_lock","pthread_mutex_unlock") if test=="i9100_audio_pdev_test.cpp" else ())
+                            ("pthread_mutex_init","pthread_mutex_lock","pthread_mutex_unlock") if test=="i9100_audio_pdev_test.cpp" else
+                            ("i9100_ring_mmio_read","i9100_ring_mmio_write") if test=="i9100_pl330_ring_native_test.cpp" else ())
                 if test=="i9100_power_shared_test.cpp":
                     for n in range(1,4):e.run([str(e.out/"models"),str(n)],"shared-prepare-failure-"+str(n)+"-tests")
                 if test=="i9100_audio_pdev_test.cpp" and any(

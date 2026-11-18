@@ -52,7 +52,7 @@ def main():
     p.add_argument("--append", action="append", default=[], metavar="SOURCE", help="Append a new opt-in object")
     p.add_argument("--wait-idle", type=int, default=60, choices=range(61))
     args = p.parse_args()
-    changed=tuple(args.replace) if args.replace else CHANGED
+    changed=tuple(args.replace) if args.replace else () if args.append else CHANGED
     added=tuple(args.append)
     if len(set(changed+added))!=len(changed+added) or any(
             not re.fullmatch(r"[A-Za-z0-9_]+\.(c|cpp)", name) or not (REPO/"iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform"/name).is_file()
@@ -154,10 +154,15 @@ def main():
         verify(item)
     if digest(flags) != flags_sha or digest(base / "mach_kernel.sys") != expected:
         raise RuntimeError("Reference kernel/link controls changed during assembly")
+    prior_peripherals=manifest.get("peripheral_objects")
+    if prior_peripherals is None:
+        prior_peripherals=manifest.get("retained_peripheral_objects")
+        if prior_peripherals is not None:prior_peripherals+=len(manifest.get("appended_objects",{}))
     e.result.update(base=str(base.relative_to(ROOT)), reproduced_sha256=expected,
                     replaced_objects=replaced, appended_objects=appended,total_link_objects=len(captured),
                     kernel_reference=str(reference.relative_to(ROOT)),
-                    retained_peripheral_objects=manifest.get("peripheral_objects",manifest.get("retained_peripheral_objects")),
+                    retained_peripheral_objects=prior_peripherals,
+                    peripheral_objects=prior_peripherals+len(added) if prior_peripherals is not None else None,
                     reference_sha256=expected, link_flags_sha256=flags_sha,
                     linked_kernel_sha256=digest(kernel), kernel_bytes=kernel.stat().st_size,
                     frozen_input_manifests=[str(x.relative_to(ROOT)) for x in (snapshot, aux_snapshot, final_snapshot)])
