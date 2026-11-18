@@ -8,7 +8,10 @@ from datetime import datetime
 import subprocess,struct,json,ast
 repo=Path(__file__).resolve().parents[1]
 out=repo/'out'/('ui-density-check-'+datetime.now().strftime('%Y%m%d-%H%M%S'));out.mkdir()
-body='\n'.join(line for line in (repo/'bsd/dev/arm/i9100_ui_density.h').read_text().splitlines() if not line.startswith('#include'))
+source=(repo/'bsd/dev/arm/i9100_ui_density.h').read_text()
+metrics=(repo/'bsd/dev/arm/i9100_ui_density_metrics_code.h').read_text()+'\n'+(repo/'bsd/dev/arm/i9100_ui_density_metrics.h').read_text()
+source=source.replace('#include "i9100_ui_density_metrics.h"',metrics)
+body='\n'.join(line for line in source.splitlines() if not line.startswith('#include'))
 prefix=r'''
 #include <stdint.h>
 #include <stdio.h>
@@ -45,7 +48,7 @@ static unsigned get_task_numacts(task_t task){return task->acts;}
 static unsigned ml_at_interrupt_context(void){return irq;}
 static unsigned ml_get_interrupts_enabled(void){return interrupts;}
 static unsigned get_preemption_level(void){return preempt;}
-static int PE_parse_boot_argn(const char *key,int *value,unsigned n){assert(n==4);*value=!strcmp(key,"i9100uidensity")?option:!strcmp(key,"i9100hidabi")?abi:native;return 1;}
+static int PE_parse_boot_argn(const char *key,int *value,unsigned n){assert(n==4);*value=!strcmp(key,"i9100uidensitymetrics")?0:!strcmp(key,"i9100uidensity")?option:!strcmp(key,"i9100hidabi")?abi:native;return 1;}
 static int OSCompareAndSwap(unsigned old,unsigned next,volatile unsigned *value){if(*value!=old)return 0;*value=next;return 1;}
 static unsigned publication_probe,publication_step;
 static void publication_barrier(void);

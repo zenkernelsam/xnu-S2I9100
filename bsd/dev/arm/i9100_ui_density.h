@@ -51,20 +51,16 @@ static void i9100_ui_density_sync_current(void)
 #if defined(I9100_DENSITY_TEST_SYNC)
     I9100_DENSITY_TEST_SYNC();
 #elif defined(__arm__)
-    extern void arm_idcache_wbinv_all(void);
     uint32_t zero=0;
-    /* Publish every dirty D-side alias before the existing full I-side sync.
-     * A virtual-address range alone need not cover a private COW alias. This
-     * uses the audited DCCISW clean+invalidate routine, never DCISW discard.
-     * Mask IRQs while its shared CSSELR changes; restore the exact prior state.
-     * Only these optional, bounded startup patches call this function. */
+    /* Preserve the bounded translation synchronization and its evidence.
+     * The full data-cache experiment did not change live GS execution; keep
+     * normal per-range writeback/I-side synchronization at the callers. */
     boolean_t enabled=ml_set_interrupts_enabled(FALSE);
     volatile uint32_t *d=i9100_ui_density_sync_diag;
     d[0]=1;d[1]++;d[2]=enabled;
     __asm__ volatile("mrc p15,0,%0,c2,c0,0\n\tmrc p15,0,%1,c2,c0,1\n\t"
         "mrc p15,0,%2,c2,c0,2\n\tmrc p15,0,%3,c1,c0,0"
         :"=r"(d[3]),"=r"(d[4]),"=r"(d[5]),"=r"(d[6])::"memory");
-    arm_idcache_wbinv_all();
     __asm__ volatile("dsb sy\n\tmcr p15,0,%0,c8,c7,0\n\tdsb sy\n\tisb sy"
         ::"r"(zero):"memory");
     d[7]=d[1];OSMemoryBarrier();
@@ -190,8 +186,10 @@ failed:
     if(allocated && !touched)vm_map_remove(map,address,address+4096,0);
     OSMemoryBarrier();d[1]=3;i9100_ui_density_guard[slot]=0;return error;
 }
+#include "i9100_ui_density_metrics.h"
 int i9100_ui_density_bootstrap(proc_t p,unsigned pc,unsigned cpsr)
 {
+    if(i9100_metrics_enabled())return i9100_metrics_bootstrap(p,pc,cpsr);
     return i9100_ui_density_install(p,pc,cpsr,0,0,372);
 }
 int i9100_ui_density_region_completed(proc_t p,unsigned pc,unsigned cpsr,unsigned code,uint64_t hint)
@@ -231,15 +229,15 @@ static void i9100_ui_density_admission_note(proc_t p,int native_slot,
         for(unsigned n=2;n<18;n++)a[n]=0; /* Slot busy losses remain lifetime-scoped. */
     a[2]=p->p_pid;a[3]=p->p_idversion;
     if(a[4]!=UINT32_MAX)a[4]++;
-    if(pc>=d[5] && pc<d[5]+192U){
+    if(pc>=d[5] && pc<d[5]+(d[0]==4?276U:192U)){
         if(a[5]!=UINT32_MAX)a[5]++;
         unsigned irq=ml_at_interrupt_context(),enabled=ml_get_interrupts_enabled();
         unsigned preempt=get_preemption_level();task_t task=current_task();vm_map_t map=current_map();
-        unsigned offset=phase==1?22:phase==2?86:phase==3?150:0;
+        unsigned offset=d[0]==4?(phase==1?22:phase==2?248:0):(phase==1?22:phase==2?86:phase==3?150:0);
         unsigned rejected=(native_slot!=(int)slot?1U:0U)|
             (p->task!=task?2U:0U)|(!p->task || map!=get_task_map(p->task)?4U:0U)|
             (irq?8U:0U)|(!enabled?16U:0U)|(preempt?32U:0U)|
-            (d[0]!=3 || d[1]!=2?64U:0U)|(d[2]!=(unsigned)p->p_pid?128U:0U)|
+            ((d[0]!=3 && d[0]!=4) || d[1]!=2?64U:0U)|(d[2]!=(unsigned)p->p_pid?128U:0U)|
             (d[12]!=(unsigned)p->p_idversion?256U:0U)|
             (!offset || pc!=d[5]+offset?512U:0U)|
             (sp<4096 || sp>0x3fffffc0U || (sp&3U)?1024U:0U);
@@ -255,6 +253,7 @@ void i9100_ui_density_note(proc_t p,unsigned pc,unsigned sp,unsigned phase)
 {
     int slot=i9100_ui_density_slot(p);
     i9100_ui_density_admission_note(p,slot,pc,sp,phase);
+    if(slot>=0 && i9100_ui_density_diag[slot][0]==4){i9100_metrics_note(p,slot,pc,sp,phase);return;}
     if(slot<0 || phase<1 || phase>3 || p->task!=current_task() || current_map()!=get_task_map(p->task) ||
        ml_at_interrupt_context() || !ml_get_interrupts_enabled() || get_preemption_level()!=0)return;
     volatile uint32_t *d=i9100_ui_density_diag[slot];unsigned offset=phase==1?22:phase==2?86:150;
