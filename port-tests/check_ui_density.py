@@ -163,8 +163,10 @@ int main(int argc,char **argv){
   i9100_ui_density_record(&p,0x65000);assert(!boot()&&i9100_ui_density_diag[0][1]==2);
   char file[512];snprintf(file,sizeof(file),"%s/%u-%08x.bin",argv[1],value,slide);FILE *f=fopen(file,"wb");assert(f);assert(fwrite(code,1,192,f)==192);fclose(f);
  }
- reset(0);dyld[0]=0;i9100_ui_density_record(&p,0x65000);assert(!i9100_ui_density_region_completed(&p,0x30001001,0x10,294,0x26000)&&i9100_ui_density_diag[0][1]==2&&i9100_ui_density_diag[0][19]==294);
- reset(0);dyld[0]=0;i9100_ui_density_record(&p,0x65000);assert(!i9100_ui_density_region_completed(&p,0x30001001,0x10,438,0)&&i9100_ui_density_diag[0][1]==2);
+ reset(0);dyld[0]=0;i9100_ui_density_record(&p,0x65000);assert(!i9100_ui_density_region_completed(&p,0x30001001,0x10,294,0x26000)&&!ops&&i9100_ui_density_pending[0][2]==0x65000);
+ dyld[0]=12;assert(!boot()&&i9100_ui_density_diag[0][1]==2&&i9100_ui_density_diag[0][19]==372);
+ reset(0);dyld[0]=0;i9100_ui_density_record(&p,0x65000);assert(!i9100_ui_density_region_completed(&p,0x30001001,0x10,438,0)&&!ops&&i9100_ui_density_pending[0][2]==0x65000);
+ dyld[0]=12;assert(!boot()&&i9100_ui_density_diag[0][1]==2&&i9100_ui_density_diag[0][19]==372);
  reset(1);i9100_ui_density_guard[0]=1;i9100_ui_density_record(&p,0x65000);assert(!boot()&&i9100_ui_density_diag[1][1]==2);
  reset(0);option=0;assert(!i9100_ui_density_region_completed(&p,0x30001001,0x10,294,0)&&!ops);
  reset(0);i9100_ui_density_record(&p,0x65000);assert(!boot());cache[0]=0x3f800000;i9100_ui_density_note(&p,0x1016,0x27000,1);assert(i9100_ui_density_execution[0][3]==1&&i9100_ui_density_execution[0][10]==0x3f800000);
@@ -173,7 +175,7 @@ int main(int argc,char **argv){
  char admission_file[512];snprintf(admission_file,sizeof(admission_file),"%s/admission.bin",argv[1]);
  FILE *admission=fopen(admission_file,"wb");assert(admission);
  assert(fwrite((const void*)i9100_ui_density_admission,1,sizeof(i9100_ui_density_admission),admission)==sizeof(i9100_ui_density_admission));fclose(admission);
- puts("PASS production scope, published-GS refusal, nine partial-write rollbacks, unsafe-restore stop, early mapping and actual execution observations");
+ puts("PASS production scope, published-GS refusal, nine partial-write rollbacks, unsafe-restore stop, region deferral until final bootstrap and actual execution observations");
 }
 '''
 (out/'check.c').write_text(prefix+body+suffix)

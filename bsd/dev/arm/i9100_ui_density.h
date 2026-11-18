@@ -182,16 +182,13 @@ int i9100_ui_density_bootstrap(proc_t p,unsigned pc,unsigned cpsr)
 }
 int i9100_ui_density_region_completed(proc_t p,unsigned pc,unsigned cpsr,unsigned code,uint64_t hint)
 {
-    if(i9100_ui_density_slot(p)<0 || !i9100_ui_density_option() || !p->task || current_task()!=p->task ||
-       current_map()!=get_task_map(p->task) || get_task_numacts(p->task)!=1 || ml_at_interrupt_context() ||
-       !ml_get_interrupts_enabled() || get_preemption_level()!=0)return 0;
-    uint64_t base;unsigned slide;
-    if(code==294){
-        if(hint<4096 || hint>0x3ffffff8U || copyin(hint,&base,8) || base<0x30000000U || base>0x3375b000U)return 0;
-        slide=(unsigned)(base-0x30000000U);
-    }else if(code==438 && hint<=0x0375b000U)slide=(unsigned)hint;
-    else return 0;
-    return i9100_ui_density_install(p,pc,cpsr,1,slide,code);
+    /* A successful region check precedes dyld's final private mappings and
+     * binding. Keep the pending exec identity until the existing sigaltstack
+     * bootstrap, where the other working UI patches are installed. The live
+     * installed-via field distinguishes this timing experiment from region294.
+     * Do not change either syscall result or already-published GS parameters. */
+    (void)p;(void)pc;(void)cpsr;(void)code;(void)hint;
+    return 0;
 }
 static void i9100_ui_density_admission_loss(unsigned slot)
 {
