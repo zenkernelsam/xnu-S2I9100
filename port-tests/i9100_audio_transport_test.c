@@ -596,6 +596,26 @@ static void stream_faults(void)
  assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_IO&&!completed&&!s.completed_frames&&s.i2s_fault_valid);
  assert(s.i2s_fault.errors==((1U<<26)|(1U<<24))&&!(m.i2s[0]&7U));assert(!i9100_pcm_stream_stop(&s));
 }
+static void stream_clock_evidence(void)
+{
+ struct i9100_pcm_stream s;struct i9100_pl330 p;struct i9100_i2s i;
+ prepare_stream(&s,&p,&i);m.ns=100000000ULL;assert(!i9100_pcm_stream_start(&s));
+ assert(s.timestamp_valid&&s.start_time_ns==m.ns&&!s.completed_frames);
+ uint32_t completed=99;m.ns+=2000000ULL;
+ assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_BUSY&&!completed&&!s.completion_time_ns);
+ execute(p.program_bytes);assert(!i9100_pcm_stream_service(&s,&completed)&&completed==1);
+ uint64_t observed=s.completion_time_ns;assert(s.timestamp_valid&&observed>=102000000ULL);
+ struct i9100_pcm_status status;assert(!i9100_pcm_stream_status(&s,&status));
+ assert(status.completed_frames==64&&status.completion_time_ns==observed&&status.timestamp_valid);
+ assert(i9100_pcm_stream_service(&s,&completed)==I9100_PCM_BUSY&&!completed&&s.completion_time_ns==observed);
+ /* A frozen clock with a new modeled hardware completion is not promoted
+  * into valid hardware timing, even though the actual byte count is kept. */
+ execute(p.program_bytes);assert(!i9100_pcm_stream_service(&s,&completed)&&completed==1);
+ assert(s.completed_frames==128&&!s.timestamp_valid&&s.completion_time_ns==observed);
+ assert(!i9100_pcm_stream_stop(&s));
+ prepare_stream(&s,&p,&i);assert(!s.timestamp_valid&&!s.start_time_ns&&!s.completion_time_ns);
+ assert(!i9100_pcm_stream_stop(&s));
+}
 int main(void)
-{pl330();i2s();codec();codec_cold();codec_aa();codec_clock();pcm();stream_periods();stream_rejects();stream_faults();
+{pl330();i2s();codec();codec_cold();codec_aa();codec_clock();pcm();stream_periods();stream_rejects();stream_faults();stream_clock_evidence();
  puts("PASS finite DMA/I2S pad-idle-before-mode-restore/MC1N2 cold/mute/clock-only4c/all clock transactions/busy consumers/sticky shutdown; PCM512 periods/zero/-30dB/exact positions/pins/explicit recovery");return 0;}

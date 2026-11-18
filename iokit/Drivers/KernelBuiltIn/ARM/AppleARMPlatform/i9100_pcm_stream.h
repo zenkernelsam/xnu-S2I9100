@@ -23,6 +23,8 @@ struct i9100_pcm_status {
  int32_t last_error,cleanup_error;
  struct i9100_i2s_snapshot i2s_fault;
  uint32_t i2s_fault_valid,fifo_errors;
+ uint64_t start_time_ns,completion_time_ns;
+ uint32_t timestamp_valid;
 };
 struct i9100_pcm_stream {
  struct i9100_pcm_io io;
@@ -38,6 +40,8 @@ struct i9100_pcm_stream {
  int32_t last_error,cleanup_error;
  struct i9100_i2s_snapshot i2s_fault;
  uint32_t i2s_fault_valid,fifo_errors;
+ uint64_t start_time_ns,completion_time_ns;
+ uint32_t timestamp_valid;
 };
 int i9100_pcm_stream_init(struct i9100_pcm_stream *,const struct i9100_pcm_io *,
  struct i9100_pl330 *,struct i9100_i2s *,struct i9100_dma_buffer *period0,
@@ -72,6 +76,10 @@ int i9100_pcm_stream_output_ready(struct i9100_pcm_stream *,uint32_t sample_rate
  * indefinite hardware loop or seamless timing guarantee. FIFO faults are
  * captured independently of DMA completion; old flags refuse a fresh start.
  * Hardware workloop timing, output sequencing and HAL remain unvalidated.
+ * Timestamps sample the actual native monotonic clock after I2S start and
+ * a verified DMA completion. No completion is invented from elapsed time.
+ * Equal/backward/invalid samples invalidate the clock evidence for this
+ * prepare generation; these are FIFO observations, not DAC/acoustic position.
  * Position counts confirmed DMA words copied to the I2S FIFO, not acoustic
  * playback position. A stuck/faulted stop retains pins and never auto-retries.
  * Prepare/start establish silence through the provider. Its separate owned

@@ -145,6 +145,7 @@ int i9100_pcm_stream_prepare(struct i9100_pcm_stream *s,uint32_t rate,
  s->ready_mask=s->next_index=0;s->in_flight=2;
  s->queued_frames=s->completed_frames=s->completed_periods=s->zero_periods=0;
  s->completed_silence_periods=0;s->in_flight_peak=0;
+ s->start_time_ns=s->completion_time_ns=0;s->timestamp_valid=0;
  memset(&s->i2s_fault,0,sizeof(s->i2s_fault));s->i2s_fault_valid=s->fifo_errors=0;
  s->last_error=s->cleanup_error=0;
 done:
@@ -204,6 +205,8 @@ int i9100_pcm_stream_start(struct i9100_pcm_stream *s)
  e=submit_next(s);if(e){e=fail(s,e);goto done;}
  /* The finite DMA waits for peripheral requests; I2S starts only afterward. */
  e=i9100_i2s_start(s->i2s,0,1);if(e)e=fail(s,e);
+ else {s->start_time_ns=s->dma->io.now_ns(s->dma->io.cookie);
+  s->timestamp_valid=s->start_time_ns!=0&&s->start_time_ns!=UINT64_MAX;}
 done:
  s->io.unlock(s->io.cookie);return e;
 }
@@ -230,6 +233,10 @@ int i9100_pcm_stream_service(struct i9100_pcm_stream *s,uint32_t *completed)
     (!peak&&s->completed_silence_periods==UINT64_MAX))
   {e=fail(s,I9100_PCM_OVERFLOW);goto done;}
  s->in_flight=2;s->completed_periods++;s->completed_frames+=s->period_frames;*completed=1;
+ uint64_t observed=s->dma->io.now_ns(s->dma->io.cookie);
+ if(observed==UINT64_MAX||observed<=s->start_time_ns||
+    (s->completion_time_ns&&observed<=s->completion_time_ns))s->timestamp_valid=0;
+ s->completion_time_ns=observed;
  if(!peak&&!live.errors)s->completed_silence_periods++;
  if(live.errors){e=fail(s,I9100_I2S_FIFO);goto done;}
  e=submit_next(s);if(e)e=fail(s,e);
@@ -252,6 +259,8 @@ int i9100_pcm_stream_status(struct i9100_pcm_stream *s,struct i9100_pcm_status *
  value.queued_frames=s->queued_frames;value.completed_frames=s->completed_frames;
  value.completed_periods=s->completed_periods;value.zero_periods=s->zero_periods;
  value.completed_silence_periods=s->completed_silence_periods;
+ value.start_time_ns=s->start_time_ns;value.completion_time_ns=s->completion_time_ns;
+ value.timestamp_valid=s->timestamp_valid;
  value.enabled=s->enabled;value.prepared=s->prepared;value.started=s->started;value.fault=s->fault;
  value.held_mask=s->held_mask;value.ready_mask=s->ready_mask;value.in_flight=s->in_flight;
  value.sample_rate=s->sample_rate;value.period_frames=s->period_frames;

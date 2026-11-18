@@ -139,6 +139,9 @@ static IOReturn control(OSObject *target,void *operation,void *arg0,void *arg1,v
   {struct i9100_audio_board_status bs;i9100_pcm_status pcm;
    e=i9100_audio_board_status(w->s.board,&bs,&pcm);if(e){fault(w,e);return e;}
    if(pcm.period_frames<16U||pcm.period_frames>4096U){fault(w,I9100_AP_ARGUMENT);return I9100_AP_ARGUMENT;}
+   /* Publish the actual prepared PCM profile before START. A user client
+    * must not have to start DMA just to learn whether prepare succeeded. */
+   w->s.last_board=bs;w->s.last_pcm=pcm;w->s.last_board_valid=w->s.last_pcm_valid=1;
    if(w->s.storage){IOFree(w->s.storage,w->s.storage_bytes);w->s.storage=0;}w->s.scratch=0;memset(&w->s.ring,0,sizeof(w->s.ring));
    w->s.period_frames=pcm.period_frames;w->s.storage_bytes=pcm.period_frames*4U*9U;
    w->s.storage=(int16_t *)IOMalloc(w->s.storage_bytes);if(!w->s.storage){fault(w,I9100_AP_IO);return I9100_AP_IO;}

@@ -63,7 +63,10 @@ static void finish(i9100_audio_worker **w,i9100_audio_board_native **b)
 }
 static void prepare_worker(i9100_audio_worker *w)
 {assert(!i9100_audio_worker_prepare(w,1536000));m.extra_contexts=1;}
-int main()
+#ifndef I9100_WORKER_MODEL_ENTRY
+#define I9100_WORKER_MODEL_ENTRY main
+#endif
+int I9100_WORKER_MODEL_ENTRY()
 {
  i9100_audio_board_native *b=nullptr;i9100_irq_registry r;i9100_audio_worker *w=nullptr;
  setup_worker(&b,&r);unsigned allocations=m.allocations;
