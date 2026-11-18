@@ -20,6 +20,7 @@
 #include <machine/machine_routines.h>
 #include "i9100_panic_context.h"
 #include "i9100_previous_boot.h"
+#include "i9100_boot_source.h"
 #include <kern/debug.h>
 #include <kern/clock.h>
 #include <mach/vm_param.h>
@@ -49,6 +50,31 @@ extern vm_offset_t pmap_pte(pmap_t map, vm_offset_t address);
 static volatile unsigned int *i9100_pixels;
 static vm_offset_t i9100_fb_map;
 static vm_offset_t i9100_fimd_map;
+#include "i9100_display_power.h"
+volatile uint32_t i9100_display_power_diag[12]={1};
+static struct i9100_display_power_state i9100_display_power_state;
+static volatile uint32_t i9100_display_power_guard;
+static uint32_t i9100_display_map_read(void *cookie)
+{return *(volatile uint32_t *)cookie;}
+static void i9100_display_map_write(void *cookie,uint32_t value)
+{*(volatile uint32_t *)cookie=value;}
+static void i9100_display_map_sync(void *cookie)
+{(void)cookie;__asm__ volatile("dsb sy" ::: "memory");}
+int ios7leo_display_power(uint32_t state)
+{
+ if(state>2 || !i9100_fimd_map)return 1;
+ if(!__sync_bool_compare_and_swap(&i9100_display_power_guard,0,1))return 2;
+ struct i9100_display_power_io io={(void *)(i9100_fimd_map+0x180),
+  i9100_display_map_read,i9100_display_map_write,i9100_display_map_sync};
+ uint32_t before=io.read(io.cookie);
+ int result=i9100_display_power_change(&i9100_display_power_state,&io,state);
+ i9100_display_power_diag[2]=state;i9100_display_power_diag[3]=result;
+ i9100_display_power_diag[4]=before;i9100_display_power_diag[5]=io.read(io.cookie);
+ i9100_display_power_diag[6]=i9100_display_power_state.blanked;
+ i9100_display_power_diag[7]=i9100_display_power_state.saved_map;
+ __sync_synchronize();i9100_display_power_diag[1]++;
+ __sync_synchronize();i9100_display_power_guard=0;return result;
+}
 static unsigned int i9100_fb_physical;
 static volatile unsigned int i9100_graphics_owner, i9100_fatal_active;
 static unsigned int i9100_stage;
@@ -76,6 +102,7 @@ static void i9100_puthex(unsigned int v);
  * fatal paths only write existing mappings and never allocate. */
 static vm_offset_t i9100_trace_pmu, i9100_trace_cell;
 struct I9100PreviousBoot i9100_previous_boot;
+struct I9100BootSource i9100_boot_source;
 volatile unsigned i9100_copypv_last[8];
 void ios7i9100_copypv_observe(unsigned source_low,unsigned source_high,
     unsigned sink_low,unsigned sink_high,unsigned bytes,unsigned flags,unsigned caller)
@@ -737,6 +764,11 @@ void PE_init_SocSupport_stub(void)
             previous->magic==I9100_PREVIOUS_BOOT_MAGIC && previous->version==1 &&
             previous->bytes==sizeof(*previous) && !(previous->valid&~7U))
             memcpy(&i9100_previous_boot,previous,sizeof(*previous));
+        struct I9100BootSource *source=0;unsigned source_bytes=0;
+        if(DTGetProperty(chosen,I9100_BOOT_SOURCE_PROPERTY,(void**)&source,&source_bytes)==kSuccess &&
+           source && source_bytes==sizeof(*source) && source->magic==I9100_BOOT_SOURCE_MAGIC &&
+           source->version==1 && !(source->flags&~3U))
+            memcpy(&i9100_boot_source,source,sizeof(*source));
     }
     i9100_trace(0x108, 0, 0, 0, 0, 0);
     if(!i9100_video_ok(args)) ios7i9100_final_boundary(4);

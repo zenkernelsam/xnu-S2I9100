@@ -37,6 +37,7 @@ int ios7i9100_display_ready(void);
 int ios7i9100_display_present(const unsigned char *px,unsigned int bytes,unsigned int row,
                              unsigned int fmt,unsigned long long *seq);
 int ios7i9100_display_completed(unsigned long long seq);
+int ios7leo_display_power(uint32_t state);
 }
 #define ios7leo_display_ready ios7i9100_display_ready
 #define ios7leo_display_present(px,bytes,row,fmt,seq) ios7i9100_display_present((const unsigned char*)(px),(bytes),(row),(fmt),(unsigned long long*)(seq))
@@ -1602,7 +1603,22 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
      * 0x01 SwapSurface(2), 0x02 SwapSetTimestamp(2), 0x0C(1),
      * 0x0F(2in/1out), 0x13 SetWhiteOnBlackMode(1), 0x15(2),
      * 0x16 SetDisplayDevice(1), 0x21 EnableDisableVideoPowerSavings(1). */
-    if (selector == 1 || selector == 2 || selector == 12 || selector == 21) {
+    /* Original iOS6 RequestPowerChange forwards one scalar to selector12.
+     * State0 blanks; nonzero active/doze states retain the visible scanout.
+     * Keep the actual request and hardware readback in the PE diagnostic. */
+    if (selector == 12) {
+        if(args->scalarInputCount!=1 || !args->scalarInput ||
+           args->scalarInput[0]>2 || args->structureInputSize ||
+           args->scalarOutputCount || args->structureOutputSize)
+            return kIOReturnBadArgument;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        int result=ios7leo_display_power((uint32_t)args->scalarInput[0]);
+        return result==0?kIOReturnSuccess:result==2?kIOReturnBusy:kIOReturnNotReady;
+#else
+        return kIOReturnSuccess;
+#endif
+    }
+    if (selector == 1 || selector == 2 || selector == 21) {
         if (!args->structureInputSize && !args->scalarOutputCount &&
             !args->structureOutputSize)
             return kIOReturnSuccess;

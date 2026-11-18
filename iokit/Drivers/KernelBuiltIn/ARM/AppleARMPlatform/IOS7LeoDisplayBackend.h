@@ -9,6 +9,9 @@ int ios7leo_display_ready(void);
 int ios7leo_display_present(const uint8_t *pixels,uint32_t bytes,uint32_t row,
                            uint32_t format,uint64_t *completed_sequence);
 int ios7leo_display_completed(uint64_t sequence);
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+int ios7leo_display_power(uint32_t state);
+#endif
 #ifdef __cplusplus
 }
 #endif
