@@ -9,6 +9,7 @@
 #include <machine/machine_routines.h>
 #include <kern/debug.h>
 #include "i9100_timer.h"
+#include "i9100_idle_observation.h"
 
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 #define I9100_MCT_PA 0x10050000U
@@ -64,6 +65,7 @@ uint64_t clock_decrementer;
 static vm_offset_t i9100_mct, i9100_gic_dist, i9100_gic_cpu;
 volatile uint32_t i9100_idle_mct_map;
 volatile uint32_t i9100_idle_wait_diag[8]={1};
+volatile struct i9100_idle_observation i9100_idle_observation;
 static uint32_t controller_ready, timebase_ready, counter_observed, armed;
 static uint32_t last_count_lo, last_match_lo, irq_count, last_irq_counter, last_vector;
 static uint32_t spurious_irq_count;
@@ -296,7 +298,10 @@ void I9100_handle_interrupt(void *context)
     if(irq==I9100_TIMER_IRQ || (pending & 1U)){
         irq_count++;
         write_reg(i9100_mct, I9100_MCT_G_INT_CSTAT, 1U);
-        last_count_lo=(uint32_t)mct_get_frc();
+        uint64_t observed_ticks=mct_get_frc();
+        last_count_lo=(uint32_t)observed_ticks;
+        if(irq_count%100U==0)i9100_idle_publish(&i9100_idle_observation,i9100_idle_wait_diag,
+            observed_ticks,irq_count,i9100_idle_mct_map!=0);
         last_irq_counter=last_count_lo;
         write_reg(i9100_gic_cpu, I9100_GIC_CPU_EOI, ack);
         drain();
