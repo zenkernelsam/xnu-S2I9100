@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: BSD-2-Clause
  * Original read-only MMC/32-bit MSHCI bring-up, not the SD ACMD protocol.
  * Clock/power/pinmux must be established and independently verified by the
- * board owner. Never writes a sector, a card configuration byte or a key. */
+ * board owner. The existing RO path never writes a sector/configuration.
+ * Explicit writer policy permits only two current-table user-area slices. */
 #include "i9100_emmc.h"
 #include <string.h>
 #define C_START (1U<<31)
@@ -9,6 +10,7 @@
 #define C_LONG (1U<<7)
 #define C_CRC (1U<<8)
 #define C_DATA (1U<<9)
+#define C_WRITE (1U<<10)
 #define C_WAIT (1U<<13)
 #define C_STOP (1U<<14)
 #define C_INIT (1U<<15)
@@ -27,6 +29,24 @@
 #define CTRL_DMA ((1U<<5)|(1U<<25))
 static uint32_t rd(struct i9100_emmc_card *c,unsigned r){return c->io.read32(c->io.cookie,r);}
 static void wr(struct i9100_emmc_card *c,unsigned r,uint32_t v){c->io.write32(c->io.cookie,r,v);}
+static int grant_valid(struct i9100_emmc_card *c,struct i9100_emmc_write_grant *g)
+{
+ if(!c||!g||c->self!=(uintptr_t)c||g->self!=(uintptr_t)g||g->card!=(uintptr_t)c||
+    c->write_grant!=g||!g->enabled||g->generation!=c->generation||memcmp(g->cid,c->cid,sizeof(c->cid)))return I9100_EMMC_OWNER;
+ if(g->poisoned||!c->ready)return I9100_EMMC_NO_DEVICE;
+ if(c->sectors!=30777344U||(c->ext_csd[179]&7U)||c->ext_csd[183]||c->ext_csd[185]||c->ext_csd[61])return I9100_EMMC_PARTITION;
+ uint64_t base=g->partition_role==1U?344064ULL:g->partition_role==2U?3489792ULL:0ULL;
+ uint64_t span=g->partition_role==1U?3145728ULL:g->partition_role==2U?12582912ULL:0ULL;
+ if(!span||g->first_lba<base||g->first_lba>=base+span||!g->sectors||g->sectors>base+span-g->first_lba)return I9100_EMMC_PARTITION;
+ return 0;
+}
+static int write_cache_supported(struct i9100_emmc_card *c)
+{
+ if(!c->ext_csd[33])return 1;
+ uint32_t size=(uint32_t)c->ext_csd[249]|(uint32_t)c->ext_csd[250]<<8|
+  (uint32_t)c->ext_csd[251]<<16|(uint32_t)c->ext_csd[252]<<24;
+ return c->ext_csd[33]==1U&&c->ext_csd[192]>=6U&&size;
+}
 static int delay(struct i9100_emmc_card *c){return c->io.delay_us(c->io.cookie,10U)?I9100_EMMC_IO:0;}
 static int interrupt_error(struct i9100_emmc_card *c,uint32_t v)
 {
@@ -71,12 +91,24 @@ static int clock_set(struct i9100_emmc_card *c,uint32_t target)
 }
 static int command(struct i9100_emmc_card *c,unsigned cmd,uint32_t arg,uint32_t flags)
 {
- /* No general/raw-command export. This list excludes SWITCH, write,
-  * erase, trim and all boot/RPMB operations even in error recovery. */
+ /* No general/raw-command export. Writer commands have a separately
+  * current-bound capability; erase/trim/boot/RPMB remain impossible. */
+ if(cmd==24U||cmd==25U){
+  struct i9100_emmc_write_grant *g=c->write_grant;int e=grant_valid(c,g);if(e)return e;
+  uint32_t bytes=rd(c,EM_BYTCNT);uint64_t count=bytes/512U;
+  if(!(flags&C_DATA)||!(flags&C_WRITE)||!bytes||(bytes&511U)||count>I9100_EMMC_MAX_SECTORS||
+     (cmd==24U&&count!=1U)||(uint64_t)arg<g->first_lba||(uint64_t)arg>=g->first_lba+g->sectors||
+     count>g->first_lba+g->sectors-arg)return I9100_EMMC_PARTITION;
+ }else if(cmd==6U){
+  int e=grant_valid(c,c->write_grant);if(e)return e;
+  if(arg!=0x03200100U||flags!=(C_RESP|C_CRC|C_WAIT)||c->ext_csd[192]<6U||c->ext_csd[33]!=1U)
+   return I9100_EMMC_UNSUPPORTED;
+ }else
  if(cmd!=0&&cmd!=1&&cmd!=2&&cmd!=3&&cmd!=7&&cmd!=8&&cmd!=9&&cmd!=12&&cmd!=13&&cmd!=17&&cmd!=18)
   return I9100_EMMC_ARGUMENT;
  int e=wait_clear(c,EM_CMD,C_START,100000000ULL);if(e)return e;
  c->last_command=cmd;wr(c,EM_RINTSTS,0xffffffffU);wr(c,EM_CMDARG,arg);
+ if(rd(c,EM_CMDARG)!=arg)return I9100_EMMC_IO;
  wr(c,EM_CMD,C_START|flags|cmd);
  uint64_t start=c->io.now_ns(c->io.cookie);
  for(uint32_t i=0;i<c->io.poll_bound;i++){
@@ -154,11 +186,16 @@ void i9100_emmc_init(struct i9100_emmc_card *c,const struct i9100_emmc_io *io)
 {
  if(!c)return;
  memset(c,0,sizeof(*c));if(io)c->io=*io;
+ c->self=(uintptr_t)c;
 }
 int i9100_emmc_probe(struct i9100_emmc_card *c)
 {
  if(!c||!c->io.read32||!c->io.write32||!c->io.now_ns||!c->io.delay_us||
     !c->io.poll_bound||c->io.poll_bound>1000000U)return I9100_EMMC_ARGUMENT;
+ if(c->self!=(uintptr_t)c)return I9100_EMMC_OWNER;
+ if(c->write_grant)return I9100_EMMC_BUSY;
+ if(c->generation==UINT32_MAX)return I9100_EMMC_OWNER;
+ c->generation++;
  c->ready=0;c->stage=1;
  if(c->io.input_clock_hz<400000U||c->io.input_clock_hz>200000000U)
   return c->last_error=I9100_EMMC_CLOCK;
@@ -218,6 +255,7 @@ failed:
 int i9100_emmc_read(struct i9100_emmc_card *c,uint64_t lba,uint32_t count,uint8_t *out)
 {
  if(!c||!out||!count||count>I9100_EMMC_MAX_SECTORS)return I9100_EMMC_ARGUMENT;
+ if(c->self!=(uintptr_t)c)return I9100_EMMC_OWNER;
  if(!c->ready)return I9100_EMMC_NO_DEVICE;
  if(lba>=c->sectors||count>c->sectors-lba||lba>UINT32_MAX||
     (uint64_t)count-1U>UINT32_MAX-lba)return I9100_EMMC_ARGUMENT;
@@ -233,4 +271,68 @@ int i9100_emmc_read(struct i9100_emmc_card *c,uint64_t lba,uint32_t count,uint8_
  return 0;
 failed:
  c->last_error=e;c->ready=0;return e;
+}
+static int writer_failed(struct i9100_emmc_card *c,struct i9100_emmc_write_grant *g,int e)
+{
+ if(!g->first_error)g->first_error=e;g->poisoned=1;c->last_error=e;c->ready=0;return e;
+}
+static int data_write(struct i9100_emmc_card *c,struct i9100_emmc_write_grant *g,uint64_t lba,uint32_t blocks,const uint8_t *bytes)
+{
+ uint32_t ctrl=rd(c,EM_CTRL),bmod=rd(c,EM_BMOD);
+ if(ctrl==UINT32_MAX||bmod==UINT32_MAX||(ctrl&CTRL_DMA)||(bmod&(1U<<7))||rd(c,EM_IDINTEN))return I9100_EMMC_UNSUPPORTED;
+ int e=wait_clear(c,EM_STATUS,DATA_BUSY,500000000ULL);if(e)return e;
+ wr(c,EM_CTRL,rd(c,EM_CTRL)|(1U<<1));e=wait_clear(c,EM_CTRL,1U<<1,50000000ULL);if(e)return e;
+ uint32_t initial_fifo=rd(c,EM_STATUS);
+ if(initial_fifo==UINT32_MAX||FIFO_WORDS(initial_fifo)||(initial_fifo&(1U<<3)))return I9100_EMMC_IO;
+ wr(c,EM_BLKSIZ,512U);wr(c,EM_BYTCNT,blocks*512U);
+ if(rd(c,EM_BLKSIZ)!=512U||rd(c,EM_BYTCNT)!=blocks*512U)return I9100_EMMC_IO;
+ g->words_submitted=g->ciu_bytes=g->host_bytes=0;g->dirty=g->mutation_possible=1;
+ e=command(c,blocks==1U?24U:25U,(uint32_t)lba,C_RESP|C_CRC|C_DATA|C_WRITE|C_WAIT);
+ if(e)return e;if(r1(c))return I9100_EMMC_CARD_ERROR;
+ uint32_t words=blocks*128U;uint64_t start=c->io.now_ns(c->io.cookie);
+ for(uint32_t n=0;n<c->io.poll_bound;n++){
+  uint32_t irq=rd(c,EM_RINTSTS);e=interrupt_error(c,irq);if(e)return e;
+  uint32_t status=rd(c,EM_STATUS);c->last_status=status;
+  if(status==UINT32_MAX)return I9100_EMMC_IO;
+  if(irq&I_DATA_DONE){
+   g->ciu_bytes=rd(c,EM_TCBCNT);g->host_bytes=rd(c,EM_TBBCNT);
+   if(g->words_submitted!=words||g->ciu_bytes!=blocks*512U||g->host_bytes!=blocks*512U||FIFO_WORDS(status))return I9100_EMMC_IO;
+   wr(c,EM_RINTSTS,I_DATA_DONE|(1U<<4));return 0;
+  }
+  /* FIFO full is an actual boundary; no assumed depth or speculative burst. */
+  if(g->words_submitted<words&&!(status&(1U<<3))){
+   uint32_t at=g->words_submitted*4U,value=(uint32_t)bytes[at]|(uint32_t)bytes[at+1]<<8|
+     (uint32_t)bytes[at+2]<<16|(uint32_t)bytes[at+3]<<24;
+   wr(c,EM_DATA,value);g->words_submitted++;
+  }
+  uint64_t now=c->io.now_ns(c->io.cookie);if(now<start||now-start>=500000000ULL)return I9100_EMMC_TIMEOUT;
+  if(delay(c))return I9100_EMMC_IO;
+ }return I9100_EMMC_TIMEOUT;
+}
+int i9100_emmc_write(struct i9100_emmc_card *c,struct i9100_emmc_write_grant *g,uint64_t lba,uint32_t count,const uint8_t *bytes)
+{
+ if(!bytes||!count||count>I9100_EMMC_MAX_SECTORS)return I9100_EMMC_ARGUMENT;
+ int e=grant_valid(c,g);if(e)return e;
+ if(lba<g->first_lba||lba>=g->first_lba+g->sectors||count>g->first_lba+g->sectors-lba||
+    lba>UINT32_MAX||(uint64_t)count-1U>UINT32_MAX-lba)return I9100_EMMC_PARTITION;
+ if(!write_cache_supported(c))return I9100_EMMC_UNSUPPORTED;
+ e=ready_transfer(c);if(e)return writer_failed(c,g,e);
+ e=data_write(c,g,lba,count,bytes);if(e)return writer_failed(c,g,e);
+ if(count>1U){e=command(c,12U,0,C_RESP|C_CRC|C_STOP);if(e)return writer_failed(c,g,e);if(r1(c))return writer_failed(c,g,I9100_EMMC_CARD_ERROR);}
+ e=ready_transfer(c);if(e)return writer_failed(c,g,e);
+ g->completed_sectors=UINT64_MAX-g->completed_sectors<count?UINT64_MAX:g->completed_sectors+count;
+ return 0;
+}
+int i9100_emmc_synchronize(struct i9100_emmc_card *c,struct i9100_emmc_write_grant *g)
+{
+ int e=grant_valid(c,g);if(e)return e;
+ if(!write_cache_supported(c))return I9100_EMMC_UNSUPPORTED;
+ e=ready_transfer(c);if(e)return writer_failed(c,g,e);
+ if(c->ext_csd[33]){
+  e=command(c,6U,0x03200100U,C_RESP|C_CRC|C_WAIT);if(e)return writer_failed(c,g,e);
+  if(r1(c))return writer_failed(c,g,I9100_EMMC_CARD_ERROR);
+  e=ready_transfer(c);if(e)return writer_failed(c,g,e);
+ }
+ if(FIFO_WORDS(rd(c,EM_STATUS))||(rd(c,EM_STATUS)&DATA_BUSY))return writer_failed(c,g,I9100_EMMC_BUSY);
+ g->dirty=0;if(g->syncs!=UINT32_MAX)g->syncs++;return 0;
 }

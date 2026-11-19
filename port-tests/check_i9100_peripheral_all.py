@@ -23,7 +23,7 @@ C_SOURCES = [
     "i9100_mc1n2.c", "i9100_pcm_stream.c", "i9100_sdio.c", "i9100_bcm4330.c", "i9100_bluetooth_h4.c",
     "i9100_camera_protocol.c", "i9100_mfc.c", "i9100_mfc_layout.c", "i9100_video_layout.c",
     "i9100_camera_engine_io.c", "i9100_csis.c", "i9100_fimc.c",
-    "i9100_sysmmu.c", "i9100_modem_sipc4.c", "i9100_emmc.c", "i9100_emmc_layout.c",
+    "i9100_sysmmu.c", "i9100_modem_sipc4.c", "i9100_emmc.c", "i9100_emmc_layout.c", "i9100_emmc_writer.c",
     "i9100_uart_bluetooth.c", "i9100_pwm_haptic.c",
     "i9100_bcm_f2.c", "i9100_audio_power.c", "i9100_irq_router.c", "i9100_pcm_ring.c", "i9100_bcm_chip.c",
     "i9100_bcm_firmware.c", "i9100_bcm_firmware_crypto.c",
@@ -42,6 +42,7 @@ C_SOURCES = [
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
                "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_sensor_worker.cpp", "i9100_haptic_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp", "IOS6I9100AudioPCM.cpp", "i9100_pl330_ring_native.cpp", "i9100_pl330_ring_mmio.cpp", "i9100_audio_gated.cpp", "i9100_sensor_hid.cpp", "i9100_sensor_hid_endpoint.cpp", "i9100_bt_worker.cpp", "i9100_bt_control.cpp", "i9100_camera_native.cpp", "i9100_camera_mmio.cpp", "i9100_mfc_native.cpp"]
 TESTS = [
+    ("i9100_emmc_writer_test.c", ["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c"]),
     ("i9100_mfc_native_test.cpp", ["i9100_mfc.c","i9100_mfc_layout.c","i9100_dma_guard.c",
         "i9100_mfc_native.cpp","i9100_camera_mmio.cpp"]),
     ("i9100_camera_capture_test.c", ["i9100_camera_engine_io.c","i9100_csis.c","i9100_fimc.c",
@@ -226,7 +227,18 @@ def main():
                     hashlib.sha256((REPO/"userland/audio"/name).read_bytes()).hexdigest()!=sha for name,sha in captured.items()):
                     raise RuntimeError("Pdev input changed during the model")
             else:
-                e.model(test, sources, libraries=["crypto"] if test in ("i9100_bcm_firmware_test.c","i9100_bcm_core_download_test.c","i9100_bcm_boot_test.c","i9100_bcm_pump_test.c","i9100_bt_boot_test.c","i9100_bt_probe_test.c","i9100_bt_host_reset_test.c","i9100_bt_baud_test.c","i9100_camera_mfc_test.c") else ())
+                if test=="i9100_emmc_writer_test.c":
+                    historical=ROOT/"assets/i9100-backup/mmcblk0-head1mb.img"
+                    digest=hashlib.sha256(historical.read_bytes()).hexdigest()
+                    if digest!="879334a928bbffffc67d57b584906c03bee10f1310a88a0f1362fc6dfb3724ef":
+                        raise RuntimeError("Historical primary GPT/PIT changed")
+                    e.run(["clang","-std=c99","-O1","-Wall","-Wextra","-Werror","-fno-pie","-no-pie",
+                        "-fsanitize=address,undefined","-fno-sanitize-recover=all","-I"+str(PLATFORM),
+                        str(REPO/"port-tests"/test),*[str(PLATFORM/name) for name in sources],"-o",str(folder/"models")],"compile-writer-models")
+                    e.run([str(folder/"models"),str(historical)],"writer-model-tests")
+                    e.result["writer_historical_primary_sha256"]=digest
+                else:
+                    e.model(test, sources, libraries=["crypto"] if test in ("i9100_bcm_firmware_test.c","i9100_bcm_core_download_test.c","i9100_bcm_boot_test.c","i9100_bcm_pump_test.c","i9100_bt_boot_test.c","i9100_bt_probe_test.c","i9100_bt_host_reset_test.c","i9100_bt_baud_test.c","i9100_camera_mfc_test.c") else ())
             e.out = previous
         e.result["model_suites"] = [name for name, _ in selected]
         e.result["audio_model_fixtures_sha256"] = {

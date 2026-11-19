@@ -47,6 +47,7 @@ def main():
     p.add_argument("--references", type=Path, required=True)
     p.add_argument("--patch-check", type=Path, required=True)
     p.add_argument("--firmware-check", type=Path, help="Audit default-unreviewed MFC preparation against actual core output")
+    p.add_argument("--include-emmc", action="store_true", help="Also bind the lower writer and paired RO device objects to current source")
     a = p.parse_args()
     e = Evidence("camera-delivery")
     e.wait_idle_seconds = 60
@@ -67,6 +68,9 @@ def main():
         for name, expected in m.get("extra_facade_headers", {}).items():
             if sha(REPO / name) != expected:
                 raise RuntimeError("Extra host allocation/PTE facade changed")
+        for name, expected in m.get("nested_fixtures", {}).items():
+            if sha(REPO / "port-tests" / name) != expected:
+                raise RuntimeError("Nested model fixture changed")
         if m.get("host_source_override"):
             override = m["host_source_override"]
             if sha(PLATFORM / "i9100_dma_native.cpp") != override["original_sha256"] or sha(folder / "i9100_dma_native.cpp") != override["copy_sha256"]:
@@ -100,6 +104,8 @@ def main():
               and name != "i9100_camera_protocol.c"}
     if "i9100_mfc_native.cpp" in names:
         needed.add("i9100_dma_native.cpp")
+    if a.include_emmc:
+        needed.update(("i9100_emmc.c", "i9100_emmc_writer.c", "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp"))
     for _ in range(32):
         if cursor in seen:
             raise RuntimeError("Cyclic complete reference")

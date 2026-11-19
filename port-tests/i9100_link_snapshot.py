@@ -2,6 +2,7 @@
 """Freeze retained link inputs under the caller's out, never edit shared BUILD."""
 import hashlib
 import json
+import re
 from pathlib import Path
 from i9100_offline_build import REPO,ROOT
 
@@ -21,7 +22,14 @@ def freeze(paths,output):
             if not source.is_relative_to(ROOT.resolve()) or not source.is_file():
                 raise RuntimeError("Link input is missing or outside the project: "+str(source))
             data=source.read_bytes()
-            target=output/(str(index).zfill(4)+"-"+source.name)
+            # Repeated milestones can freeze an already frozen object. Keep
+            # a single index prefix instead of eventually overflowing the
+            # filesystem component limit; source provenance stays complete
+            # in snapshot.json and every object is still byte/SHA checked.
+            basename=re.sub(r"^(?:[0-9]{4}-)+","",source.name)
+            if not basename:
+                raise RuntimeError("Frozen input has no object basename")
+            target=output/(str(index).zfill(4)+"-"+basename)
             target.write_bytes(data)
             record=dict(source=str(source.relative_to(ROOT.resolve())),frozen=str(target.relative_to(ROOT.resolve())),
                         bytes=len(data),sha256=sha(data))

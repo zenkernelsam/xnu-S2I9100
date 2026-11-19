@@ -35,6 +35,19 @@ try:
 except RuntimeError:
     pass
 assert json.loads((out/"raced/snapshot.json").read_text())["result"]=="INCOMPLETE"
+deep=out/(("0636-"*40)+"IOFilterInterruptEventSource.cpo")
+deep.write_bytes(b"stable object bytes")
+previous=[deep]
+for index in range(64):
+    previous,copied=freeze(previous,out/("repeat-"+str(index)))
+    assert Path(previous[0]).name=="0000-IOFilterInterruptEventSource.cpo"
+    assert verify(copied)[0]["bytes"]==len(b"stable object bytes")
+    assert Path(previous[0]).read_bytes()==b"stable object bytes"
+duplicate0=out/"0012-duplicate.o";duplicate1=out/"duplicate.o"
+duplicate0.write_bytes(b"first unique index");duplicate1.write_bytes(b"second unique index")
+distinct,distinct_manifest=freeze([duplicate0,duplicate1],out/"duplicate-basenames")
+assert Path(distinct[0]).name=="0000-duplicate.o" and Path(distinct[1]).name=="0001-duplicate.o"
+assert verify(distinct_manifest)[0]["sha256"]!=verify(distinct_manifest)[1]["sha256"]
 (out/"result.json").write_text(json.dumps(dict(result="PASS",hardware_tested=False,
-    coverage="live source changes cannot alter frozen bytes; copied-object corruption and copy-time races are rejected"),indent=2)+"\n")
+    coverage="live source changes cannot alter frozen bytes; corruption/races rejected; 64 refreezes stay short with full provenance and distinct equal basenames"),indent=2)+"\n")
 print("PASS real link-input snapshot change/race checks, evidence retained",out)
