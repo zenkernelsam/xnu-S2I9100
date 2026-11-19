@@ -76,8 +76,10 @@ static int i9100_panel_spi_word(struct i9100_panel_spi *s,unsigned word)
  for(int bit=8;bit>=0;--bit){
   i9100_panel_spi_bit(s,3,I9P_CLK,0);
   i9100_panel_spi_bit(s,3,I9P_SI,(word>>(unsigned)bit)&1U);
+  if(s->error){(void)i9100_panel_spi_finish(s);return 0;}
   s->io.delay_us(s->io.cookie,1);
   i9100_panel_spi_bit(s,3,I9P_CLK,1);s->io.delay_us(s->io.cookie,1);
+  if(s->error){(void)i9100_panel_spi_finish(s);return 0;}
  }
  return i9100_panel_spi_finish(s);
 }
@@ -87,8 +89,10 @@ static int i9100_panel_spi_read_byte(struct i9100_panel_spi *s,unsigned command,
  for(int bit=8;bit>=0;--bit){
   i9100_panel_spi_bit(s,3,I9P_CLK,0);
   i9100_panel_spi_bit(s,3,I9P_SI,(command>>(unsigned)bit)&1U);
+  if(s->error){(void)i9100_panel_spi_finish(s);return 0;}
   s->io.delay_us(s->io.cookie,1);
   i9100_panel_spi_bit(s,3,I9P_CLK,1);s->io.delay_us(s->io.cookie,1);
+  if(s->error){(void)i9100_panel_spi_finish(s);return 0;}
  }
  i9100_panel_spi_si_mode(s,0);s->io.delay_us(s->io.cookie,1);
  if(s->error){(void)i9100_panel_spi_finish(s);return 0;}
@@ -96,6 +100,7 @@ static int i9100_panel_spi_read_byte(struct i9100_panel_spi *s,unsigned command,
  for(unsigned bit=0;bit<16;bit++){
   i9100_panel_spi_bit(s,3,I9P_CLK,0);s->io.delay_us(s->io.cookie,1);
   i9100_panel_spi_bit(s,3,I9P_CLK,1);s->io.delay_us(s->io.cookie,1);
+  if(s->error){(void)i9100_panel_spi_finish(s);return 0;}
   if(bit>=8)value=(uint8_t)((value<<1)|((s->io.read(s->io.cookie,0x184U)>>3)&1U));
  }
  if(!i9100_panel_spi_finish(s))return 0;*out=value;return 1;
