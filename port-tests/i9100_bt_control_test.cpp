@@ -50,9 +50,9 @@ extern "C" int __wrap_i9100_bt_worker_stream_open(i9100_bt_worker *w,const void 
   assert(!worker_status().fault&&worker_status().stream.rx_queued==4U&&socket_rx.empty());}return e;}
 static mbuf_t fragment(const uint8_t *p,unsigned bytes,mbuf_t next=nullptr)
 {return new i9100_model_mbuf{next,std::vector<uint8_t>(p,p+bytes)};}
-static void control_setup(i9100_peripheral_native **c,i9100_radio_native **r)
+static void control_setup(i9100_peripheral_native **c,i9100_radio_native **r,unsigned host_reset=0)
 {
- start_context(c,r);auto p=wp();assert(!i9100_bt_worker_create(1,*r,&p,firmware,sizeof(firmware),&integrity,&output,&worker));
+ start_context(c,r);auto p=wp();p.allow_host_reset=host_reset;assert(!i9100_bt_worker_create(1,*r,&p,firmware,sizeof(firmware),&integrity,&output,&worker));
  register_error=deregister_error=enqueue_busy=copy_error=mbufs_freed=0;current_pid=35;current_unique=12345;current_uid=501;current_name="BTServer";wrong_uuid=connect_rx_race=false;socket_rx.clear();
 }
 static void ready_control()
@@ -66,6 +66,33 @@ static void native_attributes(void *token,const char *name,int expected)
  for(unsigned n=0;n<44;n++){char pair[3]={hex[2*n],hex[2*n+1],0};char *end=nullptr;
   unsigned long value=strtoul(pair,&end,16);assert(end==pair+2&&value<=255U);raw[n]=(uint8_t)value;}
  assert(registration.ctl_setopt(&registration,1,token,0x802c7414,raw,44)==expected);
+}
+static void native_reset_handoff(i9100_peripheral_native *&c,i9100_radio_native *&r)
+{
+ control_setup(&c,&r,1);assert(!i9100_bt_control_create(1,worker,&control));ready_control();
+ auto a=address();void *token=nullptr;assert(!registration.ctl_connect(&registration,&a,&token));kernel_connections=1;
+ peer.post_reset_packets=3;peer.post_reset_mtu=512;
+ uint8_t request[]={1,3,0x0c,0};const char *hex=getenv("I9100_BT_RESET_REQUEST_HEX");
+ if(hex){assert(strlen(hex)==8U);for(unsigned n=0;n<4;n++){char pair[3]={hex[2*n],hex[2*n+1],0};request[n]=(uint8_t)strtoul(pair,nullptr,16);}}
+ assert(!memcmp(request,"\1\3\14\0",4));unsigned before=peer.commands;uint64_t started=ns;
+ auto m=fragment(request,2,fragment(request+2,2));assert(!registration.ctl_send(&registration,1,token,m,0));
+ ns++;bt_loop->tick();assert(peer.commands==before+1U&&!worker_status().ready&&socket_rx.empty());
+ m=fragment(request,4);assert(registration.ctl_send(&registration,1,token,m,0)==EWOULDBLOCK&&peer.commands==before+1);
+ ns++;bt_loop->tick();assert(worker_status().boot.protocol_epoch==2U&&!worker_status().acl_ready&&socket_rx.empty());
+ for(unsigned n=0;n<150U&&!worker_status().ready;n++){ns+=1000000;bt_loop->tick();}
+ auto state=worker_status();assert(state.ready&&state.acl_ready&&state.acl.protocol_epoch==2&&state.acl.available[0]==3);
+ const uint8_t actual[]={4,0x0e,4,1,3,0x0c,0};
+ assert(socket_rx.size()==7U&&!memcmp(socket_rx.data(),actual,7)&&peer.commands==before+6U&&state.boot.generation==1);
+ assert(ns-started<1500000000ULL&&state.boot.host_reset_confirmed==1U);
+ const char *directory=getenv("I9100_BT_HANDOFF_OUTPUT");if(directory){char name[1024];
+  int n=snprintf(name,sizeof(name),"%s/native-handoff.json",directory);assert(n>0&&(unsigned)n<sizeof(name));FILE *f=fopen(name,"w");assert(f);
+  fprintf(f,"{\"schema\":1,\"kind\":\"i9100-bt-native-handoff\",\"result\":\"PASS\",\"model_fixture\":true,\"hardware_tested\":false,\"request_hex\":\"%02x%02x%02x%02x\",\"reply_hex\":\"",request[0],request[1],request[2],request[3]);
+  for(uint8_t byte:socket_rx)fprintf(f,"%02x",byte);
+  fprintf(f,"\",\"commands\":%u,\"elapsed_ns\":%llu,\"physical_generation\":%u,\"protocol_epoch\":%u,\"acl_mtu\":%u,\"acl_packets\":%u}\n",peer.commands-before,
+   (unsigned long long)(ns-started),state.boot.generation,state.acl.protocol_epoch,state.acl.mtu[0],state.acl.packets[0]);
+  assert(!fclose(f));}
+ assert(!registration.ctl_disconnect(&registration,1,token));kernel_connections=0;
+ assert(!i9100_bt_control_destroy(&control)&&!control);finish_worker(c,r);
 }
 int main()
 {
@@ -115,5 +142,6 @@ int main()
   control_setup(&c,&r);fail_alloc=allocations+point;
   assert(i9100_bt_control_create(1,worker,&control)==I9100_BTS_IO&&!control&&!kernel_registered);fail_alloc=0;finish_worker(c,r);
  }
+ native_reset_handoff(c,r);
  puts("PASS actual kernel-control callbacks through actual worker/UART/H4:mobile BTServer identity,unique pid,44B options,mbuf fragments,real bytes/backpressure,client death/failed quiesce,registration/allocation/deregistration cleanup; BSD/socket/electrical facades");return 0;
 }

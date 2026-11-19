@@ -30,6 +30,7 @@ def main():
     p.add_argument('--kernel',type=Path,required=True);p.add_argument('--hcd-test',type=Path,required=True)
     p.add_argument('--controller-proof-test',type=Path,help='Verify raw ROM/patched exporter and retained model provenance')
     p.add_argument('--btserver-native',type=Path,help='Audit original BTServer ARM configuration execution evidence')
+    p.add_argument('--bt-reset-native',type=Path,help='Audit original H4 Reset and actual native-worker reply decoding')
     a=p.parse_args()
     e=Evidence('bt-delivery');e.wait_idle_seconds=60
     models={}
@@ -54,6 +55,14 @@ def main():
             item=m['btserver_native'];native_path=(ROOT/item['path']).resolve()
             if not native_path.is_relative_to(ROOT/'uniloader-S2I9100/out') or sha(native_path/'native-btserver.json')!=item['sha256']:
                 raise RuntimeError('Native ARM-to-control callback evidence changed')
+        if m.get('bt_reset_native'):
+            item=m['bt_reset_native'];native_path=(ROOT/item['path']).resolve()
+            if not native_path.is_relative_to(ROOT/'uniloader-S2I9100/out') or sha(native_path/'native-reset.json')!=item['sha256']:
+                raise RuntimeError('Native Reset input evidence changed')
+        if m.get('native_handoff_sha256'):
+            emitted=path/'native-handoff.json'
+            if sha(emitted)!=m['native_handoff_sha256'] or json.loads(emitted.read_text()).get('model_fixture') is not True:
+                raise RuntimeError('Actual modeled Reset output changed or lost attribution')
         models[str(path.relative_to(ROOT))]=sha(path/'manifest.json')
     kernel_path,kernel=retained(a.kernel)
     if not kernel.get('complete_kernel_link') or sha(kernel_path/'mach_kernel.sys')!=kernel['linked_kernel_sha256']:
@@ -97,6 +106,26 @@ def main():
         for name,key in (('verify-ios6-btserver.py','verifier_sha256'),('research-ios6-btserver.py','analyzer_sha256')):
             if sha(loader/'scripts/i9100'/name)!=proof[key]:raise RuntimeError('Original native verifier changed')
         native_proof=dict(path=str(native.relative_to(ROOT)),sha256=sha(native/'native-btserver.json'))
+    reset_proof=None
+    if a.bt_reset_native:
+        native=a.bt_reset_native.resolve()
+        if not native.is_relative_to(loader/'out'):raise RuntimeError('Reset proof escaped loader out')
+        proof=json.loads((native/'native-reset.json').read_text())
+        if proof.get('result')!='PASS' or proof.get('hardware_tested') is not False or proof.get('device_contacted') is not False:
+            raise RuntimeError('Reset execution proof is incomplete')
+        if sha(loader/'scripts/i9100/verify-ios6-bt-reset.py')!=proof['verifier_sha256']:
+            raise RuntimeError('Actual Reset verifier changed')
+        for name,key in [('verify-ios6-btserver.py','uart_verifier'),('research-ios6-btserver.py','macho_analyzer')]:
+            if sha(loader/'scripts/i9100'/name)!=proof['dependencies'][key]:raise RuntimeError('Reset decoder dependency changed')
+        handoff=proof.get('handoff')
+        if not handoff or not handoff['original_reset_completed']:raise RuntimeError('Original decoder never consumed actual native worker output')
+        path,manifest=retained(ROOT/handoff['path'])
+        if sha(path/'manifest.json')!=handoff['manifest_sha256'] or sha(path/'native-handoff.json')!=handoff['emitted_sha256']:
+            raise RuntimeError('Reset handoff bytes/producer changed')
+        if manifest['native_model_sha256']!=sha(REPO/'port-tests'/manifest['native_model']):raise RuntimeError('Actual Reset model fixture changed')
+        for name,digest in manifest['sources'].items():
+            if sha(PLATFORM/name)!=digest:raise RuntimeError('Actual Reset producer changed: '+name)
+        reset_proof=dict(path=str(native.relative_to(ROOT)),sha256=sha(native/'native-reset.json'),handoff=handoff)
     tree=loader/'out'/e.out.name/'builder-copy';target=tree/'scripts/i9100/prepare-automation.py';target.parent.mkdir(parents=True);target.write_bytes(source.read_bytes())
     e.run(['git','apply','--check',str(patch)],'loader-live-apply-check',cwd=loader)
     e.run(['git','apply','--directory='+str(tree.relative_to(loader)),str(patch)],'loader-copy-apply',cwd=loader)
@@ -104,7 +133,7 @@ def main():
     if lists!=[objects] or sha(source)!=record['source_sha256']:raise RuntimeError('Patched builder AST/live source changed')
     e.result.update(model_proofs=models,validated_kernel=dict(path=str(kernel_path.relative_to(ROOT)),bytes=kernel['kernel_bytes'],sha256=kernel['linked_kernel_sha256'],objects=kernel['total_link_objects'],peripherals=len(inventory)),
         loader_source_sha256=record['source_sha256'],loader_patch_sha256=record['patch_sha256'],hcd_fixture=str(hcd.relative_to(ROOT)),
-        controller_proof_fixture=controller_proof,btserver_native=native_proof,live_builder_modified=False)
+        controller_proof_fixture=controller_proof,btserver_native=native_proof,bt_reset_native=reset_proof,live_builder_modified=False)
     e.finish([], 'Current H4/probe/bootstrap/ACL/native-worker proof, frozen full kernel, HCD/controller export fixtures and live/copied opt-in object inventory; no device/radio/flash')
 
 

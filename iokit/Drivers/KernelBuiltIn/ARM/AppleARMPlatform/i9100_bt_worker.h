@@ -14,6 +14,7 @@ struct i9100_bt_worker;
 struct i9100_bt_worker_profile {
  struct i9100_bt_boot_profile controller;
  uint32_t verified_uart_clock_hz,poll_us;enum i9100_uart_fraction fraction;
+ uint32_t allow_host_reset;
 };
 struct i9100_bt_probe_worker_profile {
  uint32_t verified_uart_clock_hz,poll_us,timeout_ms;enum i9100_uart_fraction fraction;
@@ -72,6 +73,10 @@ int i9100_bt_worker_destroy(struct i9100_bt_worker **);
  * while socket callbacks exist. Complete runtime frames go to one client only,
  * never to both original kernel consumer and socket. Disconnect closes the
  * stream and quiesces this physical generation; no silent reconnect/reset.
+ * allow_host_reset is a separately default-OFF configuration selected before
+ * bootstrap. A sole idle host Reset is sent once; the genuine completion is
+ * delivered after real identity/buffer/feature requalification and ACL epoch
+ * update. Physical supply generation, holds, HCD and nominal baud are retained.
  */
 #ifdef __cplusplus
 }

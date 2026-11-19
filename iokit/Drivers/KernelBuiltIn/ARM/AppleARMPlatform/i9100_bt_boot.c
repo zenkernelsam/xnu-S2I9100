@@ -70,7 +70,10 @@ static int verify(struct i9100_bt_boot *b)
  uint64_t at=b->io.h4.now_ns(b->io.h4.cookie);
  if(at<b->status.last_ns)return fail(b,I9100_BT_BOOT_CLOCK);
  b->status.last_ns=at;
- if(!b->status.ready&&b->status.phase!=I9100_BT_BOOT_PREPARED&&at-b->status.started_ns>(uint64_t)b->profile.timeout_ms*1000000ULL)return fail(b,I9100_BT_BOOT_TIMEOUT);
+ if(b->status.host_reset_active&&(at<b->status.host_reset_started_ns||at-b->status.host_reset_started_ns>1500000000ULL))
+  return fail(b,I9100_BT_BOOT_TIMEOUT); /* Original H4 reset has a2s timer; leave time for socket RX. */
+ uint64_t started=b->status.host_reset_active?b->status.host_reset_started_ns:b->status.started_ns;
+ if(!b->status.ready&&b->status.phase!=I9100_BT_BOOT_PREPARED&&at-started>(uint64_t)b->profile.timeout_ms*1000000ULL)return fail(b,I9100_BT_BOOT_TIMEOUT);
  return 0;
 }
 static int same_time_link(struct i9100_bt_boot *b)
@@ -118,11 +121,57 @@ static int same_version(const struct i9100_bt_version *a,const struct i9100_bt_v
 static int complete(struct i9100_bt_boot *b,const struct i9100_bt_frame *f)
 {
  int state=verify(b);if(state)return state;
+ if(b->status.phase==I9100_BT_BOOT_HOST_RESET&&f->type==4U&&f->length==6U&&f->bytes[0]==0x0eU&&
+    f->bytes[1]==4U&&u16(f->bytes+3)==0x0c03U){memcpy(b->status.host_reset_complete_raw,f->bytes,6);b->status.host_reset_reply_seen=1U;}
  if(f->type!=4U||f->length<6U||f->bytes[0]!=0x0eU||f->bytes[1]+2U!=f->length||
     u16(f->bytes+3)!=b->status.pending_opcode||f->bytes[5])return fail(b,I9100_BT_FRAME);
  const uint8_t *rp=f->bytes+5;unsigned bytes=f->length-5U;uint32_t phase=b->status.phase;
  b->status.pending_opcode=0;
  switch(phase){
+ case I9100_BT_BOOT_HOST_RESET:
+  if(bytes!=1U||b->status.protocol_epoch==UINT32_MAX)return fail(b,I9100_BT_FRAME);
+  b->status.protocol_epoch++;if(b->status.host_reset_confirmed!=UINT32_MAX)b->status.host_reset_confirmed++;
+  b->status.host_reset_valid_fields=32U;memcpy(b->status.host_reset_complete_raw,f->bytes,6);
+  b->status.acl_mtu=b->status.acl_packets=b->status.sco_mtu=b->status.sco_packets=0;
+  b->status.le_buffers_valid=b->status.le_mtu=b->status.le_packets=0;memset(b->status.features,0,8);
+  if(b->status.last_ns>UINT64_MAX-100000000ULL)return fail(b,I9100_BT_BOOT_CLOCK);
+  delay(b,I9100_BT_BOOT_HOST_RESET_DELAY,100);return 0;
+ case I9100_BT_BOOT_HOST_VERSION:
+  if(bytes!=9U)return fail(b,I9100_BT_FRAME);
+  b->status.observed_patched=version(rp);
+  if(!same_version(&b->status.observed_patched,&b->profile.patched))return fail(b,I9100_BT_BOOT_ID);
+  b->status.host_reset_valid_fields|=1U;return send(b,I9100_BT_BOOT_HOST_ADDRESS,0x1009U,0,0);
+ case I9100_BT_BOOT_HOST_ADDRESS:
+  if(bytes!=7U||!address_valid(rp+1)||memcmp(rp+1,b->profile.factory_bdaddr_hci,6))return fail(b,I9100_BT_BOOT_ID);
+  memcpy(b->status.address,rp+1,6);b->status.host_reset_valid_fields|=2U;
+  return send(b,I9100_BT_BOOT_HOST_BUFFER,0x1005U,0,0);
+ case I9100_BT_BOOT_HOST_BUFFER:
+  if(bytes!=8U)return fail(b,I9100_BT_FRAME);
+  b->status.acl_mtu=u16(rp+1);b->status.sco_mtu=rp[3];b->status.acl_packets=u16(rp+4);b->status.sco_packets=u16(rp+6);
+  if(!b->status.acl_mtu||b->status.acl_mtu>4096U||!b->status.acl_packets)return fail(b,I9100_BT_BOOT_ID);
+  b->status.host_reset_valid_fields|=4U;return send(b,I9100_BT_BOOT_HOST_FEATURES,0x1003U,0,0);
+ case I9100_BT_BOOT_HOST_FEATURES:
+  if(bytes!=9U)return fail(b,I9100_BT_FRAME);memcpy(b->status.features,rp+1,8);b->status.host_reset_valid_fields|=8U;
+  if(b->status.features[4]&0x40U)return send(b,I9100_BT_BOOT_HOST_LE_BUFFER,0x2002U,0,0);
+  {uint8_t off=0;return send(b,I9100_BT_BOOT_HOST_SCAN_OFF,0x0c1aU,&off,1);}
+ case I9100_BT_BOOT_HOST_LE_BUFFER:
+  if(bytes!=4U)return fail(b,I9100_BT_FRAME);b->status.le_mtu=u16(rp+1);b->status.le_packets=rp[3];
+  if((!b->status.le_mtu)!=(!b->status.le_packets)||b->status.le_mtu>4096U)return fail(b,I9100_BT_BOOT_ID);
+  b->status.le_buffers_valid=1;b->status.host_reset_valid_fields|=16U;
+  {uint8_t off=0;return send(b,I9100_BT_BOOT_HOST_SCAN_OFF,0x0c1aU,&off,1);}
+ case I9100_BT_BOOT_HOST_SCAN_OFF:
+  if(bytes!=1U||!(b->status.host_reset_valid_fields&32U)||
+     (b->status.host_reset_valid_fields&15U)!=15U)return fail(b,I9100_BT_FRAME);
+  /* The host sees original Complete/credit bytes. Internal identity reads
+   * must not leave a different command-credit state behind that transcript. */
+  if(b->h4.credits!=(b->status.host_credit_present?b->status.host_credit_complete_raw[2]:b->status.host_reset_complete_raw[2]))
+   return fail(b,I9100_BT_BOOT_ID);
+  b->status.ready=1;b->status.host_reset_active=0;b->status.phase=I9100_BT_BOOT_READY;
+  {struct i9100_bt_frame actual={4,b->status.host_reset_complete_raw,6};
+   if(b->io.receive(b->io.cookie,&actual))return fail(b,I9100_BT_BOOT_IO);
+   if(b->status.host_credit_present){struct i9100_bt_frame credit={4,b->status.host_credit_complete_raw,5};
+    if(b->io.receive(b->io.cookie,&credit))return fail(b,I9100_BT_BOOT_IO);}
+   return 0;}
  case I9100_BT_BOOT_RESET:
  case I9100_BT_BOOT_POST_RESET:
   if(bytes!=1U)return fail(b,I9100_BT_FRAME);
@@ -188,7 +237,7 @@ int i9100_bt_boot_init(struct i9100_bt_boot *b,int enabled,const struct i9100_bt
   at+=length;
  }
  memset(b,0,sizeof(*b));b->profile=*p;b->io=*io;b->hcd=hcd;b->hcd_bytes=bytes;b->index=index;b->self=(uintptr_t)b;
- b->status.initialized=b->status.enabled=1;b->status.records=records;b->status.generation=generation;b->status.phase=I9100_BT_BOOT_PREPARED;
+ b->status.initialized=b->status.enabled=1;b->status.records=records;b->status.generation=generation;b->status.protocol_epoch=1U;b->status.phase=I9100_BT_BOOT_PREPARED;
  b->optional_minidrv=u16(hcd)==0xfc2eU;b->status.record_index=b->optional_minidrv;
  b->record_cursor=b->optional_minidrv?3U:0U;
  struct i9100_bt_io guarded={b,guarded_lock,guarded_unlock,guarded_write,guarded_quiesce,guarded_time};
@@ -207,6 +256,7 @@ static int advance_delay(struct i9100_bt_boot *b)
 {
  if(b->status.last_ns<b->status.delay_until_ns)return 0;
  switch(b->status.phase){
+ case I9100_BT_BOOT_HOST_RESET_DELAY:return send(b,I9100_BT_BOOT_HOST_VERSION,0x1001U,0,0);
  case I9100_BT_BOOT_RESET_DELAY:return send(b,I9100_BT_BOOT_ROM_VERSION,0x1001U,0,0);
  case I9100_BT_BOOT_MINIDRV_DELAY:return next_record(b);
  case I9100_BT_BOOT_LAUNCH_DELAY:return send(b,I9100_BT_BOOT_POST_RESET,0x0c03U,0,0);
@@ -232,7 +282,7 @@ int i9100_bt_boot_step(struct i9100_bt_boot *b,unsigned budget)
   struct i9100_bt_frame frame={0};unsigned consumed=0;
   e=i9100_bt_feed(&b->h4,b->rx+b->rx_offset,b->rx_used-b->rx_offset,&consumed,&frame);b->rx_offset+=consumed;bytes_seen+=consumed;
   if(!consumed||b->rx_offset>b->rx_used)return fail(b,I9100_BT_FRAME);
-  if(e<0&&!(b->status.ready&&e==I9100_BT_CONTROLLER&&frame.bytes))return fail(b,e);
+  if(e<0&&!(e==I9100_BT_CONTROLLER&&frame.bytes&&(b->status.ready||b->status.phase==I9100_BT_BOOT_HOST_RESET)))return fail(b,e);
   if(!frame.bytes)continue;frames++;if(b->status.rx_packets!=UINT32_MAX)b->status.rx_packets++;
   if(b->status.ready){if(frame.type==4U&&frame.bytes[0]==0x10U)return fail(b,I9100_BT_CONTROLLER);
    if(e==I9100_BT_CONTROLLER){if(b->status.controller_errors!=UINT32_MAX)b->status.controller_errors++;}
@@ -241,10 +291,13 @@ int i9100_bt_boot_step(struct i9100_bt_boot *b,unsigned budget)
   }
   else if(frame.type==4U&&frame.bytes[0]==0x0eU&&frame.length==5U&&!u16(frame.bytes+3)){
    /* HCI's opcode-zero COMMAND_COMPLETE only replenishes command credits. */
+   if(b->status.host_reset_active&&(b->status.host_reset_valid_fields&32U)){
+    memcpy(b->status.host_credit_complete_raw,frame.bytes,5);b->status.host_credit_present=1U;}
   }else if(frame.type==4U&&(frame.bytes[0]==0x0eU||frame.bytes[0]==0x0fU)){
    e=complete(b,&frame);if(e)return e;
   }else if(frame.type==4U&&frame.bytes[0]==0x10U)return fail(b,I9100_BT_CONTROLLER);
   else if(!b->status.ready&&(frame.type==2U||frame.type==3U))return fail(b,I9100_BT_FRAME);
+  else if(b->status.host_reset_active)return fail(b,I9100_BT_FRAME);
   else if(b->io.receive(b->io.cookie,&frame))return fail(b,I9100_BT_BOOT_IO);
  }
  if(b->deferred_opcode){
@@ -263,6 +316,32 @@ int i9100_bt_boot_command(struct i9100_bt_boot *b,uint16_t op,const uint8_t *pay
  if(!b->status.ready||b->status.closed||b->status.fault)return I9100_BT_BOOT_BUSY;
  int e=verify(b);if(e)return e;e=i9100_bt_command(&b->h4,op,payload,bytes);
  return e&&e!=I9100_BT_BUSY&&e!=I9100_BT_ARGUMENT?fail(b,e):e;
+}
+int i9100_bt_boot_allow_host_reset(struct i9100_bt_boot *b,int enabled)
+{
+ if(!valid(b)||(enabled!=0&&enabled!=1))return I9100_BT_BOOT_ARGUMENT;
+ if(b->status.phase!=I9100_BT_BOOT_PREPARED||b->status.closed||b->status.fault)return I9100_BT_BOOT_BUSY;
+ b->status.host_reset_enabled=(uint32_t)enabled;return 0;
+}
+int i9100_bt_boot_host_reset(struct i9100_bt_boot *b)
+{
+ if(!valid(b))return I9100_BT_BOOT_ARGUMENT;
+ if(!b->status.host_reset_enabled)return I9100_BT_BOOT_DISABLED;
+ if(!b->status.ready||b->status.closed||b->status.fault||b->status.host_reset_active||
+    b->status.protocol_epoch==UINT32_MAX||b->h4.pending||b->deferred_opcode||
+    (b->h4.used&&b->h4.used!=b->h4.needed)||b->rx_used!=b->rx_offset)return I9100_BT_BUSY;
+ int e=verify(b);if(e)return e;
+ unsigned got=0;e=b->io.read(b->io.cookie,b->rx,sizeof(b->rx),&got);
+ if(e)return fail(b,I9100_BT_BOOT_IO);if(got>sizeof(b->rx))return fail(b,I9100_BT_FRAME);
+ b->rx_offset=0;b->rx_used=got;if(got)return I9100_BT_BUSY;
+ if(!b->h4.credits)return I9100_BT_BUSY;
+ b->status.ready=0;b->status.host_reset_active=1;b->status.host_reset_valid_fields=0;
+ b->status.host_reset_reply_seen=0;
+ memset(b->status.host_reset_complete_raw,0,sizeof(b->status.host_reset_complete_raw));
+ b->status.host_credit_present=0;memset(b->status.host_credit_complete_raw,0,sizeof(b->status.host_credit_complete_raw));
+ b->status.host_reset_started_ns=b->status.last_ns;
+ if(b->status.host_reset_requests!=UINT32_MAX)b->status.host_reset_requests++;
+ return send(b,I9100_BT_BOOT_HOST_RESET,0x0c03U,0,0);
 }
 int i9100_bt_boot_stop(struct i9100_bt_boot *b)
 {

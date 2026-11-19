@@ -31,12 +31,13 @@ int i9100_bt_acl_init(struct i9100_bt_acl *a,int enabled,const struct i9100_bt_a
 {
  if(!a||a->status.initialized)return I9100_BA_ARGUMENT;if(enabled!=1)return I9100_BA_DISABLED;
  if(!io||!io->verify||!io->send||!boot||!boot->ready||boot->fault||boot->closed||!boot->acl_mtu||boot->acl_mtu>4096U||
-    !boot->acl_packets||boot->acl_packets>65535U||overlap(a,sizeof(*a),io,sizeof(*io))||overlap(a,sizeof(*a),boot,sizeof(*boot)))return I9100_BA_ARGUMENT;
+    !boot->acl_packets||boot->acl_packets>65535U||!boot->protocol_epoch||overlap(a,sizeof(*a),io,sizeof(*io))||overlap(a,sizeof(*a),boot,sizeof(*boot)))return I9100_BA_ARGUMENT;
  if(boot->le_buffers_valid>1U||((boot->features[4]&0x40U)&&!boot->le_buffers_valid)||
     (!boot->le_buffers_valid&&(boot->le_mtu||boot->le_packets)))return I9100_BA_ARGUMENT;
  if(boot->le_buffers_valid&&((!boot->le_mtu)!=(!boot->le_packets)||boot->le_mtu>4096U||boot->le_packets>255U))return I9100_BA_ARGUMENT;
  if(io->verify(io->cookie))return I9100_BA_OWNER;
  memset(a,0,sizeof(*a));a->io=*io;a->self=(uintptr_t)a;a->status.initialized=a->status.enabled=1;
+ a->status.protocol_epoch=boot->protocol_epoch;
  a->status.mtu[0]=boot->acl_mtu;a->status.packets[0]=a->status.available[0]=boot->acl_packets;
  if(boot->le_packets){a->status.mtu[1]=boot->le_mtu;a->status.packets[1]=a->status.available[1]=boot->le_packets;}
  a->le_buffers_valid=boot->le_buffers_valid;return 0;
@@ -126,5 +127,23 @@ int i9100_bt_acl_send(struct i9100_bt_acl *a,uint16_t handle,uint32_t generation
 }
 int i9100_bt_acl_stop(struct i9100_bt_acl *a)
 {if(!valid(a))return I9100_BA_ARGUMENT;a->status.enabled=0;a->status.closed=1;return 0;}
+int i9100_bt_acl_requalify(struct i9100_bt_acl *a,const struct i9100_bt_boot_status *boot)
+{
+ int e=live(a);if(e)return e;
+ if(!boot||overlap(a,sizeof(*a),boot,sizeof(*boot)))return I9100_BA_ARGUMENT;
+ if(!consistency(a))return fault(a,I9100_BA_OWNER);
+ if(a->status.links||a->status.outstanding[0]||a->status.outstanding[1]||a->status.protocol_epoch==UINT32_MAX||
+    boot->protocol_epoch!=a->status.protocol_epoch+1U||!boot->host_reset_confirmed||boot->host_reset_active||
+    (boot->host_reset_valid_fields&47U)!=47U||boot->host_reset_complete_raw[0]!=0x0eU||
+    boot->host_reset_complete_raw[1]!=4U||u16(boot->host_reset_complete_raw+3)!=0x0c03U||boot->host_reset_complete_raw[5]||
+    ((boot->features[4]&0x40U)&&!(boot->host_reset_valid_fields&16U)))return I9100_BA_OWNER;
+ struct i9100_bt_acl checked;memset(&checked,0,sizeof(checked));
+ e=i9100_bt_acl_init(&checked,1,&a->io,boot);if(e)return e;
+ memcpy(a->status.mtu,checked.status.mtu,sizeof(a->status.mtu));
+ memcpy(a->status.packets,checked.status.packets,sizeof(a->status.packets));
+ memcpy(a->status.available,checked.status.available,sizeof(a->status.available));
+ a->le_buffers_valid=checked.le_buffers_valid;a->status.protocol_epoch=boot->protocol_epoch;
+ return 0;
+}
 int i9100_bt_acl_status(const struct i9100_bt_acl *a,struct i9100_bt_acl_status *out)
 {if(!valid(a)||!out||overlap(a,sizeof(*a),out,sizeof(*out)))return I9100_BA_ARGUMENT;*out=a->status;return 0;}

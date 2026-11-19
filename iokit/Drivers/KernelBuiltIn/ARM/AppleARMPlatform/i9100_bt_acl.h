@@ -18,6 +18,7 @@ struct i9100_bt_acl_link {
 struct i9100_bt_acl_status {
  uint32_t initialized,enabled,fault,closed,links,generation,mtu[2],packets[2],available[2],outstanding[2];
  uint64_t submitted,completed,discarded,received,ignored_completions;int32_t error;
+ uint32_t protocol_epoch;
 };
 struct i9100_bt_acl {
  struct i9100_bt_acl_io io;uintptr_t self;
@@ -30,6 +31,7 @@ int i9100_bt_acl_link(struct i9100_bt_acl *,uint16_t handle,struct i9100_bt_acl_
 int i9100_bt_acl_send(struct i9100_bt_acl *,uint16_t handle,uint32_t link_generation,unsigned packet_boundary,
  const uint8_t *kernel_payload,unsigned bytes);
 int i9100_bt_acl_stop(struct i9100_bt_acl *);
+int i9100_bt_acl_requalify(struct i9100_bt_acl *,const struct i9100_bt_boot_status *actual_boot);
 int i9100_bt_acl_status(const struct i9100_bt_acl *,struct i9100_bt_acl_status *);
 /* Default OFF, serialized by the actual HCI worker. A link is admitted only
  * by a successful original connection event; generation rejects queued host
@@ -44,6 +46,11 @@ int i9100_bt_acl_status(const struct i9100_bt_acl *,struct i9100_bt_acl_status *
  * it does not assert remote disconnect/reset or erase a partial transfer.
  * Unicast BR/EDR/LE ACL transport only; no L2CAP reassembly/pairing/SCO audio,
  * broadcast/ISO support or actual controller/RF/IOSerial acceptance claim.
+ * requalify requires successful host Reset Complete and fresh actual buffer/
+ * feature replies in the immediately following protocol epoch. It admits no
+ * active links/outstanding packets; connection generation/counters survive,
+ * so an old handle cannot reuse a pre-reset generation. Never infer this
+ * transition from elapsed time or an ordinary close/open of the UART.
  */
 #ifdef __cplusplus
 }

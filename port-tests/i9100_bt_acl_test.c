@@ -11,7 +11,7 @@ static int send(void *p,const uint8_t *data,unsigned bytes,unsigned *sent)
 static void setup(struct i9100_bt_acl *a,int le)
 {
  memset(a,0,sizeof(*a));memset(&model,0,sizeof(model));struct i9100_bt_boot_status boot;memset(&boot,0,sizeof(boot));
- boot.ready=1;boot.acl_mtu=1021;boot.acl_packets=8;
+ boot.ready=1;boot.acl_mtu=1021;boot.acl_packets=8;boot.protocol_epoch=1;
  if(le){boot.features[4]=0x40;boot.le_buffers_valid=1;if(le==2){boot.le_mtu=27;boot.le_packets=4;}}
  struct i9100_bt_acl_io io={&model,verify,send};assert(!i9100_bt_acl_init(a,1,&io,&boot));
 }
@@ -85,5 +85,20 @@ static void faults(void)
  invalid.le_buffers_valid=1;invalid.le_mtu=0;
  assert(i9100_bt_acl_init(&a,1,&io,&invalid)==I9100_BA_ARGUMENT&&!a.status.initialized);
 }
+static void reset_epoch(void)
+{
+ struct i9100_bt_acl a;setup(&a,0);connection(&a,1,0);struct i9100_bt_acl_link old,fresh;
+ assert(!i9100_bt_acl_link(&a,1,&old));uint8_t disconnect[]={5,4,0,1,0,0x13};assert(!event(&a,disconnect,6));
+ struct i9100_bt_boot_status boot={0};boot.ready=1;boot.protocol_epoch=2;boot.host_reset_confirmed=1;
+ boot.host_reset_valid_fields=47;memcpy(boot.host_reset_complete_raw,(uint8_t[]){0x0e,4,1,3,0x0c,0},6);
+ boot.acl_mtu=512;boot.acl_packets=3;
+ assert(!i9100_bt_acl_requalify(&a,&boot)&&a.status.protocol_epoch==2&&a.status.available[0]==3&&a.status.generation==old.generation);
+ connection(&a,1,0);assert(!i9100_bt_acl_link(&a,1,&fresh)&&fresh.generation!=old.generation);
+ uint8_t payload=1;assert(i9100_bt_acl_send(&a,1,old.generation,2,&payload,1)==I9100_BA_OWNER);
+ boot.protocol_epoch=3;assert(i9100_bt_acl_requalify(&a,&boot)==I9100_BA_OWNER&&a.status.protocol_epoch==2);
+ assert(!event(&a,disconnect,6));boot.host_reset_complete_raw[5]=1;
+ assert(i9100_bt_acl_requalify(&a,&boot)==I9100_BA_OWNER);boot.host_reset_complete_raw[5]=0;
+ boot.acl_packets=0;assert(i9100_bt_acl_requalify(&a,&boot)==I9100_BA_ARGUMENT&&a.status.available[0]==3);
+}
 int main(void)
-{normal_and_batches();shared_le_pool();faults();puts("PASS actual HCI ACL events/packets: real connection generations,BR-LE independent/shared pools,completed/disconnect credits,atomic batch rejection,unknown no-credit,exact H4 bytes,partial IO retained/no replay,owner/defaultOFF");return 0;}
+{normal_and_batches();shared_le_pool();faults();reset_epoch();puts("PASS actual HCI ACL events/packets: real connection generations,BR-LE independent/shared pools,completed/disconnect credits,atomic batch rejection,unknown no-credit,exact H4 bytes,partial IO retained/no replay,owner/defaultOFF,real reset epoch requalification preserves generations");return 0;}

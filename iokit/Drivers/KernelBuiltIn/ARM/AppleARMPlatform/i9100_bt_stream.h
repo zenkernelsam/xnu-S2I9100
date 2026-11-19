@@ -31,19 +31,23 @@ struct i9100_bt_stream_status {
  uint64_t tx_accepted,tx_submitted,rx_accepted,rx_delivered,tx_discarded,rx_discarded;
  uint64_t tx_packets,rx_packets,last_ns;
  int32_t error;
+ uint32_t host_reset_enabled,paused;
+ uint32_t host_reset_pending;uint64_t host_reset_accepted_ns;
 };
 struct i9100_bt_stream {
  uintptr_t self,client;
  struct i9100_bt_stream_io io;
  struct i9100_bt_stream_status status;
  uint64_t tx_wait_ns,rx_wait_ns;
- uint32_t entered,stalled,records;
+ uint32_t entered,stalled,records,reset_reply_queued;
  struct {uint32_t bytes,generation;uint16_t handle,reserved;} tx_record[I9100_BT_STREAM_PACKETS];
  uint8_t attributes[I9100_BT_TERMIOS_BYTES];
  uint8_t tx[I9100_BT_STREAM_CAP],rx[I9100_BT_STREAM_CAP];
 };
 int i9100_bt_stream_init(struct i9100_bt_stream *,int enabled,const struct i9100_bt_stream_io *,uint32_t physical_generation,uint32_t nominal_baud);
 int i9100_bt_stream_open(struct i9100_bt_stream *,const void *kernel_client);
+int i9100_bt_stream_allow_host_reset(struct i9100_bt_stream *,int enabled);
+int i9100_bt_stream_pause(struct i9100_bt_stream *,int paused);
 int i9100_bt_stream_write(struct i9100_bt_stream *,const void *kernel_client,const uint8_t *,unsigned);
 int i9100_bt_stream_receive(struct i9100_bt_stream *,const struct i9100_bt_frame *);
 int i9100_bt_stream_step(struct i9100_bt_stream *,unsigned packet_budget);
@@ -57,11 +61,15 @@ int i9100_bt_stream_status(const struct i9100_bt_stream *,struct i9100_bt_stream
  * per physical generation; close cannot reinitialize or free controller buffers.
  * Actual complete H4 RX packets are copied with the type byte; arbitrary socket
  * fragments are assembled into standard non-reset commands or managed ACL TX.
- * No synthetic HCI replies, vendor/reset passthrough, baud switching, SCO,
+ * No synthetic HCI replies, vendor passthrough, baud switching, SCO,
  * sleep/wake, pin/clock/power mutation or automatic controller resend. Queue
  * failure is sticky; the native owner must quiesce UART before releasing holds.
  * The 44B little-endian ARM32 termios admits only existing115200/8N1/RTSCTS.
  * Nominal baud is host configuration, not a measurement of the physical clock. */
+/* host_reset_enabled is selected before open; its sole four-byte packet must
+ * stand alone. Successful native submission pauses subsequent host writes;
+ * the worker resumes only after real reset/buffer requalification. Default
+ * remains OFF, no changes to vendor/baud/SCO permissions. */
 #ifdef __cplusplus
 }
 #endif

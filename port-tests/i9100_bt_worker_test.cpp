@@ -13,6 +13,7 @@ static unsigned event_add,fail_event_add,fail_event_remove,fail_event_timer,rx_d
 static i9100_bt_worker *worker;
 static struct {
  bool enabled,drop_ack,tx_stuck,rx_error,reply_error,le_supported;unsigned commands,acl_packets,assembled,reset_count;
+ unsigned post_reset_packets,post_reset_mtu,reset_status,reset_status_only;
  uint8_t command[4101];std::vector<uint8_t> fifo;unsigned head;
  i9100_uart_io original;i9100_bt_boot_profile profile;
 } peer;
@@ -42,13 +43,15 @@ static uint8_t uart_rx(void *cookie,unsigned off)
 static void enqueue_reply(uint16_t op)
 {
  if(peer.drop_ack)return;uint8_t result[255]={4,0x0e,4,1,(uint8_t)op,(uint8_t)(op>>8),(uint8_t)(peer.reply_error?1U:0U)};unsigned length=7;
- if(op==0x0c03U)peer.reset_count++;
+ if(op==0x0c03U){peer.reset_count++;if(peer.reset_count>2U){result[6]=(uint8_t)peer.reset_status;
+  if(peer.reset_status_only){result[1]=0x0f;result[3]=0;result[4]=1;result[5]=(uint8_t)op;result[6]=(uint8_t)(op>>8);}}}
  else if(op==0x1001U){auto v=peer.reset_count<=1U?peer.profile.rom:peer.profile.patched;
   result[2]=12;result[7]=v.hci_version;result[8]=(uint8_t)v.hci_revision;result[9]=(uint8_t)(v.hci_revision>>8);result[10]=v.lmp_version;
   result[11]=(uint8_t)v.manufacturer;result[12]=(uint8_t)(v.manufacturer>>8);result[13]=(uint8_t)v.lmp_subversion;result[14]=(uint8_t)(v.lmp_subversion>>8);length=15;
  }else if(op==0x0c14U){result[2]=252;memcpy(result+7,"BCM4330B1",9);length=255;
  }else if(op==0x1009U){result[2]=10;memcpy(result+7,peer.profile.factory_bdaddr_hci,6);length=13;
  }else if(op==0x1005U){result[2]=11;result[7]=0xfd;result[8]=3;result[9]=64;result[10]=8;length=14;
+  if(peer.reset_count>2U&&peer.post_reset_packets){result[10]=(uint8_t)peer.post_reset_packets;result[7]=(uint8_t)peer.post_reset_mtu;result[8]=(uint8_t)(peer.post_reset_mtu>>8);}
  }else if(op==0x1003U){result[2]=12;result[7]=0xff;if(peer.le_supported)result[11]=0x40;length=15;
  }else if(op==0x2002U){result[2]=7;result[7]=27;result[9]=4;length=10;}
  peer.fifo.insert(peer.fifo.end(),result,result+length);
@@ -168,6 +171,48 @@ static void native_stream_path()
  assert(!i9100_bt_worker_stream_detach(worker)&&!stream_refs);
  finish_worker(c,r);
 }
+static void native_stream_reset_path()
+{
+ i9100_peripheral_native *c=nullptr;i9100_radio_native *r=nullptr;start_context(&c,&r);auto p=wp();p.allow_host_reset=1;
+ assert(!i9100_bt_worker_create(1,r,&p,firmware,sizeof(firmware),&integrity,&output,&worker));
+ stream_delivered=stream_busy=0;i9100_bt_stream_consumer consumer={&stream_client,stream_retain,stream_release,stream_receive};
+ assert(!i9100_bt_worker_stream_attach(worker,&consumer));assert(!i9100_bt_worker_start(worker));
+ for(unsigned n=0;n<700U&&!worker_status().ready;n++){ns+=1000000;bt_loop->tick();}
+ assert(worker_status().ready&&worker_status().acl.protocol_epoch==1U);assert(!i9100_bt_worker_stream_open(worker,&stream_client));
+ uint8_t reset[]={1,3,0x0c,0};unsigned before=peer.commands;peer.post_reset_packets=3;peer.post_reset_mtu=512;
+ assert(!i9100_bt_worker_stream_write(worker,&stream_client,reset,2));ns++;bt_loop->tick();assert(peer.commands==before);
+ assert(!i9100_bt_worker_stream_write(worker,&stream_client,reset+2,2));ns++;bt_loop->tick();
+ assert(peer.commands==before+1U&&!worker_status().ready&&worker_status().stream.paused&&worker_status().boot.protocol_epoch==1);
+ assert(i9100_bt_worker_stream_write(worker,&stream_client,reset,4)==I9100_BTS_AGAIN);
+ ns++;bt_loop->tick();assert(worker_status().boot.protocol_epoch==2U&&!worker_status().acl_ready&&!stream_delivered);
+ for(unsigned n=0;n<150U&&!worker_status().ready;n++){ns+=1000000;bt_loop->tick();}
+ auto state=worker_status();assert(state.ready&&state.acl_ready&&!state.stream.paused&&state.boot.protocol_epoch==2&&state.acl.protocol_epoch==2);
+ assert(peer.commands==before+6U&&stream_delivered==7U&&state.acl.available[0]==3U&&state.acl.mtu[0]==512U&&state.boot.generation==1);
+ assert(state.session_hold&&state.worker_hold&&status(r).generation[1]==1&&!rx_delivered);
+ uint8_t connection[]={4,3,11,0,1,0,1,2,3,4,5,6,1,0};peer.fifo.insert(peer.fifo.end(),connection,connection+sizeof(connection));ns++;bt_loop->tick();
+ struct i9100_bt_acl_link previous_link;assert(!i9100_bt_worker_acl_link(worker,1,&previous_link));before=peer.commands;
+ assert(!i9100_bt_worker_stream_write(worker,&stream_client,reset,4));ns++;bt_loop->tick();assert(peer.commands==before&&worker_status().ready);
+ uint8_t disconnect[]={4,5,4,0,1,0,0x13};peer.fifo.insert(peer.fifo.end(),disconnect,disconnect+sizeof(disconnect));ns++;bt_loop->tick();
+ assert(peer.commands==before+1U&&!worker_status().ready);
+ for(unsigned n=0;n<150U&&!worker_status().ready;n++){ns+=1000000;bt_loop->tick();}
+ state=worker_status();assert(state.ready&&state.acl.protocol_epoch==3U&&state.boot.protocol_epoch==3U&&state.boot.host_reset_confirmed==2U);
+ peer.fifo.insert(peer.fifo.end(),connection,connection+sizeof(connection));ns++;bt_loop->tick();
+ struct i9100_bt_acl_link next_link;assert(!i9100_bt_worker_acl_link(worker,1,&next_link)&&next_link.generation!=previous_link.generation);
+ assert(i9100_bt_worker_acl_send(worker,1,previous_link.generation,2,reset,4)==I9100_BT_BOOT_BUSY);
+ assert(!i9100_bt_worker_stream_close(worker,&stream_client));assert(!i9100_bt_worker_stream_detach(worker));finish_worker(c,r);
+ for(unsigned cause=0;cause<3;cause++){
+  start_context(&c,&r);p=wp();p.allow_host_reset=1;
+  assert(!i9100_bt_worker_create(1,r,&p,firmware,sizeof(firmware),&integrity,&output,&worker));stream_delivered=0;
+  assert(!i9100_bt_worker_stream_attach(worker,&consumer));assert(!i9100_bt_worker_start(worker));
+  for(unsigned n=0;n<700U&&!worker_status().ready;n++){ns+=1000000;bt_loop->tick();}
+  assert(!i9100_bt_worker_stream_open(worker,&stream_client));
+  peer.reset_status=cause==0?1U:0U;peer.reset_status_only=cause==1;peer.drop_ack=cause==2;
+  assert(!i9100_bt_worker_stream_write(worker,&stream_client,reset,4));ns++;bt_loop->tick();unsigned submitted=peer.commands;
+  ns+=cause==2?1000000001ULL:1;bt_loop->tick();state=worker_status();
+  assert(state.fault&&!state.ready&&!stream_delivered&&state.boot.protocol_epoch==1&&peer.commands==submitted);
+  assert(!i9100_bt_worker_stream_detach(worker));finish_worker(c,r);
+ }
+}
 int main()
 {
  assert(!radio_native_reference_main());i9100_peripheral_native *c=nullptr;i9100_radio_native *r=nullptr;
@@ -190,7 +235,7 @@ int main()
  peer.fifo.clear();peer.head=peer.assembled=peer.reset_count=0;
  assert(!i9100_bt_worker_create(1,r,&p,firmware,sizeof(firmware),&integrity,&output,&worker)&&worker_status().boot.generation==2U);
  finish_worker(c,r);
- probe_native_path();native_acl_path();native_stream_path();
+ probe_native_path();native_acl_path();native_stream_path();native_stream_reset_path();
  start_context(&c,&r);p=wp();p.controller.hcd_sha256[0]^=1;before=peer.commands;
  assert(i9100_bt_worker_create(1,r,&p,firmware,sizeof(firmware),&integrity,&output,&worker)==I9100_BT_BOOT_HASH&&!worker&&!status(r).native_uart_owned&&peer.commands==before);
  peer.enabled=false;close(c,r);

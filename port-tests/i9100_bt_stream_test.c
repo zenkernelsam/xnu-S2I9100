@@ -14,7 +14,7 @@ static int verify(void *cookie,uint32_t generation){assert(cookie==&model);retur
 static uint64_t now(void *cookie){assert(cookie==&model);return model.ns;}
 static int command(void *cookie,uint16_t op,const uint8_t *p,unsigned bytes)
 {
- assert(cookie==&model&&op==0x1001U&&!bytes&&p);if(model.busy)return I9100_BTS_AGAIN;
+ assert(cookie==&model&&(op==0x1001U||op==0x0c03U)&&!bytes&&p);if(model.busy)return I9100_BTS_AGAIN;
  if(model.reenter)assert(i9100_bt_stream_close(&stream,&client)==I9100_BTS_BUSY);
  model.commands++;return model.partial?I9100_BTS_IO:0;
 }
@@ -94,6 +94,14 @@ int main(void)
  setup();unsigned attempts=0;while(!i9100_bt_stream_step(&stream,1))assert(++attempts<4096U);assert(status().error==I9100_BTS_CLOCK);
  setup();uint8_t many[132];for(unsigned n=0;n<33;n++)memcpy(many+4*n,cmd,4);
  assert(i9100_bt_stream_write(&stream,&client,many,sizeof(many))==I9100_BTS_AGAIN&&!status().tx_accepted&&!stream.records);
+ setup();stream.status.owned=0;stream.client=0;
+ assert(!i9100_bt_stream_allow_host_reset(&stream,1));assert(!i9100_bt_stream_open(&stream,&client));
+ uint8_t reset[]={1,3,0x0c,0};assert(!i9100_bt_stream_write(&stream,&client,reset,2));step();assert(!model.commands);
+ assert(!i9100_bt_stream_write(&stream,&client,reset+2,2));step();assert(model.commands==1U&&status().paused&&!status().tx_queued);
+ assert(i9100_bt_stream_write(&stream,&client,cmd,4)==I9100_BTS_AGAIN);step();assert(model.commands==1U);
+ assert(!i9100_bt_stream_pause(&stream,0));
+ uint8_t complete[]={0x0e,4,1,3,0x0c,0};frame=(struct i9100_bt_frame){4,complete,6};assert(!i9100_bt_stream_receive(&stream,&frame));step();
+ assert(!status().host_reset_pending);assert(!i9100_bt_stream_write(&stream,&client,cmd,4));step();assert(model.commands==2U);
  puts("PASS actual H4 stream:fragmented/coalesced TX,managed ACL generation,atomic malformed rejection,44B termios,no synthetic reply,socket backpressure,bounded queues,partial-write no replay,close/reentry/owner/timeout/clock");
  return 0;
 }

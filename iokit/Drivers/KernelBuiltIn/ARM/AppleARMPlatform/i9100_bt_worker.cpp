@@ -57,8 +57,9 @@ static int acl_send(void *cookie,const uint8_t *packet,unsigned bytes,unsigned *
 {auto *w=(i9100_bt_worker *)cookie;*sent=0;int e=i9100_bt_boot_acl_packet(&w->s.boot,packet,bytes);if(!e)*sent=bytes;return e;}
 static int acl_prepare(i9100_bt_worker *w)
 {
- if(w->s.acl.status.initialized)return w->s.acl.status.fault?I9100_BA_FAULT:0;
  struct i9100_bt_boot_status boot={};int e=i9100_bt_boot_status(&w->s.boot,&boot);if(e)return e;
+ if(w->s.acl.status.initialized){if(w->s.acl.status.fault)return I9100_BA_FAULT;
+  return w->s.acl.status.protocol_epoch==boot.protocol_epoch?0:i9100_bt_acl_requalify(&w->s.acl,&boot);}
  i9100_bt_acl_io io={w,acl_verify,acl_send};return i9100_bt_acl_init(&w->s.acl,1,&io,&boot);
 }
 static int wire_receive(void *cookie,const i9100_bt_frame *frame)
@@ -68,10 +69,17 @@ static int wire_receive(void *cookie,const i9100_bt_frame *frame)
  if(w->s.stream_attached&&w->s.stream.status.initialized)return i9100_bt_stream_receive(&w->s.stream,frame);
  return w->s.output.receive(w->s.output.cookie,frame);}
 static int stream_verify(void *cookie,uint32_t generation)
-{auto *w=(i9100_bt_worker *)cookie;if(!w->s.status.ready||!w->s.status.running||w->s.status.closing||w->s.status.fault)return I9100_BTS_OWNER;
+{auto *w=(i9100_bt_worker *)cookie;if((!w->s.boot.status.ready&&!w->s.boot.status.host_reset_active)||
+ !w->s.status.running||w->s.status.closing||w->s.status.fault)return I9100_BTS_OWNER;
  return wire_verify(w,generation);}
 static int stream_command(void *cookie,uint16_t op,const uint8_t *p,unsigned bytes)
-{auto *w=(i9100_bt_worker *)cookie;int e=i9100_bt_boot_command(&w->s.boot,op,p,bytes);
+{auto *w=(i9100_bt_worker *)cookie;int e=0;
+ if(op==0x0c03U){
+  if(bytes||!w->s.profile.allow_host_reset)return I9100_BTS_UNSUPPORTED;
+  if(w->s.acl.status.links||w->s.acl.status.outstanding[0]||w->s.acl.status.outstanding[1]||
+     w->s.stream.status.rx_queued||w->s.stream.status.tx_queued!=4U||w->s.stream.records!=1U)return I9100_BTS_AGAIN;
+  e=i9100_bt_boot_host_reset(&w->s.boot);if(!e)w->s.status.ready=0;
+ }else e=i9100_bt_boot_command(&w->s.boot,op,p,bytes);
  return e==I9100_BT_BUSY?I9100_BTS_AGAIN:e;}
 static int stream_link(void *cookie,uint16_t handle,struct i9100_bt_acl_link *out)
 {auto *w=(i9100_bt_worker *)cookie;return i9100_bt_acl_link(&w->s.acl,handle,out);}
@@ -106,6 +114,7 @@ static void process(i9100_bt_worker *w)
  if(w->s.probe_mode&&w->s.probe.status.completed){(void)halt(w);return;}
  w->s.status.ready=w->s.probe_mode?0:w->s.boot.status.ready;
  if(w->s.status.ready){e=acl_prepare(w);if(e){fault(w,e);return;}}
+ if(w->s.stream.status.paused&&w->s.status.ready){e=i9100_bt_stream_pause(&w->s.stream,0);if(e){fault(w,e);return;}}
  if(w->s.stream.status.owned){e=i9100_bt_stream_step(&w->s.stream,4);if(e){fault(w,e);return;}}
  if(w->s.timer->setTimeoutUS(w->s.profile.poll_us)!=kIOReturnSuccess)fault(w,I9100_BT_BOOT_IO);
 }
@@ -163,12 +172,14 @@ static IOReturn action(OSObject *owner,void *operation,void *argument,void *,voi
      w->s.boot.rx_offset!=w->s.boot.rx_used)return I9100_BT_BOOT_BUSY;
   if(!w->s.stream.status.initialized){i9100_bt_stream_io io={w,stream_verify,wire_time,stream_command,stream_link,stream_acl,stream_receive};
    int e=i9100_bt_stream_init(&w->s.stream,1,&io,w->s.generation,115200U);if(e)return e;}
+  if(!w->s.stream.client){int e=i9100_bt_stream_allow_host_reset(&w->s.stream,w->s.profile.allow_host_reset);if(e)return e;}
   {int e=i9100_bt_stream_open(&w->s.stream,argument);if(e&&w->s.stream.status.fault)fault(w,e);return e;}}
  case BW_STREAM_WRITE:{auto *r=(stream_request *)argument;int e=i9100_bt_stream_write(&w->s.stream,r->client,r->bytes,r->count);
   if(e&&w->s.stream.status.fault)fault(w,e);return e;}
  case BW_STREAM_ATTRIBUTES:{auto *r=(stream_request *)argument;
-  return r->set?i9100_bt_stream_set_attributes(&w->s.stream,r->client,r->bytes,r->count):
-               i9100_bt_stream_get_attributes(&w->s.stream,r->client,r->bytes,r->count);}
+  int e=r->set?i9100_bt_stream_set_attributes(&w->s.stream,r->client,r->bytes,r->count):
+               i9100_bt_stream_get_attributes(&w->s.stream,r->client,r->bytes,r->count);
+  if(e&&w->s.stream.status.fault)fault(w,e);return e;}
  case BW_STREAM_CLOSE:{int e=i9100_bt_stream_close(&w->s.stream,argument);if(e)return e;return halt(w);}
  case BW_STREAM_DETACH:
   if(!w->s.stream_attached)return I9100_BT_BOOT_ARGUMENT;
@@ -179,7 +190,8 @@ static IOReturn action(OSObject *owner,void *operation,void *argument,void *,voi
   s.poll_us=w->s.profile.poll_us;s.boot=w->s.boot.status;
   if(w->s.boot.status.initialized)(void)i9100_bt_boot_status(&w->s.boot,&s.boot);
   s.probe_mode=w->s.probe_mode;if(w->s.probe.status.initialized)(void)i9100_bt_probe_status(&w->s.probe,&s.probe);
-  if(w->s.acl.status.initialized){s.acl_ready=!w->s.acl.status.closed&&!w->s.acl.status.fault;(void)i9100_bt_acl_status(&w->s.acl,&s.acl);}
+  if(w->s.acl.status.initialized){s.acl_ready=s.ready&&s.running&&!s.closing&&!w->s.acl.status.closed&&!w->s.acl.status.fault&&
+    w->s.acl.status.protocol_epoch==w->s.boot.status.protocol_epoch;(void)i9100_bt_acl_status(&w->s.acl,&s.acl);}
   s.stream_attached=w->s.stream_attached;if(w->s.stream.status.initialized)(void)i9100_bt_stream_status(&w->s.stream,&s.stream);
   *(struct i9100_bt_worker_status *)argument=s;return 0;}
  default:return I9100_BT_BOOT_ARGUMENT;
@@ -202,7 +214,7 @@ static int create(int enabled,i9100_radio_native *radio,const i9100_bt_worker_pr
 {
  if(!owner)return I9100_BT_BOOT_ARGUMENT;if(*owner)return I9100_BT_BOOT_BUSY;if(enabled!=1)return I9100_BT_BOOT_DISABLED;
  if(!radio||!p||(!probe_mode&&(!integrity||!integrity->sha256||!out||!out->receive))||!ml_get_interrupts_enabled()||p->poll_us<500U||p->poll_us>10000U||
-    p->verified_uart_clock_hz<1000000U||p->verified_uart_clock_hz>200000000U||(p->fraction!=1&&p->fraction!=2))return I9100_BT_BOOT_ARGUMENT;
+    p->verified_uart_clock_hz<1000000U||p->verified_uart_clock_hz>200000000U||p->allow_host_reset>1U||(p->fraction!=1&&p->fraction!=2))return I9100_BT_BOOT_ARGUMENT;
  uint32_t count=0;int e=probe_mode?0:i9100_bt_hcd_plan(hcd,bytes,&p->controller,&count);if(e)return e;
  i9100_radio_status status={};e=i9100_radio_native_status(radio,&status);if(e)return e;
  if(!status.ready||status.native_closing||!status.powered[1]||!status.generation[1]||status.native_uart_owned||
@@ -228,6 +240,7 @@ static int create(int enabled,i9100_radio_native *radio,const i9100_bt_worker_pr
    e=i9100_bt_probe_init(&w->s.probe,1,&bio,w->s.generation,p->controller.timeout_ms);}
   else {i9100_bt_boot_io bio={{w,wire_lock,wire_unlock,wire_write,wire_quiesce,wire_time},w,wire_read,wire_verify,wire_sha,wire_receive};
    e=i9100_bt_boot_init(&w->s.boot,1,&bio,&p->controller,w->s.hcd,bytes,w->s.index,count,w->s.generation);}
+  if(!e&&!probe_mode)e=i9100_bt_boot_allow_host_reset(&w->s.boot,p->allow_host_reset);
  }
  if(e){w->s.status.error=e;int cleanup=w->s.loop->runAction(action,w,(void *)BW_DETACH);
   if(cleanup){w->s.status.fault=1;w->s.status.cleanup_error=cleanup;*owner=w;}else w->release();return e;}
