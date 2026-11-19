@@ -53,6 +53,44 @@ static volatile unsigned int *i9100_pixels;
 static vm_offset_t i9100_fb_map;
 static vm_offset_t i9100_fimd_map;
 #include "i9100_display_power.h"
+#include "i9100_panel_spi.h"
+#include "i9100_panel_sleep.h"
+extern void IODelay(unsigned);
+extern void IOSleep(unsigned);
+extern unsigned int processor_avail_count;
+static vm_offset_t i9100_panel_gpio;
+static unsigned i9100_panel_sleep_enabled;
+static struct i9100_panel_spi i9100_panel_spi;
+static struct i9100_panel_sleep i9100_panel_sleep;
+volatile uint32_t i9100_panel_sleep_diag[16]={1};
+static uint32_t i9100_panel_gpio_read(void *cookie,unsigned off)
+{__asm__ volatile("dsb sy" ::: "memory");return *(volatile uint32_t *)((vm_offset_t)cookie+off);}
+static void i9100_panel_gpio_write(void *cookie,unsigned off,uint32_t value)
+{*(volatile uint32_t *)((vm_offset_t)cookie+off)=value;__asm__ volatile("dsb sy" ::: "memory");}
+static void i9100_panel_delay(void *cookie,unsigned us){(void)cookie;IODelay(us);}
+static unsigned i9100_panel_enter(void *cookie)
+{(void)cookie;return ml_set_interrupts_enabled(FALSE);}
+static void i9100_panel_leave(void *cookie,unsigned enabled)
+{(void)cookie;ml_set_interrupts_enabled((boolean_t)enabled);}
+static int i9100_panel_read_byte(void *cookie,unsigned command,uint8_t *value)
+{return i9100_panel_spi_read_byte(cookie,command,value);}
+static int i9100_panel_command(void *cookie,unsigned command)
+{return i9100_panel_spi_word(cookie,command);}
+static uint32_t i9100_panel_scan_read(void *cookie)
+{(void)cookie;return *(volatile uint32_t *)i9100_fimd_map;}
+static void i9100_panel_scan_write(void *cookie,uint32_t value)
+{(void)cookie;*(volatile uint32_t *)i9100_fimd_map=value;__asm__ volatile("dsb sy" ::: "memory");}
+static void i9100_panel_wait(void *cookie,unsigned ms){(void)cookie;IOSleep(ms);}
+static void i9100_panel_diag_publish(void)
+{
+ uint32_t fields[14]={i9100_panel_sleep_enabled,i9100_panel_sleep.qualified,i9100_panel_sleep.stage,
+  i9100_panel_sleep.error,i9100_panel_sleep.cleanup_error,i9100_panel_sleep.mode,
+  i9100_panel_sleep.commands,i9100_panel_sleep.requests,i9100_panel_sleep.saved_scanout,
+  i9100_panel_sleep.owned_scanout,i9100_panel_sleep.id[0],i9100_panel_sleep.id[1],i9100_panel_sleep.id[2],0};
+ ++i9100_panel_sleep_diag[1];__sync_synchronize();
+ for(unsigned n=0;n<14;n++)i9100_panel_sleep_diag[n+2]=fields[n];
+ __sync_synchronize();++i9100_panel_sleep_diag[1];__sync_synchronize();
+}
 volatile uint32_t i9100_display_power_diag[12]={1};
 static struct i9100_display_power_state i9100_display_power_state;
 static volatile uint32_t i9100_display_power_guard;
@@ -69,7 +107,27 @@ int ios7leo_display_power(uint32_t state)
  struct i9100_display_power_io io={(void *)(i9100_fimd_map+0x180),
   i9100_display_map_read,i9100_display_map_write,i9100_display_map_sync};
  uint32_t before=io.read(io.cookie);
- int result=i9100_display_power_change(&i9100_display_power_state,&io,state);
+ int result=0;
+ if(i9100_panel_sleep_enabled==1){
+  /* Same-core GPIO transactions are excluded for each tiny SPI word, and
+   * waits remain ordinary thread sleeps. Never attempt this in IRQ/fatal
+   * context or after SMP enable without a common bank ownership gate. */
+  if(!i9100_panel_gpio || processor_avail_count!=1 || ml_at_interrupt_context() || !ml_get_interrupts_enabled()){
+   result=1;
+  }else if(i9100_panel_sleep.stage==I9P_UNQUALIFIED){
+   if(i9100_panel_sleep.error || i9100_panel_probe(&i9100_panel_sleep))result=1;
+  }
+  if(!result){
+   if(!state){
+    result=i9100_display_power_change(&i9100_display_power_state,&io,0);
+    if(!result && i9100_panel_sleep_change(&i9100_panel_sleep,0))result=1;
+   }else{
+    if(i9100_panel_sleep_change(&i9100_panel_sleep,1))result=1;
+    if(!result)result=i9100_display_power_change(&i9100_display_power_state,&io,state);
+   }
+  }
+  i9100_panel_diag_publish();
+ }else result=i9100_display_power_change(&i9100_display_power_state,&io,state);
  i9100_display_power_diag[2]=state;i9100_display_power_diag[3]=result;
  i9100_display_power_diag[4]=before;i9100_display_power_diag[5]=io.read(io.cookie);
  i9100_display_power_diag[6]=i9100_display_power_state.blanked;
@@ -788,6 +846,14 @@ void PE_init_SocSupport_stub(void)
     int lpm_loader=0;
     i9100_lpm_loader_supported=PE_parse_boot_argn("i9100lpmloader",&lpm_loader,4) && lpm_loader==1;
     if(i9100_lpm_loader_supported)i9100_lpm_gpio=ml_io_map(0x11000000,4096);
+    (void)PE_parse_boot_argn("i9100panelsleep",&i9100_panel_sleep_enabled,sizeof(i9100_panel_sleep_enabled));
+    if(i9100_panel_sleep_enabled==1){
+        i9100_panel_gpio=ml_io_map(0x11000000,4096);
+        i9100_panel_spi.io=(struct i9100_panel_spi_io){(void *)i9100_panel_gpio,
+            i9100_panel_gpio_read,i9100_panel_gpio_write,i9100_panel_delay,i9100_panel_enter,i9100_panel_leave};
+        i9100_panel_sleep.io=(struct i9100_panel_sleep_io){&i9100_panel_spi,
+            i9100_panel_read_byte,i9100_panel_command,i9100_panel_scan_read,i9100_panel_scan_write,i9100_panel_wait};
+    }
     i9100_trace_cell=ml_io_map(0x7ffe0000, 0x1000);
     int panic_recovery = 0;
     i9100_panic_recovery_enabled =
