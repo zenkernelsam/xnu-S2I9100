@@ -5,6 +5,7 @@
 #include <vector>
 #include "i9100_power.h"
 #include "i9100_charge_diag.h"
+#include "i9100_charge_adopt.h"
 
 struct BatteryModel {
  uint8_t pmic[256];uint16_t fuel[256];unsigned adc6=937,adc7=989;
@@ -36,6 +37,98 @@ struct BatteryModel {
  i9100_power_io io(){i9100_power_io io={};io.cookie=this;io.pmic_read=read;io.pmic_write=write;
   io.fuel_read=gauge;io.adc_read=adc;io.sub_read=status;io.sub_enable=enable;io.now_ns=now;return io;}
 };
+static I9100ChargeHandoff handoff_record(unsigned revision,uint64_t sampled_seconds,
+ unsigned elapsed,unsigned recharge=0)
+{
+ I9100ChargeHandoff r={};
+ r.magic=I9100_CHARGE_HANDOFF_MAGIC;r.version=1;r.bytes=sizeof(r);r.flags=7;
+ r.revision=revision;r.sub_charger=revision>=8U;r.polls=15;
+ r.valid=r.present=r.connected=1;r.percent=50;r.millivolts=3750;r.temperature_deci_c=250;
+ r.enabled_before=r.charging_before=1;r.qualified_samples=11;r.recovery_seconds=10;
+ r.elapsed_seconds=elapsed;r.recharging=recharge;
+ uint64_t ticks=sampled_seconds*24000000ULL;
+ r.sampled_low=(uint32_t)ticks;r.sampled_high=(uint32_t)(ticks>>32);
+ ticks+=24U;r.stopped_low=(uint32_t)ticks;r.stopped_high=(uint32_t)(ticks>>32);
+ ticks+=24U;r.published_low=(uint32_t)ticks;r.published_high=(uint32_t)(ticks>>32);
+ r.checksum=i9100_charge_handoff_checksum(&r);return r;
+}
+static void handoff_checks()
+{
+ for(unsigned rev: {7U,8U,14U}){
+  for(unsigned recharge: {0U,1U}){
+   BatteryModel m;i9100_power_state s;auto io=m.io();assert(!i9100_power_init(&s,&io,rev));
+   unsigned limit=recharge?5400U:18000U;
+   I9100ChargeHandoff r=handoff_record(rev,limit-2U,limit-4U,recharge);
+   m.time=(uint64_t)(limit-1U)*1000000000ULL;
+   unsigned operations=m.ops;
+   assert(i9100_charge_adopt(&s,&r,sizeof(r),m.time)==I9100_CHARGE_ADOPT_APPLIED);
+   assert(m.ops==operations && !s.enabled && !s.charging && !s.timeout);
+   assert(s.charge_start==1000000000ULL && s.recharging==recharge);
+   assert(!i9100_power_poll(&s) && s.enabled && !s.timeout);
+   m.time=(uint64_t)(limit+1U)*1000000000ULL;
+   assert(!i9100_power_poll(&s) && s.timeout && !s.enabled && !m.sub);
+   // A real cable detach remains the only timeout-reset path.
+   m.plugged=false;m.pmic[0x10]=0;
+   assert(!i9100_power_poll(&s) && !s.timeout && !s.charge_start);
+   m.plugged=true;m.pmic[0x10]=0x1a;
+   assert(!i9100_power_poll(&s) && s.enabled && s.charge_start==m.time);
+  }
+  {
+   BatteryModel m;i9100_power_state s;auto io=m.io();assert(!i9100_power_init(&s,&io,rev));
+   auto r=handoff_record(rev,18000,17999);m.time=18002ULL*1000000000ULL;
+   assert(i9100_charge_adopt(&s,&r,sizeof(r),m.time)==I9100_CHARGE_ADOPT_EXPIRED);
+   assert(s.timeout && !s.enabled && !i9100_power_poll(&s) && !s.enabled);
+  }
+  {
+   BatteryModel m;i9100_power_state s;auto io=m.io();assert(!i9100_power_init(&s,&io,rev));
+   auto r=handoff_record(rev,100,0);r.full=1;r.enabled_before=r.charging_before=0;
+   r.reason=(uint32_t)I9100_POWER_FULL;r.checksum=i9100_charge_handoff_checksum(&r);
+   m.time=102ULL*1000000000ULL;
+   assert(i9100_charge_adopt(&s,&r,sizeof(r),m.time)==I9100_CHARGE_ADOPT_APPLIED);
+   assert(!i9100_power_poll(&s) && s.full && !s.enabled && s.recharge_low_count==1);
+   assert(!i9100_power_poll(&s) && !s.full && s.recharging && s.enabled);
+  }
+  {
+   BatteryModel m;i9100_power_state s;auto io=m.io();assert(!i9100_power_init(&s,&io,rev));
+   auto r=handoff_record(rev,100,0);r.connected=r.enabled_before=r.charging_before=0;
+   r.reason=(uint32_t)I9100_POWER_OFFLINE;r.checksum=i9100_charge_handoff_checksum(&r);
+   m.time=102ULL*1000000000ULL;
+   assert(i9100_charge_adopt(&s,&r,sizeof(r),m.time)==I9100_CHARGE_ADOPT_OFFLINE && !s.charge_start);
+   assert(!i9100_power_poll(&s) && s.enabled && s.charge_start==m.time);
+  }
+ }
+ for(unsigned bad=0;bad<15;bad++){
+  BatteryModel m;i9100_power_state s;auto io=m.io();assert(!i9100_power_init(&s,&io,14));
+  auto r=handoff_record(14,100,90);m.time=102ULL*1000000000ULL;
+  unsigned bytes=sizeof(r);
+  if(bad==0)r.magic=0;if(bad==1)r.revision=7;if(bad==2)r.sub_charger=0;
+  if(bad==3)r.enabled_after=1;if(bad==4)r.qualified_samples=10;
+  if(bad==5)r.recovery_seconds=9;if(bad==6)r.timeout=1;if(bad==7)r.valid=0;
+  if(bad==8)r.elapsed_seconds=101;if(bad==9)r.temperature_deci_c=UINT32_MAX;
+  if(bad==10)r.published_high=1;if(bad==11)m.time=99ULL*1000000000ULL;
+  if(bad==12)bytes=124;if(bad==13)r.fault=1;
+  r.checksum=i9100_charge_handoff_checksum(&r);
+  if(bad==14)r.checksum^=1;
+  assert(i9100_charge_adopt(&s,&r,bytes,m.time)==I9100_CHARGE_ADOPT_REJECTED);
+  assert(s.timeout && !s.enabled && !i9100_power_poll(&s) && !s.enabled && !m.sub);
+ }
+ {
+  BatteryModel m;i9100_power_state s;auto io=m.io();assert(!i9100_power_init(&s,&io,14));
+  auto r=handoff_record(14,20,19);m.time=22000000000ULL;
+  assert(i9100_charge_adopt(&s,&r,sizeof(r),m.time)==I9100_CHARGE_ADOPT_APPLIED);
+  assert(s.charge_start==1U); // First partial second must not restart its period.
+  m.adcOK=false;assert(i9100_power_poll(&s)<0 && !s.enabled);
+ }
+ {
+  BatteryModel m;i9100_power_state s;auto io=m.io();assert(!i9100_power_init(&s,&io,14));
+  uint8_t zero[128]={};
+  assert(i9100_charge_adopt(&s,0,0,m.time)==I9100_CHARGE_ADOPT_NONE);
+  assert(i9100_charge_adopt(&s,zero,sizeof(zero),m.time)==I9100_CHARGE_ADOPT_NONE);
+  assert(!s.timeout && !i9100_power_poll(&s) && s.enabled);
+ }
+ assert(!i9100_charge_ticks_ns(UINT64_MAX));
+ puts("Handoff policy: inherited 5h/90min deadlines, full-stop restart, detach reset, expired/malformed stop, fresh ADC refusal and ordinary boots passed");
+}
 static void policy_checks()
 {
  for(unsigned rev=0;rev<16;rev++){
@@ -275,4 +368,4 @@ static void probe_checks()
  }
  puts("Charge probe: ADC1 restoration, bounded pause, original-policy restore, thermal/timeout/IO refusal and unchanged safety deadline passed");
 }
-int main(){policy_checks();bus_checks();probe_checks();return 0;}
+int main(){policy_checks();handoff_checks();bus_checks();probe_checks();return 0;}

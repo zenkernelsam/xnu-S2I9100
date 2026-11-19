@@ -6,9 +6,11 @@
 #include <IOKit/IOTimerEventSource.h>
 #include <pexpert/pexpert.h>
 #include <pexpert/arm/boot.h>
+#include <pexpert/device_tree.h>
 /* Private shared header; object-only rebuilds do not export new headers. */
 #include "../../../../../pexpert/arm/i9100_usb_stats.h"
 #include "i9100_power.h"
+#include "i9100_charge_adopt.h"
 #include "i9100_charge_diag.h"
 #include "i9100_power_budget_diag.h"
 #include "IOS7LeoGraphicsState.h"
@@ -36,6 +38,8 @@ volatile uint32_t i9100_power_revision_value=0xffffffffU;
 volatile int32_t i9100_power_temp;
 volatile int32_t i9100_power_reason=I9100_POWER_IO;
 volatile uint32_t i9100_power_policy[10];
+/* One Power start owns this publication; no new USB, timer or MMIO reader. */
+volatile uint32_t i9100_charge_adopt_diag[12]={1};
 extern processor_t master_processor;
 extern uint32_t processor_avail_count;
 extern uint32_t hz_tick_interval;
@@ -159,6 +163,29 @@ bool IOS7I9100Power::start(IOService *provider)
  IOLog("I9100 POWER rev=%u controller=%s init=%d (USB rate, thermal ADC%u)\n",
   revision,battery.use_sub?"MAX8922":"MAX8997",result,battery.use_sub?7:6);
  if(result)return false;
+ /* Preserve the same insertion's protected elapsed period across a supervised
+  * loader boot. The handoff is evidence, never a substitute for sample(). */
+ unsigned adopted=I9100_CHARGE_ADOPT_NONE;
+ int lpm_handoff=0;
+ if(PE_parse_boot_argn("i9100lpmloader",&lpm_handoff,sizeof(lpm_handoff)) && lpm_handoff==1){
+  DTEntry chosen=0;void *record=0;unsigned record_bytes=0;
+  if(DTLookupEntry(0,"/chosen",&chosen)==kSuccess &&
+     DTGetProperty(chosen,I9100_CHARGE_HANDOFF_PROPERTY,&record,&record_bytes)==kSuccess)
+   adopted=i9100_charge_adopt(&battery,record,record_bytes,now(0));
+ }
+ i9100_charge_adopt_diag[1]=adopted;i9100_charge_adopt_diag[2]=revision;
+ i9100_charge_adopt_diag[3]=(uint32_t)battery.charge_start;
+ i9100_charge_adopt_diag[4]=(uint32_t)(battery.charge_start>>32);
+ i9100_charge_adopt_diag[5]=battery.full;i9100_charge_adopt_diag[6]=battery.timeout;
+ i9100_charge_adopt_diag[7]=battery.recharging;
+ uint64_t adopted_now=now(0);
+ i9100_charge_adopt_diag[8]=(uint32_t)adopted_now;
+ i9100_charge_adopt_diag[9]=(uint32_t)(adopted_now>>32);
+ i9100_charge_adopt_diag[10]=battery.enabled;
+ __sync_synchronize();i9100_charge_adopt_diag[11]=1;
+ if(adopted!=I9100_CHARGE_ADOPT_NONE)
+  IOLog("I9100 POWER handoff=%u inherited_full=%u inherited_timeout=%u recharge=%u\n",
+   adopted,battery.full,battery.timeout,battery.recharging);
  loop=IOWorkLoop::workLoop();timer=IOTimerEventSource::timerEventSource(this,tick);
  if(!loop || !timer || loop->addEventSource(timer)!=kIOReturnSuccess)return false;
  setName("IOS7I9100Battery");setProperty("Built-In",true);
