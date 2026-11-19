@@ -25,6 +25,7 @@ struct i9100_bt_h4 {
 int i9100_bt_init(struct i9100_bt_h4 *,const struct i9100_bt_io *);
 int i9100_bt_enable(struct i9100_bt_h4 *,int enabled,uint32_t verified_fresh_link_generation);
 int i9100_bt_command(struct i9100_bt_h4 *,uint16_t opcode,const uint8_t *,unsigned length);
+int i9100_bt_acl_packet(struct i9100_bt_h4 *,const uint8_t *h4_packet,unsigned bytes);
 int i9100_bt_feed(struct i9100_bt_h4 *,const uint8_t *,unsigned length,unsigned *consumed,struct i9100_bt_frame *);
 int i9100_bt_poll(struct i9100_bt_h4 *);
 int i9100_bt_hcd_validate(const uint8_t *,uint32_t bytes,uint32_t verified_ram_base,uint32_t verified_ram_bytes,uint32_t *records);

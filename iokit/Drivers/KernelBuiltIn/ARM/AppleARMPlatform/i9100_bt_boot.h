@@ -15,7 +15,7 @@ enum i9100_bt_boot_phase {I9100_BT_BOOT_PREPARED=1,I9100_BT_BOOT_RESET,
  I9100_BT_BOOT_MINIDRV_DELAY,I9100_BT_BOOT_RECORD,I9100_BT_BOOT_LAUNCH_DELAY,
  I9100_BT_BOOT_POST_RESET,I9100_BT_BOOT_POST_RESET_DELAY,I9100_BT_BOOT_VERSION,
  I9100_BT_BOOT_ADDRESS,I9100_BT_BOOT_BUFFER,I9100_BT_BOOT_FEATURES,I9100_BT_BOOT_SCAN_OFF,
- I9100_BT_BOOT_READY,I9100_BT_BOOT_FAILED,I9100_BT_BOOT_CLOSED};
+ I9100_BT_BOOT_READY,I9100_BT_BOOT_FAILED,I9100_BT_BOOT_CLOSED,I9100_BT_BOOT_LE_BUFFER};
 struct i9100_bt_version {uint8_t hci_version,lmp_version;uint16_t hci_revision,manufacturer,lmp_subversion;};
 struct i9100_bt_boot_profile {
  uint32_t board_data_reviewed,ram_base,ram_bytes,launch_address,timeout_ms;
@@ -37,6 +37,7 @@ struct i9100_bt_boot_status {
  uint16_t pending_opcode;
  uint8_t features[8],address[6];struct i9100_bt_version observed_rom,observed_patched;
  uint64_t started_ns,last_ns,delay_until_ns;int32_t error,cleanup_error;
+ uint32_t le_buffers_valid,le_mtu,le_packets;
 };
 struct i9100_bt_boot {
  struct i9100_bt_boot_io io;struct i9100_bt_h4 h4;struct i9100_bt_boot_profile profile;
@@ -55,6 +56,7 @@ int i9100_bt_boot_init(struct i9100_bt_boot *,int enabled,const struct i9100_bt_
 int i9100_bt_boot_start(struct i9100_bt_boot *);
 int i9100_bt_boot_step(struct i9100_bt_boot *,unsigned frame_budget);
 int i9100_bt_boot_command(struct i9100_bt_boot *,uint16_t standard_hci_opcode,const uint8_t *,unsigned bytes);
+int i9100_bt_boot_acl_packet(struct i9100_bt_boot *,const uint8_t *h4_packet,unsigned bytes);
 int i9100_bt_boot_stop(struct i9100_bt_boot *);
 int i9100_bt_boot_status(const struct i9100_bt_boot *,struct i9100_bt_boot_status *);
 /* Default OFF, one reviewed fresh UART0/115200 physical generation. Bootstrap
@@ -70,8 +72,11 @@ int i9100_bt_boot_status(const struct i9100_bt_boot *,struct i9100_bt_boot_statu
  * Unknown completions, late ACKs, corruption, partial I/O and clock failure
  * quarantine. No automatic resend/reset/fallback. Stop quiesces only UART;
  * mutation/launch possible flags remain until an external verified chip reset.
- * This builds the real bootstrap/HCI receive foundation, not iOS discovery,
- * pairing, ACL credit handling, host-wake/LPM or RF/electrical verification.
+ * Read LE Buffer Size is queried only when its capability bit is present;
+ * actual zero LE packets means the controller uses its shared ACL pool.
+ * This module supplies bootstrap/H4 framing; the separate ACL controller
+ * tracks buffers and links. iOS discovery, pairing, host-wake/LPM and real
+ * electrical/RF acceptance remain outside this module's evidence.
  */
 #ifdef __cplusplus
 }

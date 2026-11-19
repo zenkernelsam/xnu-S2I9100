@@ -27,7 +27,9 @@ def retained(path):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--model',type=Path,action='append',required=True)
-    p.add_argument('--kernel',type=Path,required=True);p.add_argument('--hcd-test',type=Path,required=True);a=p.parse_args()
+    p.add_argument('--kernel',type=Path,required=True);p.add_argument('--hcd-test',type=Path,required=True)
+    p.add_argument('--controller-proof-test',type=Path,help='Verify raw ROM/patched exporter and retained model provenance')
+    a=p.parse_args()
     e=Evidence('bt-delivery');e.wait_idle_seconds=60
     models={}
     for supplied in a.model:
@@ -39,6 +41,10 @@ def main():
             if sha(REPO/'port-tests'/name)!=digest:raise RuntimeError('Nested model fixture changed')
         for name,digest in m.get('facade_headers',{}).items():
             if sha(REPO/'port-tests/offline-native-sdk'/name)!=digest:raise RuntimeError('Host facade changed')
+        if m.get('rom_probe_json_sha256'):
+            report=path/'rom-probe.json'
+            if sha(report)!=m['rom_probe_json_sha256']:raise RuntimeError('Raw ROM probe output changed')
+            if json.loads(report.read_text()).get('model_fixture') is not True:raise RuntimeError('Modeled ROM output lost its provenance marker')
         models[str(path.relative_to(ROOT))]=sha(path/'manifest.json')
     kernel_path,kernel=retained(a.kernel)
     if not kernel.get('complete_kernel_link') or sha(kernel_path/'mach_kernel.sys')!=kernel['linked_kernel_sha256']:
@@ -58,14 +64,26 @@ def main():
     proof=json.loads((hcd/'prepared/manifest.json').read_text())
     if proof['device_contacted'] or proof['hardware_tested'] or proof['board_data_reviewed']:raise RuntimeError('Model fixture was marked as real/reviewed')
     if sha(hcd/'fixture.hcd')!=proof['profile']['hcd_sha256'] or sha(hcd/'prepared/firmware.hcd')!=proof['profile']['hcd_sha256']:raise RuntimeError('Retained HCD fixture changed')
+    controller_proof=None
+    if a.controller_proof_test:
+        proof_dir=a.controller_proof_test.resolve()
+        if not proof_dir.is_relative_to(loader/'out') or json.loads((proof_dir/'test-result.json').read_text()).get('result')!='PASS':
+            raise RuntimeError('Controller proof export test is incomplete')
+        export=json.loads((proof_dir/'export/manifest.json').read_text())
+        data=json.loads((proof_dir/'export/controller-proof.json').read_text())
+        if export['board_data_reviewed'] or not export['model_fixture'] or export['device_contacted'] or not data.get('model_fixture'):
+            raise RuntimeError('Model controller identity was marked as real/reviewed')
+        if sha(proof_dir/'export/controller-proof.json')!=export['proof_sha256']:raise RuntimeError('Exported controller proof changed')
+        controller_proof=str(proof_dir.relative_to(ROOT))
     tree=loader/'out'/e.out.name/'builder-copy';target=tree/'scripts/i9100/prepare-automation.py';target.parent.mkdir(parents=True);target.write_bytes(source.read_bytes())
     e.run(['git','apply','--check',str(patch)],'loader-live-apply-check',cwd=loader)
     e.run(['git','apply','--directory='+str(tree.relative_to(loader)),str(patch)],'loader-copy-apply',cwd=loader)
     lists=[ast.literal_eval(n.value) for n in ast.walk(ast.parse(target.read_text())) if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='peripheral_objects' for t in n.targets)]
     if lists!=[objects] or sha(source)!=record['source_sha256']:raise RuntimeError('Patched builder AST/live source changed')
     e.result.update(model_proofs=models,validated_kernel=dict(path=str(kernel_path.relative_to(ROOT)),bytes=kernel['kernel_bytes'],sha256=kernel['linked_kernel_sha256'],objects=kernel['total_link_objects'],peripherals=len(inventory)),
-        loader_source_sha256=record['source_sha256'],loader_patch_sha256=record['patch_sha256'],hcd_fixture=str(hcd.relative_to(ROOT)),live_builder_modified=False)
-    e.finish([], 'Current H4/bootstrap/native-worker proof, full frozen kernel, HCD preparation fixture/defaults and live/copy builder65-object AST audit; no device/radio/flash')
+        loader_source_sha256=record['source_sha256'],loader_patch_sha256=record['patch_sha256'],hcd_fixture=str(hcd.relative_to(ROOT)),
+        controller_proof_fixture=controller_proof,live_builder_modified=False)
+    e.finish([], 'Current H4/probe/bootstrap/ACL/native-worker proof, frozen full kernel, HCD/controller export fixtures and live/copied opt-in object inventory; no device/radio/flash')
 
 
 if __name__=='__main__':main()

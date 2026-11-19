@@ -61,6 +61,19 @@ static int event(struct i9100_bt_h4 *b)
  b->pending=0;b->last_opcode=opcode;b->last_status=status;b->last_completion=code;
  return status?I9100_BT_CONTROLLER:0;
 }
+int i9100_bt_acl_packet(struct i9100_bt_h4 *b,const uint8_t *packet,unsigned bytes)
+{
+ if(!valid(b)||!packet||bytes<6U||bytes>4101U||overlaps(b,sizeof(*b),packet,bytes)||
+    packet[0]!=2U||le16(packet+3)+5U!=bytes||(le16(packet+1)>>14)||
+    (le16(packet+1)&0xfffU)>0x0effU)return I9100_BT_ARGUMENT;
+ if(b->io.lock(b->io.cookie))return I9100_BT_BUSY;
+ int e=0;
+ if(!b->enabled)e=I9100_BT_DISABLED;
+ else if(b->fault)e=I9100_BT_IO;
+ else {unsigned sent=0;
+  if(b->io.write(b->io.cookie,packet,bytes,&sent)||sent!=bytes){b->fault=1;e=I9100_BT_IO;}}
+ b->io.unlock(b->io.cookie);return e;
+}
 int i9100_bt_feed(struct i9100_bt_h4 *b,const uint8_t *input,unsigned length,unsigned *consumed,struct i9100_bt_frame *out)
 {
  if(!valid(b)||!input||!length||length>65536U||!consumed||!out||

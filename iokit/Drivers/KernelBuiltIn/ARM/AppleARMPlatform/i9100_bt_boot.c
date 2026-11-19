@@ -157,6 +157,12 @@ static int complete(struct i9100_bt_boot *b,const struct i9100_bt_frame *f)
   return send(b,I9100_BT_BOOT_FEATURES,0x1003U,0,0);
  case I9100_BT_BOOT_FEATURES:
   if(bytes!=9U)return fail(b,I9100_BT_FRAME);memcpy(b->status.features,rp+1,8);
+  if(b->status.features[4]&0x40U)return send(b,I9100_BT_BOOT_LE_BUFFER,0x2002U,0,0);
+  {uint8_t off=0;return send(b,I9100_BT_BOOT_SCAN_OFF,0x0c1aU,&off,1);}
+ case I9100_BT_BOOT_LE_BUFFER:
+  if(bytes!=4U)return fail(b,I9100_BT_FRAME);b->status.le_mtu=u16(rp+1);b->status.le_packets=rp[3];
+  if((!b->status.le_mtu)!=(!b->status.le_packets)||b->status.le_mtu>4096U)return fail(b,I9100_BT_BOOT_ID);
+  b->status.le_buffers_valid=1;
   {uint8_t off=0;return send(b,I9100_BT_BOOT_SCAN_OFF,0x0c1aU,&off,1);}
  case I9100_BT_BOOT_SCAN_OFF:
   if(bytes!=1U)return fail(b,I9100_BT_FRAME);b->status.ready=1;b->status.phase=I9100_BT_BOOT_READY;return 0;
@@ -265,6 +271,14 @@ int i9100_bt_boot_stop(struct i9100_bt_boot *b)
  int e=b->h4.enabled?i9100_bt_enable(&b->h4,0,0):0;
  if(e){b->status.cleanup_error=e;return e;}
  b->status.enabled=b->status.ready=0;b->status.closed=1;b->status.phase=I9100_BT_BOOT_CLOSED;b->status.cleanup_error=0;return 0;
+}
+int i9100_bt_boot_acl_packet(struct i9100_bt_boot *b,const uint8_t *packet,unsigned bytes)
+{
+ if(!valid(b)||!packet||bytes<6U||bytes>4101U||overlaps(b,sizeof(*b),packet,bytes)||
+    overlaps(b->hcd,b->hcd_bytes,packet,bytes)||overlaps(b->index,(size_t)b->status.records*sizeof(*b->index),packet,bytes))return I9100_BT_BOOT_ARGUMENT;
+ if(!b->status.ready||b->status.closed||b->status.fault)return I9100_BT_BOOT_BUSY;
+ int e=verify(b);if(e)return e;e=i9100_bt_acl_packet(&b->h4,packet,bytes);
+ return e&&e!=I9100_BT_BUSY&&e!=I9100_BT_ARGUMENT?fail(b,e):e;
 }
 int i9100_bt_boot_status(const struct i9100_bt_boot *b,struct i9100_bt_boot_status *out)
 {
