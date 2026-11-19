@@ -15,6 +15,7 @@ struct i9100_bt_worker_profile {
  struct i9100_bt_boot_profile controller;
  uint32_t verified_uart_clock_hz,poll_us;enum i9100_uart_fraction fraction;
  uint32_t allow_host_reset;
+ uint32_t allow_baud_change;
 };
 struct i9100_bt_probe_worker_profile {
  uint32_t verified_uart_clock_hz,poll_us,timeout_ms;enum i9100_uart_fraction fraction;
@@ -32,6 +33,7 @@ struct i9100_bt_worker_status {
  uint32_t probe_mode;struct i9100_bt_probe_status probe;
  uint32_t acl_ready;struct i9100_bt_acl_status acl;
  uint32_t stream_attached;struct i9100_bt_stream_status stream;
+ uint32_t baud_waiters;uint64_t baud_ticket;uint32_t baud_target,baud_complete;int32_t baud_error;
 };
 int i9100_bt_worker_create(int enabled,struct i9100_radio_native *,const struct i9100_bt_worker_profile *,
  const uint8_t *reviewed_hcd,uint32_t bytes,const struct i9100_bcm_fw_integrity *,
@@ -77,6 +79,12 @@ int i9100_bt_worker_destroy(struct i9100_bt_worker **);
  * bootstrap. A sole idle host Reset is sent once; the genuine completion is
  * delivered after real identity/buffer/feature requalification and ACL epoch
  * update. Physical supply generation, holds, HCD and nominal baud are retained.
+ * Separately default-OFF allow_baud_change handles the original44B set-option
+ * synchronously on the calling thread: release gate between bounded IOSleep
+ * waits while real timer receives FC18 Complete, changes host divisors and
+ * verifies Local Version at the new speed. Waiter reference blocks teardown;
+ * no socket/registry/worker lock is held across the sleep. No vendor H4
+ * passthrough, automatic rollback/retry, fake speed or GPIO/clock/reset change.
  */
 #ifdef __cplusplus
 }

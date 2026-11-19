@@ -63,6 +63,37 @@ static void uart(void)
   if(e)assert(u.prepared&&u.fault);m.fail_write=0;assert(!i9100_uart_bt_stop(&u));
  }
 }
+static void uart_baud(void)
+{
+ for(unsigned mode=1;mode<=2;mode++)for(unsigned target=0;target<3;target++){
+  const uint32_t speeds[]={921600U,2400000U,3000000U};memset(&m,0,sizeof(m));m.regs[4]=4;m.regs[14]=15;
+  struct i9100_uart_bluetooth u={0};assert(!i9100_uart_bt_init(&u,&uart_io));assert(!i9100_uart_bt_enable(&u,1));
+  assert(!i9100_uart_bt_configure(&u,48000000,115200,mode,1));uint32_t saved[7];memcpy(saved,u.saved,sizeof(saved));
+  unsigned writes=m.writes;assert(!i9100_uart_bt_validate_baud(&u,115200,speeds[target])&&m.writes==writes);
+  assert(i9100_uart_bt_change_baud(&u,115200,speeds[target],0)==I9100_UART_ARGUMENT&&m.writes==writes);
+  assert(!i9100_uart_bt_change_baud(&u,115200,speeds[target],1)&&m.writes==writes+2U&&u.baud==speeds[target]);
+  assert(!memcmp(saved,u.saved,sizeof(saved))&&m.regs[1]==5U&&m.regs[2]==1U&&m.regs[3]==16U);
+  struct i9100_uart_baud_plan plan;assert(!i9100_uart_bt_baud_plan(48000000,speeds[target],mode,&plan));
+  assert(m.regs[10]==plan.divider&&m.regs[11]==plan.fraction&&u.actual_baud==plan.actual_baud);
+  if(speeds[target]==2400000U)assert(plan.divider==0&&plan.fraction==(mode==1?4U:0x2222U));
+  assert(!i9100_uart_bt_stop(&u)&&!u.prepared&&m.regs[10]==saved[4]&&m.regs[11]==saved[5]);
+ }
+ for(unsigned reason=0;reason<4;reason++){
+  memset(&m,0,sizeof(m));m.regs[4]=4;m.regs[14]=15;struct i9100_uart_bluetooth u={0};
+  assert(!i9100_uart_bt_init(&u,&uart_io));assert(!i9100_uart_bt_enable(&u,1));assert(!i9100_uart_bt_configure(&u,48000000,115200,1,1));
+  unsigned writes=m.writes;
+  if(reason==0){m.rx_tail=1;assert(i9100_uart_bt_validate_baud(&u,115200,2400000)==I9100_UART_BUSY);}
+  else if(reason==1){m.regs[4]=0;assert(i9100_uart_bt_change_baud(&u,115200,2400000,1)==I9100_UART_BUSY);}
+  else if(reason==2){m.regs[1]^=0x400;assert(i9100_uart_bt_validate_baud(&u,115200,2400000)==I9100_UART_IO&&u.fault);}
+  else {m.regs[10]++;assert(i9100_uart_bt_validate_baud(&u,115200,2400000)==I9100_UART_IO&&u.fault);}
+  assert(m.writes==writes&&u.baud==115200);
+ }
+ memset(&m,0,sizeof(m));m.regs[4]=4;m.regs[14]=15;struct i9100_uart_bluetooth u={0};
+ assert(!i9100_uart_bt_init(&u,&uart_io));assert(!i9100_uart_bt_enable(&u,1));assert(!i9100_uart_bt_configure(&u,48000000,115200,1,1));
+ m.fail_write=m.writes+2U;
+ assert(i9100_uart_bt_change_baud(&u,115200,2400000,1)==I9100_UART_IO&&u.fault&&u.baud==115200U);
+ m.fail_write=0;assert(!i9100_uart_bt_stop(&u));
+}
 static uint32_t pwm_read(void *c,unsigned off){struct model *p=c;assert(p->locked&&off<128);p->reads++;return p->regs[off/4];}
 static struct i9100_pwm_io pwm_io={&m,pwm_read,write32,lock,unlock};
 static void pwm(void)
@@ -89,4 +120,4 @@ static void pwm(void)
  m.fail_write=0;assert(!i9100_pwm_haptic_release(&p));
 }
 int main(void)
-{uart();pwm();puts("PASS UART fraction/baud/RTS-CTS/partial TX/frozen clock/RX errors/restore; PWM1 downcounter/duty cap/shared-prescaler/foreign fields/stop/fault");return 0;}
+{uart();uart_baud();pwm();puts("PASS UART fraction/baud/RTS-CTS/partial TX/frozen clock/RX errors/restore,FC18-verified divider-only switch and unchanged saved state; PWM1 downcounter/duty cap/shared-prescaler/foreign fields/stop/fault");return 0;}

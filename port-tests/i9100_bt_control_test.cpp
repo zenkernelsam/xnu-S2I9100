@@ -50,9 +50,10 @@ extern "C" int __wrap_i9100_bt_worker_stream_open(i9100_bt_worker *w,const void 
   assert(!worker_status().fault&&worker_status().stream.rx_queued==4U&&socket_rx.empty());}return e;}
 static mbuf_t fragment(const uint8_t *p,unsigned bytes,mbuf_t next=nullptr)
 {return new i9100_model_mbuf{next,std::vector<uint8_t>(p,p+bytes)};}
-static void control_setup(i9100_peripheral_native **c,i9100_radio_native **r,unsigned host_reset=0)
+static void control_setup(i9100_peripheral_native **c,i9100_radio_native **r,unsigned host_reset=0,unsigned baud=0)
 {
- start_context(c,r);auto p=wp();p.allow_host_reset=host_reset;assert(!i9100_bt_worker_create(1,*r,&p,firmware,sizeof(firmware),&integrity,&output,&worker));
+ start_context(c,r);auto p=wp();p.allow_host_reset=host_reset;p.allow_baud_change=baud;
+ assert(!i9100_bt_worker_create(1,*r,&p,firmware,sizeof(firmware),&integrity,&output,&worker));
  register_error=deregister_error=enqueue_busy=copy_error=mbufs_freed=0;current_pid=35;current_unique=12345;current_uid=501;current_name="BTServer";wrong_uuid=connect_rx_race=false;socket_rx.clear();
 }
 static void ready_control()
@@ -93,6 +94,27 @@ static void native_reset_handoff(i9100_peripheral_native *&c,i9100_radio_native 
   assert(!fclose(f));}
  assert(!registration.ctl_disconnect(&registration,1,token));kernel_connections=0;
  assert(!i9100_bt_control_destroy(&control)&&!control);finish_worker(c,r);
+}
+static void native_baud_control(i9100_peripheral_native *&c,i9100_radio_native *&r)
+{
+ control_setup(&c,&r,0,1);assert(!i9100_bt_control_create(1,worker,&control));ready_control();
+ auto a=address();void *token=nullptr;assert(!registration.ctl_connect(&registration,&a,&token));kernel_connections=1;
+ uint8_t attrs[44];size_t count=44;assert(!registration.ctl_getopt(&registration,1,token,0x402c7413,attrs,&count));
+ const char *hex=getenv("I9100_BT_NATIVE_BAUD_TERMIOS_HEX");
+ if(hex){assert(strlen(hex)==88);for(unsigned n=0;n<44;n++){char pair[3]={hex[n*2],hex[n*2+1],0};attrs[n]=(uint8_t)strtoul(pair,nullptr,16);}}
+ else {uint32_t target=2400000;for(unsigned n=0;n<4;n++)attrs[36+n]=attrs[40+n]=(uint8_t)(target>>(8*n));}
+ peer.baud_testing=true;unsigned before=peer.commands;uint64_t started=ns;
+ int error=registration.ctl_setopt(&registration,1,token,0x802c7414,attrs,44);assert(!error);
+ auto state=worker_status();assert(state.ready&&state.stream.baud==2400000U&&state.boot.current_baud==2400000U&&!state.baud_waiters);
+ uint8_t actual[44];count=44;assert(!registration.ctl_getopt(&registration,1,token,0x402c7413,actual,&count)&&!memcmp(actual,attrs,44));
+ assert(peer.baud_commands==1&&peer.commands==before+2&&!peer.clock_changed_before_ack&&socket_rx.empty()&&sleep_calls);
+ const char *directory=getenv("I9100_BT_BAUD_OUTPUT");if(directory){char name[1024];int n=snprintf(name,sizeof(name),"%s/native-baud.json",directory);
+  assert(n>0&&(unsigned)n<sizeof(name));FILE *f=fopen(name,"w");assert(f);
+  fprintf(f,"{\"result\":\"PASS\",\"model_fixture\":true,\"hardware_tested\":false,\"callback_errno\":%d,\"nominal_baud\":%u,\"actual_computed_baud\":%u,\"peer_nominal_baud\":%u,\"commands\":%u,\"elapsed_ns\":%llu,\"early_host_change\":%s,\"physical_generation\":%u,\"protocol_epoch\":%u,\"termios_hex\":\"",
+   error,state.stream.baud,c->uart.port.actual_baud,peer.peer_baud,peer.commands-before,(unsigned long long)(ns-started),peer.clock_changed_before_ack?"true":"false",state.boot.generation,state.boot.protocol_epoch);
+  for(uint8_t byte:actual)fprintf(f,"%02x",byte);fprintf(f,"\"}\n");assert(!fclose(f));}
+ peer.baud_testing=false;assert(!registration.ctl_disconnect(&registration,1,token));kernel_connections=0;
+ assert(!i9100_bt_control_destroy(&control));finish_worker(c,r);
 }
 int main()
 {
@@ -142,6 +164,6 @@ int main()
   control_setup(&c,&r);fail_alloc=allocations+point;
   assert(i9100_bt_control_create(1,worker,&control)==I9100_BTS_IO&&!control&&!kernel_registered);fail_alloc=0;finish_worker(c,r);
  }
- native_reset_handoff(c,r);
+ native_reset_handoff(c,r);native_baud_control(c,r);
  puts("PASS actual kernel-control callbacks through actual worker/UART/H4:mobile BTServer identity,unique pid,44B options,mbuf fragments,real bytes/backpressure,client death/failed quiesce,registration/allocation/deregistration cleanup; BSD/socket/electrical facades");return 0;
 }

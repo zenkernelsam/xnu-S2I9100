@@ -45,6 +45,7 @@ public:
  IOReturn addEventSource(IOEventSource *);IOReturn removeEventSource(IOEventSource *);
  IOReturn runAction(Action,OSObject *,void *a=0,void *b=0,void *c=0,void *d=0);
  bool onThread() const{return thread;}
+ bool inGate() const{return gate;}
  void pump();void tick();void free() override;
 };
 #endif

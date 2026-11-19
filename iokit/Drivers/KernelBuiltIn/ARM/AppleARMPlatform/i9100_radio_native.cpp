@@ -69,6 +69,18 @@ int i9100_radio_native_uart_open(i9100_radio_native *r,uint32_t clock,uint32_t b
 int i9100_radio_native_uart_read(i9100_radio_native *r,uint8_t *bytes,unsigned capacity,unsigned *received)
 {return output_valid(r,bytes,capacity)&&output_valid(r,received,sizeof(*received))?
  i9100_peripheral_native_uart_read_owned(&r->uart,bytes,capacity,received):I9100_RADIO_ARGUMENT;}
+int i9100_radio_native_uart_validate_baud(i9100_radio_native *r,uint32_t generation,uint32_t expected,uint32_t target)
+{
+ int e=i9100_radio_native_verify(r,I9100_RADIO_BT,generation);if(e)return e;
+ if(!r->uart.owned||!r->uart_hold.owned||r->uart_hold.generation!=generation)return I9100_RADIO_OWNER;
+ return i9100_peripheral_native_uart_validate_baud_owned(&r->uart,expected,target);
+}
+int i9100_radio_native_uart_change_baud(i9100_radio_native *r,uint32_t generation,uint32_t expected,uint32_t target,int verified)
+{
+ int e=i9100_radio_native_verify(r,I9100_RADIO_BT,generation);if(e)return e;
+ if(verified!=1||!r->uart.owned||!r->uart_hold.owned||r->uart_hold.generation!=generation)return I9100_RADIO_OWNER;
+ return i9100_peripheral_native_uart_change_baud_owned(&r->uart,expected,target,verified);
+}
 int i9100_radio_native_sdio_open(i9100_radio_native *r,uint32_t clock,i9100_sdio **card,i9100_f2_io *out)
 {
  if(!output_valid(r,card,sizeof(*card))||!output_valid(r,out,sizeof(*out)))return I9100_RADIO_ARGUMENT;if(r->closing)return I9100_RADIO_DISABLED;

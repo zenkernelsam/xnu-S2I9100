@@ -18,7 +18,8 @@ enum i9100_bt_boot_phase {I9100_BT_BOOT_PREPARED=1,I9100_BT_BOOT_RESET,
  I9100_BT_BOOT_READY,I9100_BT_BOOT_FAILED,I9100_BT_BOOT_CLOSED,I9100_BT_BOOT_LE_BUFFER,
  I9100_BT_BOOT_HOST_RESET,I9100_BT_BOOT_HOST_RESET_DELAY,I9100_BT_BOOT_HOST_VERSION,
  I9100_BT_BOOT_HOST_ADDRESS,I9100_BT_BOOT_HOST_BUFFER,I9100_BT_BOOT_HOST_FEATURES,
- I9100_BT_BOOT_HOST_LE_BUFFER,I9100_BT_BOOT_HOST_SCAN_OFF};
+ I9100_BT_BOOT_HOST_LE_BUFFER,I9100_BT_BOOT_HOST_SCAN_OFF,
+ I9100_BT_BOOT_BAUD_COMPLETE,I9100_BT_BOOT_BAUD_VERIFY};
 struct i9100_bt_version {uint8_t hci_version,lmp_version;uint16_t hci_revision,manufacturer,lmp_subversion;};
 struct i9100_bt_boot_profile {
  uint32_t board_data_reviewed,ram_base,ram_bytes,launch_address,timeout_ms;
@@ -33,6 +34,8 @@ struct i9100_bt_boot_io {
  int (*verify_link)(void *,uint32_t fresh_generation);
  int (*sha256)(void *,const void *,uint32_t bytes,uint8_t digest[32]);
  int (*receive)(void *,const struct i9100_bt_frame *); /* synchronous bounded copy outside H4 lock */
+ int (*validate_baud)(void *,uint32_t expected_baud,uint32_t target_baud);
+ int (*change_baud)(void *,uint32_t expected_baud,uint32_t target_baud); /* only invoked after actual FC18 Complete/status0 */
 };
 struct i9100_bt_boot_status {
  uint32_t initialized,enabled,phase,ready,fault,closed,generation,records,record_index,confirmed_records;
@@ -45,6 +48,8 @@ struct i9100_bt_boot_status {
  uint64_t host_reset_started_ns;uint8_t host_reset_complete_raw[6];
  uint32_t host_credit_present;uint8_t host_credit_complete_raw[5];
  uint32_t host_reset_reply_seen;
+ uint32_t baud_enabled,baud_active,current_baud,requested_baud,baud_attempts,baud_completed,baud_reply_seen,baud_host_changed;
+ uint64_t baud_started_ns;uint8_t baud_complete_raw[6],baud_version_raw[9];
 };
 struct i9100_bt_boot {
  struct i9100_bt_boot_io io;struct i9100_bt_h4 h4;struct i9100_bt_boot_profile profile;
@@ -65,6 +70,8 @@ int i9100_bt_boot_step(struct i9100_bt_boot *,unsigned frame_budget);
 int i9100_bt_boot_command(struct i9100_bt_boot *,uint16_t standard_hci_opcode,const uint8_t *,unsigned bytes);
 int i9100_bt_boot_allow_host_reset(struct i9100_bt_boot *,int enabled);
 int i9100_bt_boot_host_reset(struct i9100_bt_boot *);
+int i9100_bt_boot_allow_baud(struct i9100_bt_boot *,int enabled);
+int i9100_bt_boot_change_baud(struct i9100_bt_boot *,uint32_t target_baud);
 int i9100_bt_boot_acl_packet(struct i9100_bt_boot *,const uint8_t *h4_packet,unsigned bytes);
 int i9100_bt_boot_stop(struct i9100_bt_boot *);
 int i9100_bt_boot_status(const struct i9100_bt_boot *,struct i9100_bt_boot_status *);

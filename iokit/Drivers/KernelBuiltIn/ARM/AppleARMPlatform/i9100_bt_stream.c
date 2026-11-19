@@ -50,12 +50,26 @@ static int attributes(const uint8_t *p,unsigned bytes,uint32_t baud)
     (u32(p)&~4U)||u32(p+4)||u32(p+8)!=0x38b00U||u32(p+12)||p[32]!=1U||p[33])return I9100_BTS_UNSUPPORTED;
  return 0;
 }
+int i9100_bt_stream_attribute_baud(const uint8_t *p,unsigned bytes,uint32_t *out)
+{
+ if(!p||bytes!=I9100_BT_TERMIOS_BYTES||!out||overlap(p,bytes,out,sizeof(*out)))return I9100_BTS_ARGUMENT;
+ uint32_t baud=u32(p+40);if(baud!=115200U&&baud!=921600U&&baud!=2400000U&&baud!=3000000U)return I9100_BTS_UNSUPPORTED;
+ int e=attributes(p,bytes,baud);if(!e)*out=baud;return e;
+}
+int i9100_bt_stream_commit_baud(struct i9100_bt_stream *s,const void *client,const uint8_t *p,unsigned bytes,uint32_t expected,uint32_t target)
+{
+ if(!valid(s)||!p||bytes!=I9100_BT_TERMIOS_BYTES||overlap(s,sizeof(*s),p,bytes))return I9100_BTS_ARGUMENT;
+ if(s->entered||s->status.fault||s->status.closed||!s->status.owned||s->client!=(uintptr_t)client||
+    !s->status.paused||s->status.host_reset_pending||s->status.tx_queued||s->status.rx_queued||s->status.baud!=expected)return I9100_BTS_BUSY;
+ uint32_t baud=0;int e=i9100_bt_stream_attribute_baud(p,bytes,&baud);if(e||baud!=target)return e?e:I9100_BTS_ARGUMENT;
+ s->status.baud=target;memcpy(s->attributes,p,bytes);return 0;
+}
 int i9100_bt_stream_init(struct i9100_bt_stream *s,int enabled,const struct i9100_bt_stream_io *io,uint32_t generation,uint32_t baud)
 {
  if(!s)return I9100_BTS_ARGUMENT;if(enabled!=1)return I9100_BTS_DISABLED;
  if(s->status.initialized)return I9100_BTS_BUSY;
  if(!io||!io->verify||!io->now_ns||!io->command||!io->acl_link||!io->acl_send||!io->receive||
-    !generation||baud!=115200U||overlap(s,sizeof(*s),io,sizeof(*io)))return I9100_BTS_ARGUMENT;
+    !generation||(baud!=115200U&&baud!=921600U&&baud!=2400000U&&baud!=3000000U)||overlap(s,sizeof(*s),io,sizeof(*io)))return I9100_BTS_ARGUMENT;
  memset(s,0,sizeof(*s));s->self=(uintptr_t)s;s->io=*io;s->status.initialized=s->status.enabled=1;
  s->status.generation=generation;s->status.baud=baud;s->status.last_ns=io->now_ns(io->cookie);
  put32(s->attributes,4);put32(s->attributes+8,0x38b00);s->attributes[32]=1;

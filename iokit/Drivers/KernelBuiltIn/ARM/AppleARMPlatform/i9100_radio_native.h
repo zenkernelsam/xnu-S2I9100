@@ -14,6 +14,8 @@ int i9100_radio_native_open(int enabled,struct i9100_peripheral_native *,const s
 int i9100_radio_native_set_power(struct i9100_radio_native *,enum i9100_radio_role,int on);
 int i9100_radio_native_uart_open(struct i9100_radio_native *,uint32_t verified_clock_hz,uint32_t baud,enum i9100_uart_fraction,struct i9100_bt_io *);
 int i9100_radio_native_uart_read(struct i9100_radio_native *,uint8_t *,unsigned,unsigned *);
+int i9100_radio_native_uart_validate_baud(struct i9100_radio_native *,uint32_t physical_generation,uint32_t expected_baud,uint32_t target_baud);
+int i9100_radio_native_uart_change_baud(struct i9100_radio_native *,uint32_t physical_generation,uint32_t expected_baud,uint32_t target_baud,int peer_complete_verified);
 int i9100_radio_native_sdio_open(struct i9100_radio_native *,uint32_t verified_sclk_hz,struct i9100_sdio **,struct i9100_f2_io *);
 int i9100_radio_native_transport_close(struct i9100_radio_native *,enum i9100_radio_role);
 int i9100_radio_native_borrow(struct i9100_radio_native *,enum i9100_radio_role,struct i9100_native_transport_hold *);

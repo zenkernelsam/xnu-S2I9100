@@ -5,6 +5,48 @@ enum {LCON=0,UCON=4,FCON=8,MCON=12,TRSTATUS=16,ERROR=20,FSTATUS=24,
  TX=32,RX=36,BAUD_DIV=40,FRACTION=44,PENDING=48,INTMASK=56};
 static uint32_t rd(struct i9100_uart_bluetooth *u,unsigned off){return u->io.read32(u->io.cookie,off);}
 static void wr(struct i9100_uart_bluetooth *u,unsigned off,uint32_t value){u->io.write32(u->io.cookie,off,value);}
+int i9100_uart_bt_baud_plan(uint32_t clock,uint32_t baud,enum i9100_uart_fraction mode,struct i9100_uart_baud_plan *out)
+{
+ static const uint16_t slots[16]={0x0000,0x0080,0x0808,0x0888,0x2222,0x4924,0x4a52,0x54aa,0x5555,0xd555,0xd5d5,0xddd5,0xdddd,0xdfdd,0xdfdf,0xffdf};
+ if(!out||clock<1000000U||clock>200000000U||
+    (baud!=115200U&&baud!=921600U&&baud!=2400000U&&baud!=3000000U)||(mode!=1&&mode!=2))return I9100_UART_ARGUMENT;
+ uint32_t total=(clock+baud/2U)/baud,quotient=total/16U;
+ if(!quotient||quotient>65536U)return I9100_UART_ARGUMENT;
+ uint32_t actual=clock/total,difference=actual>baud?actual-baud:baud-actual;
+ if((uint64_t)difference*1000U>(uint64_t)baud*20U)return I9100_UART_ARGUMENT;
+ struct i9100_uart_baud_plan plan={clock,baud,actual,quotient-1U,mode==I9100_UART_RAW_FRACTION?total%16U:slots[total%16U],(uint32_t)mode};
+ *out=plan;return 0;
+}
+static int owned_configuration(struct i9100_uart_bluetooth *u)
+{
+ struct i9100_uart_baud_plan current;int e=i9100_uart_bt_baud_plan(u->clock_hz,u->baud,(enum i9100_uart_fraction)u->fraction_mode,&current);
+ if(e||rd(u,LCON)!=3U||rd(u,BAUD_DIV)!=current.divider||rd(u,FRACTION)!=current.fraction||
+    rd(u,UCON)!=((u->saved[1]&0x400U)|5U)||rd(u,MCON)!=16U||(rd(u,FCON)&7U)!=1U||(rd(u,INTMASK)&15U)!=15U){
+  u->fault=1;return I9100_UART_IO;}
+ if(rd(u,ERROR)&15U){u->fault=1;return I9100_UART_RX_ERROR;}
+ if((rd(u,FSTATUS)&0x01ff01ffU)||!(rd(u,TRSTATUS)&4U))return I9100_UART_BUSY;
+ return 0;
+}
+int i9100_uart_bt_validate_baud(struct i9100_uart_bluetooth *u,uint32_t expected,uint32_t target)
+{
+ if(!u||!u->initialized||u->baud!=expected)return I9100_UART_ARGUMENT;
+ struct i9100_uart_baud_plan plan;int e=i9100_uart_bt_baud_plan(u->clock_hz,target,(enum i9100_uart_fraction)u->fraction_mode,&plan);if(e)return e;
+ if(u->io.lock(u->io.cookie))return I9100_UART_BUSY;
+ e=u->baud!=expected?I9100_UART_ARGUMENT:!u->enabled||!u->prepared?I9100_UART_DISABLED:u->fault?I9100_UART_IO:owned_configuration(u);
+ u->io.unlock(u->io.cookie);return e;
+}
+int i9100_uart_bt_change_baud(struct i9100_uart_bluetooth *u,uint32_t expected,uint32_t target,int verified)
+{
+ if(!u||!u->initialized||verified!=1||u->baud!=expected)return I9100_UART_ARGUMENT;
+ struct i9100_uart_baud_plan plan;int e=i9100_uart_bt_baud_plan(u->clock_hz,target,(enum i9100_uart_fraction)u->fraction_mode,&plan);if(e)return e;
+ if(u->io.lock(u->io.cookie))return I9100_UART_BUSY;
+ e=u->baud!=expected?I9100_UART_ARGUMENT:!u->enabled||!u->prepared?I9100_UART_DISABLED:u->fault?I9100_UART_IO:owned_configuration(u);
+ if(!e){wr(u,BAUD_DIV,plan.divider);wr(u,FRACTION,plan.fraction);
+  if(rd(u,BAUD_DIV)!=plan.divider||rd(u,FRACTION)!=plan.fraction||rd(u,LCON)!=3U||
+     rd(u,UCON)!=((u->saved[1]&0x400U)|5U)||rd(u,MCON)!=16U||(rd(u,FCON)&7U)!=1U){u->fault=1;e=I9100_UART_IO;}
+  else {u->baud=target;u->actual_baud=plan.actual_baud;}}
+ u->io.unlock(u->io.cookie);return e;
+}
 static int wait_empty(struct i9100_uart_bluetooth *u)
 {
  uint64_t start=u->io.now_ns(u->io.cookie);
@@ -28,13 +70,8 @@ int i9100_uart_bt_enable(struct i9100_uart_bluetooth *u,int enabled)
 }
 int i9100_uart_bt_configure(struct i9100_uart_bluetooth *u,uint32_t clock,uint32_t baud,enum i9100_uart_fraction mode,int verified)
 {
- static const uint16_t slots[16]={0x0000,0x0080,0x0808,0x0888,0x2222,0x4924,0x4a52,0x54aa,0x5555,0xd555,0xd5d5,0xddd5,0xdddd,0xdfdd,0xdfdf,0xffdf};
- if(!u||!u->initialized||!verified||clock<1000000U||clock>200000000U||
-    (baud!=115200U&&baud!=921600U&&baud!=3000000U)||(mode!=1&&mode!=2))return I9100_UART_ARGUMENT;
- uint32_t total=(clock+baud/2U)/baud,quotient=total/16U;
- if(!quotient||quotient>65536U)return I9100_UART_ARGUMENT;
- uint32_t actual=clock/total,difference=actual>baud?actual-baud:baud-actual;
- if((uint64_t)difference*1000U>(uint64_t)baud*20U)return I9100_UART_ARGUMENT;
+ if(!u||!u->initialized||!verified)return I9100_UART_ARGUMENT;
+ struct i9100_uart_baud_plan plan;int planned=i9100_uart_bt_baud_plan(clock,baud,mode,&plan);if(planned)return planned;
  if(u->io.lock(u->io.cookie))return I9100_UART_BUSY;
  int e=0;if(!u->enabled){e=I9100_UART_DISABLED;goto done;}if(u->prepared||u->fault){e=I9100_UART_BUSY;goto done;}
  uint32_t status=rd(u,FSTATUS),control=rd(u,UCON);
@@ -42,12 +79,11 @@ int i9100_uart_bt_configure(struct i9100_uart_bluetooth *u,uint32_t clock,uint32
     (control&3U)>1U||((control>>2)&3U)>1U){e=I9100_UART_BUSY;goto done;}
  const unsigned regs[7]={LCON,UCON,FCON,MCON,BAUD_DIV,FRACTION,INTMASK};
  for(unsigned n=0;n<7;n++)u->saved[n]=rd(u,regs[n]);
- u->prepared=1;u->clock_hz=clock;u->baud=baud;u->actual_baud=actual;u->fraction_mode=mode;
- uint32_t fraction=mode==I9100_UART_RAW_FRACTION?total%16U:slots[total%16U];
- wr(u,UCON,control&0x400U);wr(u,INTMASK,15);wr(u,LCON,3);wr(u,BAUD_DIV,quotient-1U);
- wr(u,FRACTION,fraction);wr(u,MCON,16U);wr(u,FCON,7U);wr(u,FCON,1U);
+ u->prepared=1;u->clock_hz=clock;u->baud=baud;u->actual_baud=plan.actual_baud;u->fraction_mode=mode;
+ wr(u,UCON,control&0x400U);wr(u,INTMASK,15);wr(u,LCON,3);wr(u,BAUD_DIV,plan.divider);
+ wr(u,FRACTION,plan.fraction);wr(u,MCON,16U);wr(u,FCON,7U);wr(u,FCON,1U);
  wr(u,PENDING,15U);wr(u,UCON,(control&0x400U)|5U);
- if(rd(u,LCON)!=3U||rd(u,BAUD_DIV)!=quotient-1U||rd(u,FRACTION)!=fraction||!(rd(u,MCON)&16U)||
+ if(rd(u,LCON)!=3U||rd(u,BAUD_DIV)!=plan.divider||rd(u,FRACTION)!=plan.fraction||!(rd(u,MCON)&16U)||
     rd(u,UCON)!=((control&0x400U)|5U)||(rd(u,FCON)&7U)!=1U||(rd(u,INTMASK)&15U)!=15U)
   {e=I9100_UART_IO;u->fault=1;}
 done:

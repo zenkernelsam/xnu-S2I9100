@@ -41,6 +41,7 @@ C_SOURCES = [
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
                "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_sensor_worker.cpp", "i9100_haptic_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp", "IOS6I9100AudioPCM.cpp", "i9100_pl330_ring_native.cpp", "i9100_pl330_ring_mmio.cpp", "i9100_audio_gated.cpp", "i9100_sensor_hid.cpp", "i9100_sensor_hid_endpoint.cpp", "i9100_bt_worker.cpp", "i9100_bt_control.cpp"]
 TESTS = [
+    ("i9100_bt_baud_test.c", ["i9100_bluetooth_h4.c","i9100_bt_boot.c"]),
     ("i9100_bt_host_reset_test.c", ["i9100_bluetooth_h4.c","i9100_bt_boot.c"]),
     ("i9100_bt_stream_test.c", ["i9100_bt_stream.c"]),
     ("i9100_bt_control_test.cpp", ["i9100_gpio_broker.c","i9100_clock_gates.c","i9100_irq_registry.c","i9100_peripheral_board.c",
@@ -217,7 +218,7 @@ def main():
                     hashlib.sha256((REPO/"userland/audio"/name).read_bytes()).hexdigest()!=sha for name,sha in captured.items()):
                     raise RuntimeError("Pdev input changed during the model")
             else:
-                e.model(test, sources, libraries=["crypto"] if test in ("i9100_bcm_firmware_test.c","i9100_bcm_core_download_test.c","i9100_bcm_boot_test.c","i9100_bcm_pump_test.c","i9100_bt_boot_test.c","i9100_bt_probe_test.c","i9100_bt_host_reset_test.c") else ())
+                e.model(test, sources, libraries=["crypto"] if test in ("i9100_bcm_firmware_test.c","i9100_bcm_core_download_test.c","i9100_bcm_boot_test.c","i9100_bcm_pump_test.c","i9100_bt_boot_test.c","i9100_bt_probe_test.c","i9100_bt_host_reset_test.c","i9100_bt_baud_test.c") else ())
             e.out = previous
         e.result["model_suites"] = [name for name, _ in selected]
         e.result["audio_model_fixtures_sha256"] = {

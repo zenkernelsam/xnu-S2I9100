@@ -386,6 +386,18 @@ int i9100_peripheral_native_uart_read_owned(i9100_native_transport_lease *owner,
  ranges_overlap((uintptr_t)bytes,capacity,(uintptr_t)received,sizeof(*received)))return I9100_UART_ARGUMENT;
  *received=0;if(owned_uart_lock(owner))return I9100_UART_BUSY;
  int e=i9100_uart_bt_read(&owner->context->uart.port,bytes,capacity,received);owned_uart_unlock(owner);return e;}
+int i9100_peripheral_native_uart_validate_baud_owned(i9100_native_transport_lease *owner,uint32_t expected,uint32_t target)
+{
+ if(!lease_valid(owner,I9100_NATIVE_UART))return I9100_UART_ARGUMENT;
+ if(owned_uart_lock(owner))return I9100_UART_BUSY;
+ int e=i9100_uart_bt_validate_baud(&owner->context->uart.port,expected,target);owned_uart_unlock(owner);return e;
+}
+int i9100_peripheral_native_uart_change_baud_owned(i9100_native_transport_lease *owner,uint32_t expected,uint32_t target,int verified)
+{
+ if(!lease_valid(owner,I9100_NATIVE_UART)||verified!=1)return I9100_UART_ARGUMENT;
+ if(owned_uart_lock(owner))return I9100_UART_BUSY;
+ int e=i9100_uart_bt_change_baud(&owner->context->uart.port,expected,target,verified);owned_uart_unlock(owner);return e;
+}
 static int sdio_close_for(i9100_peripheral_native *c,i9100_native_transport_lease *owner)
 {
  if(!c)return I9100_SDIO_ARGUMENT;native_sdio *s=&c->sdio;

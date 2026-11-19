@@ -26,7 +26,7 @@ static int read(void *p,uint8_t *bytes,unsigned cap,unsigned *got)
  unsigned amount=m->tail-m->head;if(amount>cap)amount=cap;memcpy(bytes,m->rx+m->head,amount);m->head+=amount;*got=amount;return 0;}
 static int receive(void *p,const struct i9100_bt_frame *frame)
 {struct bt_model *m=p;assert(!m->locked&&frame->length&&frame->bytes);m->delivered++;return 0;}
-static struct i9100_bt_boot_io io={{&model,lock,unlock,write,quiesce,now},&model,read,verify,hash,receive};
+static struct i9100_bt_boot_io io={{&model,lock,unlock,write,quiesce,now},&model,read,verify,hash,receive,0,0};
 static void setup(struct i9100_bt_boot *b)
 {
  memset(&model,0,sizeof(model));model.ns=1000000;memset(&profile,0,sizeof(profile));memset(b,0,sizeof(*b));

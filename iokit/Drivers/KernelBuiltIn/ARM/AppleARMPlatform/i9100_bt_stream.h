@@ -53,6 +53,8 @@ int i9100_bt_stream_receive(struct i9100_bt_stream *,const struct i9100_bt_frame
 int i9100_bt_stream_step(struct i9100_bt_stream *,unsigned packet_budget);
 int i9100_bt_stream_get_attributes(struct i9100_bt_stream *,const void *kernel_client,uint8_t *,unsigned);
 int i9100_bt_stream_set_attributes(struct i9100_bt_stream *,const void *kernel_client,const uint8_t *,unsigned);
+int i9100_bt_stream_attribute_baud(const uint8_t *,unsigned,uint32_t *target_baud);
+int i9100_bt_stream_commit_baud(struct i9100_bt_stream *,const void *kernel_client,const uint8_t *,unsigned,uint32_t expected_baud,uint32_t actual_confirmed_nominal_baud);
 int i9100_bt_stream_close(struct i9100_bt_stream *,const void *kernel_client);
 int i9100_bt_stream_abort(struct i9100_bt_stream *,int reason);
 int i9100_bt_stream_status(const struct i9100_bt_stream *,struct i9100_bt_stream_status *);

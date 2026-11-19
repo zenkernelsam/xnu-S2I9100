@@ -48,6 +48,8 @@ int i9100_peripheral_native_sdio_open(struct i9100_peripheral_native *,uint32_t 
 int i9100_peripheral_native_sdio_close(struct i9100_peripheral_native *);
 int i9100_peripheral_native_uart_open_owned(struct i9100_peripheral_native *,struct i9100_native_transport_lease *,uint32_t verified_clock_hz,uint32_t baud,enum i9100_uart_fraction,int verified,struct i9100_bt_io *);
 int i9100_peripheral_native_uart_read_owned(struct i9100_native_transport_lease *,uint8_t *,unsigned,unsigned *);
+int i9100_peripheral_native_uart_validate_baud_owned(struct i9100_native_transport_lease *,uint32_t expected_baud,uint32_t target_baud);
+int i9100_peripheral_native_uart_change_baud_owned(struct i9100_native_transport_lease *,uint32_t expected_baud,uint32_t target_baud,int peer_complete_verified);
 int i9100_peripheral_native_sdio_open_owned(struct i9100_peripheral_native *,struct i9100_native_transport_lease *,uint32_t verified_sclk_hz,int verified,struct i9100_sdio **,struct i9100_f2_io *);
 int i9100_peripheral_native_transport_close(struct i9100_native_transport_lease *);
 int i9100_peripheral_native_transport_hold_get(struct i9100_native_transport_lease *,struct i9100_native_transport_hold *);
