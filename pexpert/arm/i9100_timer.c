@@ -62,6 +62,8 @@ extern void i9100_usbcdc_control_init(void);
 
 uint64_t clock_decrementer;
 static vm_offset_t i9100_mct, i9100_gic_dist, i9100_gic_cpu;
+volatile uint32_t i9100_idle_mct_map;
+volatile uint32_t i9100_idle_wait_diag[8]={1};
 static uint32_t controller_ready, timebase_ready, counter_observed, armed;
 static uint32_t last_count_lo, last_match_lo, irq_count, last_irq_counter, last_vector;
 static uint32_t spurious_irq_count;
@@ -181,6 +183,7 @@ void I9100_timebase_init(void)
     if(after==before) panic("i9100 MCT counter did not advance");
     counter_observed=1; last_count_lo=(uint32_t)after;
     timebase_ready=1;
+    i9100_idle_mct_map=(uint32_t)i9100_mct;
     clock_decrementer=I9100_MCT_HZ/100U; /* 10ms scheduler tick. */
     if(clock_decrementer==0) clock_decrementer=I9100_MCT_HZ/100U;
     if(clock_decrementer<I9100_MCT_MIN_MATCH_TICKS) clock_decrementer=I9100_MCT_MIN_MATCH_TICKS;

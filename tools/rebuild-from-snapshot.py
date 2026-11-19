@@ -13,6 +13,7 @@ if os.environ.get('I9100_CPU_CAPPED')!='1':
 repo=Path(__file__).resolve().parents[1];root=repo.parent
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--baseline',type=Path,required=True);p.add_argument('--expect-sha256',required=True)
+p.add_argument('--compile-commands',type=Path,help='Additional retained compiler metadata for a baseline object not rebuilt earlier')
 p.add_argument('--output',type=Path,required=True);p.add_argument('objects',nargs='+')
 a=p.parse_args();base=a.baseline.resolve();out=a.output.resolve()
 assert base.is_relative_to(repo/'out') and out.is_relative_to(repo/'out') and not out.exists()
@@ -28,6 +29,11 @@ def normalized(path):
     assert found==1;return bytes(raw)
 original=base/'mach_kernel.sys';assert sha(original)==a.expect_sha256,'Baseline identity differs'
 commands=json.loads((base/'compile-commands.json').read_text());records={x['object']:x for x in commands}
+if a.compile_commands:
+    extra=a.compile_commands.resolve();assert extra.is_relative_to(repo/'out') and extra.is_file()
+    for record in json.loads(extra.read_text()):
+        assert record['object'] not in records,'Additional compiler metadata must not replace an existing record'
+        records[record['object']]=record
 assert all(x in records for x in a.objects),'Missing retained compiler command'
 inputs=[Path(x).resolve() for x in (base/'link.filelist').read_text().splitlines()]
 assert inputs and len(set(inputs))==len(inputs) and all(x.is_relative_to(repo) and x.is_file() for x in inputs)
@@ -55,7 +61,9 @@ replacements={};compiled=[]
 for item in a.objects:
     record=records[item];args=list(record['arguments']);part,name=Path(item).parts
     cwd=build/part/'RELEASE';assert '-O1' in args and '-c' in args and '-o' in args
-    prior=Path(args[args.index('-o')+1]).resolve();assert prior in inputs,'Compiler output is not in this baseline link'
+    prior=Path(args[args.index('-o')+1]).resolve()
+    if prior not in inputs:prior=build/part/'RELEASE'/name
+    assert prior in inputs,'Compiler output is not in this baseline link'
     source=Path(next(x for x in args if x.endswith(('.c','.cpp','.s','.S')))).resolve()
     assert source.is_relative_to(repo)
     # The retained dependency list identifies precisely the previously compiled

@@ -69,9 +69,56 @@ EnterARM(machine_idle)
 
     /* Disable all interrupts and go into wfi mode. */
 .Lmachine_idle_wfi:
+#if BOARD_CONFIG_EXYNOS4210_I9100
+    /* Measure only masked WFI wall time with the observed MCT mapping.
+     * No function call, allocation or global timing-policy change. ARM ABI
+     * r4-r7 remain callee-saved and the caller's IRQ enable behavior is kept. */
+    cpsid   if
+    push    {r4-r7}
+    LOAD_ADDR(r4, i9100_idle_mct_map)
+    ldr     r4, [r4]
+    cmp     r4, #0
+    beq     .Li9100_idle_unobserved
+    ldr     r5, [r4, #0x100]
+    dsb     sy
+    wfi
+    ldr     r0, [r4, #0x100]
+    sub     r5, r0, r5
+    LOAD_ADDR(r4, i9100_idle_wait_diag)
+    ldr     r0, [r4, #4]
+    add     r0, r0, #1
+    str     r0, [r4, #4]
+    ldr     r0, [r4, #8]
+    add     r0, r0, #1
+    str     r0, [r4, #8]
+    ldr     r0, [r4, #12]
+    ldr     r1, [r4, #16]
+    adds    r0, r0, r5
+    adc     r1, r1, #0
+    str     r0, [r4, #12]
+    str     r1, [r4, #16]
+    str     r5, [r4, #20]
+    ldr     r1, [r4, #24]
+    cmp     r5, r1
+    strhi   r5, [r4, #24]
+    str     r0, [r4, #28]
+    dsb     sy
+    ldr     r0, [r4, #4]
+    add     r0, r0, #1
+    str     r0, [r4, #4]
+    dsb     sy
+    b       .Li9100_idle_measured
+.Li9100_idle_unobserved:
+    dsb     sy
+    wfi
+.Li9100_idle_measured:
+    pop     {r4-r7}
+    cpsie   if
+#else
     cpsid   if
     wfi
     cpsie   if
+#endif
 
 .Lmachine_idle_return:
     bx      lr
@@ -361,3 +408,7 @@ EnterARM(Halt_system)
 
 LOAD_ADDR_GEN_DEF(do_power_save)
 LOAD_ADDR_GEN_DEF(CurrentThread)
+#if BOARD_CONFIG_EXYNOS4210_I9100
+LOAD_ADDR_GEN_DEF(i9100_idle_mct_map)
+LOAD_ADDR_GEN_DEF(i9100_idle_wait_diag)
+#endif
