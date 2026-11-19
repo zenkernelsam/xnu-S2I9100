@@ -16,6 +16,7 @@
 #include "i9100_pmu_reset.h"
 #include "i9100_framebuffer_copy.h"
 #include "i9100_scaled_frame.h"
+#include "i9100_irq_pc_sample.h"
 #include "../../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_home_observation.h"
 #include "../../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_touch_observation.h"
 #include <machine/machine_routines.h>
@@ -476,7 +477,7 @@ static void i9100_puthex(unsigned int v)
 static int i9100_getc(void){ return -1; }
 static void i9100_uart_init(void){ }
 void ios7i9100_kernel_continuing(void){ }
-void ios7i9100_timer_observe(unsigned int t,unsigned int c,unsigned int pc);
+void ios7i9100_timer_observe(unsigned int t,unsigned int c,unsigned int pc,unsigned int cpsr);
 int ios7i9100_panic_text_begin(unsigned int reason,unsigned int known,unsigned int primary)
 {
     if(!primary || !i9100_fatal_active || i9100_panic_text_mode)return 0;
@@ -533,6 +534,7 @@ static uint64_t i9100_perf_last_ticks;
 static volatile uint32_t i9100_irq_frame_tick,i9100_irq_frame_seen;
 static uint32_t i9100_perf_last_irqs;
 static volatile uint32_t i9100_live_irq_count, i9100_live_irq_pc;
+volatile struct i9100_pc_sample i9100_irq_pc_sample={.version=2,.period=37};
 struct I9100FramePerformance {
     uint32_t frames, copy_us, gap_ms, irq_delta, sctlr, ram_cache, fb_cache;
 };
@@ -657,9 +659,10 @@ extern volatile int i9100_panel_console_enabled;
 /* IRQ progress display: no allocation, I2C, IOKit calls or locks. A UI
  * stall with LIVE IRQ still advancing differs from an IRQ-masked hard hang.
  * Saved PC is the interrupted context, not proof that this PC caused a stall. */
-void ios7i9100_timer_observe(unsigned t,unsigned count,unsigned pc)
+void ios7i9100_timer_observe(unsigned t,unsigned count,unsigned pc,unsigned cpsr)
 {
  (void)t;
+ if(count%37U==0)i9100_pc_sample_record(&i9100_irq_pc_sample,pc,cpsr);
  if(!i9100_perf_strip || count%100U)return;
  i9100_live_irq_pc=pc;i9100_live_irq_count=count;
  if(!i9100_irq_frame_seen ||

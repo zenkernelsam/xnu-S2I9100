@@ -45,7 +45,7 @@ static void write_reg(unsigned bank,unsigned off,uint32_t value){
 static int i9100_irq_route(uint32_t ack){assert(!eois);routes++;route_token=ack;return 1;}
 static uint64_t mct_get_frc(void){return 42;}
 static void drain(void){}
-static void ios7i9100_timer_observe(uint32_t a,uint32_t b,uint32_t c){(void)a;(void)b;(void)c;observes++;}
+static void ios7i9100_timer_observe(uint32_t a,uint32_t b,uint32_t c,uint32_t d){(void)a;(void)b;(void)c;(void)d;observes++;}
 static void i9100_usbcdc_poll(void){polls++;}
 static void rtclock_intr(arm_saved_state_t *s){(void)s;ticks++;}
 '''

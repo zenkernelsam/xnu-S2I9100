@@ -5,7 +5,7 @@ void ios7i9100_checkpoint(boot_args *, unsigned int);
 void ios7i9100_forget_early_maps(void);
 void ios7i9100_debug_putc(char);
 void ios7i9100_kernel_continuing(void);
-void ios7i9100_timer_observe(unsigned int raw_mct_ticks, unsigned int irq_count, unsigned int pc);
+void ios7i9100_timer_observe(unsigned int raw_mct_ticks, unsigned int irq_count, unsigned int pc,unsigned int cpsr);
 int ios7i9100_panic_text_begin(unsigned int,unsigned int,unsigned int);
 void ios7i9100_panic_text_putc(char);
 void ios7i9100_panic_text_end(void);

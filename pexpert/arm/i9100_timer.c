@@ -55,7 +55,7 @@
 
 extern void rtc_configure(uint64_t hz);
 extern void rtclock_intr(arm_saved_state_t *regs);
-extern void ios7i9100_timer_observe(uint32_t raw_ticks, uint32_t actual_irq_count, uint32_t pc);
+extern void ios7i9100_timer_observe(uint32_t raw_ticks, uint32_t actual_irq_count, uint32_t pc,uint32_t cpsr);
 extern void ios7i9100_debug_putc(char c);
 extern void i9100_usbcdc_poll(void);
 extern void i9100_usbcdc_control_init(void);
@@ -299,7 +299,7 @@ void I9100_handle_interrupt(void *context)
         drain();
         /* Observe before etimer callbacks: a stuck callback must not hide
          * the final interrupt that entered it. */
-        ios7i9100_timer_observe(last_count_lo, irq_count, regs->pc);
+        ios7i9100_timer_observe(last_count_lo, irq_count, regs->pc,regs->cpsr);
         i9100_usbcdc_poll();
         rtclock_intr(regs);
         return;
