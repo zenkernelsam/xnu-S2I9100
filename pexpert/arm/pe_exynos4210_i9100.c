@@ -86,7 +86,7 @@ static void i9100_panel_diag_publish(void)
  uint32_t fields[14]={i9100_panel_sleep_enabled,i9100_panel_sleep.qualified,i9100_panel_sleep.stage,
   i9100_panel_sleep.error,i9100_panel_sleep.cleanup_error,i9100_panel_sleep.mode,
   i9100_panel_sleep.commands,i9100_panel_sleep.requests,i9100_panel_sleep.saved_scanout,
-  i9100_panel_sleep.owned_scanout,i9100_panel_sleep.id[0],i9100_panel_sleep.id[1],i9100_panel_sleep.id[2],0};
+  i9100_panel_sleep.owned_scanout,i9100_panel_sleep.id[0],i9100_panel_sleep.id[1],i9100_panel_sleep.id[2],i9100_panel_sleep.identity_reads};
  ++i9100_panel_sleep_diag[1];__sync_synchronize();
  for(unsigned n=0;n<14;n++)i9100_panel_sleep_diag[n+2]=fields[n];
  __sync_synchronize();++i9100_panel_sleep_diag[1];__sync_synchronize();
@@ -100,6 +100,15 @@ static void i9100_display_map_write(void *cookie,uint32_t value)
 {*(volatile uint32_t *)cookie=value;}
 static void i9100_display_map_sync(void *cookie)
 {(void)cookie;__asm__ volatile("dsb sy" ::: "memory");}
+unsigned ios7i9100_display_refresh_blocked(void)
+{
+ /* Queried under the physical display's shared workloop gate after the
+  * hardware request completes. A failed transition can already have
+  * blanked or faulted the panel; pacing must remain paused in that case. */
+ __sync_synchronize();
+ return i9100_display_power_state.blanked ||
+  (i9100_panel_sleep_enabled==1 && i9100_panel_sleep.qualified && i9100_panel_sleep.stage==I9P_FAULT);
+}
 int ios7leo_display_power(uint32_t state)
 {
  if(state>2 || !i9100_fimd_map)return 1;

@@ -104,6 +104,10 @@ int main(){
   if(scenario==4)p.wire.fail_read=1;
   if(scenario==5)p.wire.regs[0x1a0/4]&=~I9P_MUX4;
   assert(i9100_panel_probe(&s)&&!s.qualified&&!p.wire.count&&!p.scan_writes);
+  if(scenario==0)assert(s.id[0]==0xa2 && s.id[1]==0x13 && s.id[2]==0x11 && s.identity_reads==0x3f);
+  if(scenario==1)assert(s.id[0]==0xa2 && (s.identity_reads&0x40));
+  if(scenario>=2 && scenario<=3)assert(s.identity_reads==0x3f);
+  if(scenario>=4)assert(s.identity_reads==0);
  }
  panel_init(&p,&s);assert(!i9100_panel_probe(&s));p.wire.drop_mode=1;
  assert(i9100_panel_sleep_change(&s,0)==I9P_ERROR_MODE&&s.stage==I9P_FAULT&&!p.scan_writes);

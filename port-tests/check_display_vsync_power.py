@@ -81,12 +81,13 @@ static uint64_t mach_absolute_time(){return 1000000000ULL;}
 static void clock_interval_to_absolutetime_interval(unsigned value,unsigned,AbsoluteTime*out){*out=value;}
 #define NSEC_PER_USEC 1000
 #define __OSAbsoluteTime(v) (v)
-static bool portCopyFail;static unsigned copied,released;static int sendResult,hwResult;static unsigned hardwareCalls;
+static bool portCopyFail,hardwareBlocked;static unsigned copied,released;static int sendResult,hwResult;static unsigned hardwareCalls;
 static std::function<void()> duringSend;
 static mach_port_t ipc_port_copy_send(mach_port_t port){assert(gateDepth && !lockDepth);if(portCopyFail)return 0;++copied;return port;}
 static void setAsyncReference64(OSAsyncReference64 ref,mach_port_t port,io_user_reference_t cb,io_user_reference_t cookie){ref[0]=port;ref[1]=cb;ref[2]=cookie;}
 static void releaseNotificationPort(mach_port_t){assert(!lockDepth);++released;}
 static int ios7leo_display_power(uint32_t state){assert(gateDepth && !lockDepth && state<=2);++hardwareCalls;return hwResult;}
+static unsigned ios7i9100_display_refresh_blocked(){assert(gateDepth && !lockDepth);return hardwareBlocked;}
 struct IOUserClient:Object {void free(){released=true;}};
 class IOS7LabFramebufferClient:public IOUserClient {
 public:
@@ -137,7 +138,19 @@ int main(){
  assert(action(a,LEO_VSYNC_POWER,1)==0 && a.vsyncTimer->armed && b.vsyncTimer->armed && c.vsyncTimer->armed);
  assert(a.vsyncPort==ports.first && a.vsyncCallback==callbacks.first);
  hwResult=4;auto generation=a.vsyncGeneration;assert(action(a,LEO_VSYNC_POWER,0)==kIOReturnNotReady);
- assert(!a.vsyncPaused && a.vsyncGeneration==generation && a.vsyncTimer->armed);hwResult=0;
+ assert(!a.vsyncPaused && a.vsyncGeneration==generation && a.vsyncTimer->armed);
+ // A real partial panel failure is an error, yet its already black/faulted
+ // hardware cannot keep pacing. These original callbacks/ports survive for
+ // a later proved successful wake and remain inert on another refused wake.
+ hardwareBlocked=true;
+ auto a_port=a.vsyncPort,b_port=b.vsyncPort;auto a_callback=a.vsyncCallback,b_callback=b.vsyncCallback;
+ assert(action(a,LEO_VSYNC_POWER,0)==kIOReturnNotReady && a.vsyncPaused && b.vsyncPaused && c.vsyncPaused);
+ assert(!a.vsyncTimer->armed && !b.vsyncTimer->armed && !c.vsyncTimer->armed);
+ auto emitted=a.vsyncCount;a.emitVsync(a.vsyncTimer);assert(a.vsyncCount==emitted);
+ assert(action(b,LEO_VSYNC_POWER,1)==kIOReturnNotReady && !a.vsyncTimer->armed && !b.vsyncTimer->armed);
+ assert(a.vsyncPort==a_port && b.vsyncPort==b_port && a.vsyncCallback==a_callback && b.vsyncCallback==b_callback);
+ hardwareBlocked=false;hwResult=0;
+ assert(action(b,LEO_VSYNC_POWER,1)==0 && a.vsyncTimer->armed && b.vsyncTimer->armed && c.vsyncTimer->armed);
  portCopyFail=true;a.emitVsync(a.vsyncTimer);portCopyFail=false;assert(a.vsyncFaulted && !a.vsyncEnabled && !a.vsyncTimer->armed);
  assert(action(b,LEO_VSYNC_POWER,0)==0 && action(b,LEO_VSYNC_POWER,1)==0 && !a.vsyncTimer->armed && a.vsyncFaulted);
  subscribe(a,11,21);assert(a.vsyncTimer->armed && !a.vsyncFaulted);

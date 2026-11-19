@@ -39,6 +39,7 @@ int ios7i9100_display_present(const unsigned char *px,unsigned int bytes,unsigne
 int ios7i9100_display_completed(unsigned long long seq);
 int ios7i9100_display_render_size(uint32_t *width,uint32_t *height,uint32_t *row);
 int ios7leo_display_power(uint32_t state);
+unsigned ios7i9100_display_refresh_blocked(void);
 }
 #define ios7leo_display_ready ios7i9100_display_ready
 #define ios7leo_display_present(px,bytes,row,fmt,seq) ios7i9100_display_present((const unsigned char*)(px),(bytes),(row),(fmt),(unsigned long long*)(seq))
@@ -1215,8 +1216,9 @@ IOReturn IOS7LabFramebufferClient::setDisplayPowerGated(uint32_t state)
     IOLockLock(transactionLock);bool closed=vsyncClosed;IOLockUnlock(transactionLock);
     if(closed)return kIOReturnNotOpen;
     int hardwareResult=ios7leo_display_power(state);uint32_t errors=0;
-    if(!hardwareResult){
-        i9100_display_vsync_paused=state==0;
+    bool hardwareBlocked=ios7i9100_display_refresh_blocked()!=0;
+    if(!hardwareResult || hardwareBlocked){
+        i9100_display_vsync_paused=hardwareResult?true:state==0;
         for(IOS7LabFramebufferClient *client=i9100_display_power_clients;client;client=client->displayPowerNext){
             IOLockLock(client->transactionLock);
             client->vsyncPaused=i9100_display_vsync_paused;
@@ -1229,9 +1231,10 @@ IOReturn IOS7LabFramebufferClient::setDisplayPowerGated(uint32_t state)
             if(client->applyVsyncTimer(enabled,generation)!=kIOReturnSuccess)++errors;
         }
     }
-    /* A hardware failure keeps the previous pause/subscription state. A
-     * timer failure stays visible and disables only the affected client;
-     * no successful wake is fabricated, and no stale endpoint is revived. */
+    /* A refused transition that touched nothing retains the previous
+     * pacing. A partial transition with a black/faulted panel cancels all
+     * timers but still returns the hardware error. Subscriptions survive;
+     * only a real successful wake can rearm them. */
     observeVsyncPowerGated(state,hardwareResult,errors);
     recordDisplayPower(state,hardwareResult);
     return hardwareResult?hardwareResult==2?kIOReturnBusy:kIOReturnNotReady:
