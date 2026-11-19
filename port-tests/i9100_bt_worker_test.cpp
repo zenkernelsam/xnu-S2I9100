@@ -272,6 +272,14 @@ static void native_baud_path()
   assert(peer.peer_baud==target&&!peer.clock_changed_before_ack&&!stream_delivered&&!rx_delivered&&state.boot.protocol_epoch==1U&&status(r).generation[1]==1);
   uint8_t readback[44];assert(!i9100_bt_worker_stream_attributes(worker,&stream_client,readback,44,0)&&!memcmp(readback,attributes,44));
   before=peer.commands;assert(!i9100_bt_worker_stream_attributes(worker,&stream_client,attributes,44,1)&&peer.commands==before);
+  const uint32_t successive[]={115200U,2400000U};
+  for(unsigned round=0;round<2;round++){
+   uint32_t next=successive[round];for(unsigned n=0;n<4;n++)attributes[36+n]=attributes[40+n]=(uint8_t)(next>>(8*n));
+   before=peer.commands;assert(!i9100_bt_worker_stream_attributes(worker,&stream_client,attributes,44,1));state=worker_status();
+   assert(state.ready&&!state.baud_waiters&&state.boot.current_baud==next&&state.stream.baud==next&&peer.peer_baud==next);
+   assert(state.boot.baud_completed==round+2U&&peer.commands==before+2U&&!peer.clock_changed_before_ack);
+   assert(state.boot.protocol_epoch==1U&&status(r).generation[1]==1U);
+  }
   assert(!i9100_bt_worker_stream_close(worker,&stream_client));peer.baud_testing=false;
   assert(!i9100_bt_worker_stream_detach(worker));finish_worker(c,r);
  }
