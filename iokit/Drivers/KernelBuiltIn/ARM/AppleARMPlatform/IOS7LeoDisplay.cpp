@@ -71,7 +71,8 @@ struct LeoGraphicsCall {
     uint32_t surface,reason,mismatch;
     bool backend;
 };
-enum { LEO_VSYNC_PORT=1,LEO_VSYNC_CALLBACK=2,LEO_VSYNC_EMIT=3,LEO_VSYNC_CLOSE=4 };
+enum { LEO_VSYNC_PORT=1,LEO_VSYNC_CALLBACK=2,LEO_VSYNC_EMIT=3,LEO_VSYNC_CLOSE=4,
+    LEO_VSYNC_POWER=5,LEO_VSYNC_JOIN=6,LEO_VSYNC_LEAVE=7 };
 struct LeoVsyncAction {
     uint32_t operation;
     mach_port_t port;
@@ -959,7 +960,14 @@ class IOS7LabFramebufferClient : public IOUserClient {
     io_user_reference_t vsyncCallback;
     io_user_reference_t vsyncRefcon;
     bool vsyncEnabled;
-    bool vsyncRequested,vsyncClosed;
+    bool vsyncRequested,vsyncClosed,vsyncPaused,vsyncFaulted;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    IOS7LabFramebufferClient *displayPowerNext;
+    bool displayPowerJoined;
+    IOReturn displayPowerMembershipGated(bool joined);
+    IOReturn setDisplayPowerGated(uint32_t state);
+    void observeVsyncPowerGated(uint32_t state,int hardwareResult,uint32_t timerErrors);
+#endif
     uint64_t vsyncCount;
     uint64_t vsyncGeneration;
     uint32_t graphicsClient,graphicsOwnerPID;
@@ -1009,6 +1017,20 @@ OSDefineMetaClassAndStructors(IOS7LabFramebufferClient, IOUserClient);
 OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
 OSDefineMetaClassAndStructors(AppleCLCD, IOMobileFramebuffer);
 
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+/* One physical panel has one power domain. All its client configuration,
+ * timer callbacks, membership and power changes share this recursive gate.
+ * The loop is retained for the platform lifetime. Membership is intrusive
+ * and weak: free removes it under the gate before destroying any fields,
+ * so the list does not keep closed clients alive or form a retain cycle. */
+static IOWorkLoop *i9100_display_vsync_workloop;
+static IOS7LabFramebufferClient *i9100_display_power_clients;
+static bool i9100_display_vsync_paused;
+extern "C" {
+volatile uint32_t i9100_display_vsync_power_diag[16]={1};
+}
+#endif
+
 bool IOS7LabFramebufferClient::initWithTask(task_t task, void *security,
     UInt32 type, OSDictionary *properties)
 {
@@ -1025,7 +1047,10 @@ bool IOS7LabFramebufferClient::initWithTask(task_t task, void *security,
     vsyncPort = MACH_PORT_NULL;
     vsyncCallback = vsyncRefcon = 0;
     vsyncEnabled = false;
-    vsyncRequested=vsyncClosed=false;
+    vsyncRequested=vsyncClosed=vsyncPaused=vsyncFaulted=false;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    displayPowerNext=0;displayPowerJoined=false;
+#endif
     vsyncCount = 0;
     vsyncGeneration=1;graphicsClient=graphicsOwnerPID=0;
     powerDiagEnabled=0;
@@ -1035,7 +1060,12 @@ bool IOS7LabFramebufferClient::initWithTask(task_t task, void *security,
     if (!IOUserClient::initWithTask(task, security, type, properties))
         return false;
     transactionLock = IOLockAlloc();
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    vsyncWorkLoop=i9100_display_vsync_workloop;
+    if(vsyncWorkLoop)vsyncWorkLoop->retain();
+#else
     vsyncWorkLoop = IOWorkLoop::workLoop();
+#endif
     vsyncTimer = IOTimerEventSource::timerEventSource(this,
         &IOS7LabFramebufferClient::vsyncTimerFired);
     if (!transactionLock || !vsyncWorkLoop || !vsyncTimer ||
@@ -1046,6 +1076,11 @@ bool IOS7LabFramebufferClient::initWithTask(task_t task, void *security,
     int pid=process?proc_pid((struct proc *)process):0;
     graphicsOwnerPID=pid>0?(uint32_t)pid:0;
     leo_graphics_open(graphicsClient,graphicsOwnerPID);
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    LeoVsyncAction joined={LEO_VSYNC_JOIN,MACH_PORT_NULL,0,0,0,0};
+    if(vsyncWorkLoop->runAction(&IOS7LabFramebufferClient::vsyncWorkAction,this,&joined)!=kIOReturnSuccess)
+        return false;
+#endif
     return true;
 }
 
@@ -1065,6 +1100,7 @@ void IOS7LabFramebufferClient::recordDisplayPower(uint32_t state,int hardwareRes
     words[11]=(uint32_t)vsyncGeneration;words[12]=(uint32_t)(vsyncGeneration>>32);
     words[13]=(uint32_t)vsyncCount;words[14]=(uint32_t)(vsyncCount>>32);
     words[15]=powerDiagEnabled;
+    words[16]=vsyncPaused;
     IOLockUnlock(transactionLock);
     /* Never hold transactionLock while entering a second diagnostic guard.
      * A skipped diagnostic cannot change hardware or the method result. */
@@ -1107,7 +1143,7 @@ IOReturn IOS7LabFramebufferClient::applyVsyncTimer(bool enabled,uint64_t generat
     else vsyncTimer->cancelTimeout();
     IOLockLock(transactionLock);
     bool current=vsyncGeneration==generation;
-    if(current && result!=kIOReturnSuccess)vsyncEnabled=false;
+    if(current && result!=kIOReturnSuccess){vsyncEnabled=false;vsyncFaulted=true;}
     LeoGraphicsCall note={0,0,LEO_GRAPHICS_REASON_TIMER,UINT32_MAX,false};
     LeoGraphicsEvent event=graphicsEvent(LEO_GRAPHICS_EVENT_TIMER_FAILURE,9,result,note);
     IOLockUnlock(transactionLock);
@@ -1129,9 +1165,79 @@ IOReturn IOS7LabFramebufferClient::vsyncWorkAction(OSObject *target,void *arg0,
         case LEO_VSYNC_CALLBACK:return client->setVsyncCallbackGated(action->callback,action->refcon);
         case LEO_VSYNC_EMIT:client->emitVsyncGated(action->sender);return kIOReturnSuccess;
         case LEO_VSYNC_CLOSE:client->stopVsyncGated();return kIOReturnSuccess;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+        case LEO_VSYNC_POWER:return client->setDisplayPowerGated(action->type);
+        case LEO_VSYNC_JOIN:return client->displayPowerMembershipGated(true);
+        case LEO_VSYNC_LEAVE:return client->displayPowerMembershipGated(false);
+#endif
         default:return kIOReturnBadArgument;
     }
 }
+
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+IOReturn IOS7LabFramebufferClient::displayPowerMembershipGated(bool joined)
+{
+    if(joined){
+        if(displayPowerJoined)return kIOReturnSuccess;
+        vsyncPaused=i9100_display_vsync_paused;
+        displayPowerNext=i9100_display_power_clients;
+        i9100_display_power_clients=this;displayPowerJoined=true;
+        return kIOReturnSuccess;
+    }
+    if(!displayPowerJoined)return kIOReturnSuccess;
+    IOS7LabFramebufferClient **link=&i9100_display_power_clients;
+    while(*link && *link!=this)link=&(*link)->displayPowerNext;
+    if(*link!=this)return kIOReturnNotReady;
+    *link=displayPowerNext;displayPowerNext=0;displayPowerJoined=false;
+    return kIOReturnSuccess;
+}
+
+void IOS7LabFramebufferClient::observeVsyncPowerGated(uint32_t state,
+    int hardwareResult,uint32_t timerErrors)
+{
+    uint32_t values[14]={0};
+    values[0]=i9100_display_vsync_power_diag[2]+1U;values[1]=state;
+    values[2]=(uint32_t)hardwareResult;values[3]=i9100_display_vsync_paused;
+    for(IOS7LabFramebufferClient *client=i9100_display_power_clients;client;client=client->displayPowerNext){
+        ++values[4];values[5]+=client->vsyncPaused;values[6]+=client->vsyncEnabled;
+        values[7]+=client->vsyncRequested;values[8]+=client->vsyncClosed;
+        values[11]+=client->vsyncFaulted;
+    }
+    values[9]=timerErrors;values[10]=graphicsOwnerPID;
+    ++i9100_display_vsync_power_diag[1];__sync_synchronize();
+    for(unsigned n=0;n<14;n++)i9100_display_vsync_power_diag[n+2]=values[n];
+    __sync_synchronize();++i9100_display_vsync_power_diag[1];__sync_synchronize();
+}
+
+IOReturn IOS7LabFramebufferClient::setDisplayPowerGated(uint32_t state)
+{
+    if(state>2 || !displayPowerJoined)return kIOReturnBadArgument;
+    IOLockLock(transactionLock);bool closed=vsyncClosed;IOLockUnlock(transactionLock);
+    if(closed)return kIOReturnNotOpen;
+    int hardwareResult=ios7leo_display_power(state);uint32_t errors=0;
+    if(!hardwareResult){
+        i9100_display_vsync_paused=state==0;
+        for(IOS7LabFramebufferClient *client=i9100_display_power_clients;client;client=client->displayPowerNext){
+            IOLockLock(client->transactionLock);
+            client->vsyncPaused=i9100_display_vsync_paused;
+            if(!++client->vsyncGeneration)++client->vsyncGeneration;
+            uint64_t generation=client->vsyncGeneration;
+            client->vsyncEnabled=!client->vsyncPaused && !client->vsyncFaulted && !client->vsyncClosed && client->vsyncRequested &&
+                IPC_PORT_VALID(client->vsyncPort) && client->vsyncCallback;
+            bool enabled=client->vsyncEnabled;
+            IOLockUnlock(client->transactionLock);
+            if(client->applyVsyncTimer(enabled,generation)!=kIOReturnSuccess)++errors;
+        }
+    }
+    /* A hardware failure keeps the previous pause/subscription state. A
+     * timer failure stays visible and disables only the affected client;
+     * no successful wake is fabricated, and no stale endpoint is revived. */
+    observeVsyncPowerGated(state,hardwareResult,errors);
+    recordDisplayPower(state,hardwareResult);
+    return hardwareResult?hardwareResult==2?kIOReturnBusy:kIOReturnNotReady:
+        errors?kIOReturnNotReady:kIOReturnSuccess;
+}
+#endif
 
 void IOS7LabFramebufferClient::stopVsync(void)
 {
@@ -1184,7 +1290,7 @@ void IOS7LabFramebufferClient::emitVsyncGated(IOTimerEventSource *sender)
      * IOTimerEventSource also invokes timer actions under this same gate.
      * Driver transactionLock is never held across IPC or timer APIs. */
     IOLockLock(transactionLock);
-    if(vsyncClosed || !vsyncRequested || !vsyncEnabled ||
+    if(vsyncClosed || vsyncPaused || !vsyncRequested || !vsyncEnabled ||
        !IPC_PORT_VALID(vsyncPort) || !vsyncCallback){
         IOLockUnlock(transactionLock);return;
     }
@@ -1198,7 +1304,7 @@ void IOS7LabFramebufferClient::emitVsyncGated(IOTimerEventSource *sender)
     if(!IPC_PORT_VALID(heldPort)){
         IOLockLock(transactionLock);
         bool current=vsyncGeneration==generation;
-        if(current)vsyncEnabled=false;
+        if(current){vsyncEnabled=false;vsyncFaulted=true;}
         LeoGraphicsCall note={0,0,LEO_GRAPHICS_REASON_PORT_COPY,UINT32_MAX,false};
         LeoGraphicsEvent event=graphicsEvent(LEO_GRAPHICS_EVENT_COPY_SEND_FAILURE,9,kIOReturnNotReady,note);
         IOLockUnlock(transactionLock);if(current)vsyncTimer->cancelTimeout();
@@ -1234,11 +1340,11 @@ void IOS7LabFramebufferClient::emitVsyncGated(IOTimerEventSource *sender)
     }
     IOLockLock(transactionLock);
     bool current=vsyncGeneration==generation;
-    bool rearm=current && !vsyncClosed && vsyncRequested && vsyncEnabled &&
+    bool rearm=current && !vsyncClosed && !vsyncPaused && vsyncRequested && vsyncEnabled &&
                IPC_PORT_VALID(vsyncPort) && vsyncCallback && (result==kIOReturnSuccess || temporary);
     /* A skipped periodic tick is not a delivery success. Keep pacing armed
      * for a fresh later tick; invalid/dead destinations still stop it. */
-    if(current && result!=kIOReturnSuccess && !temporary)vsyncEnabled=false;
+    if(current && result!=kIOReturnSuccess && !temporary){vsyncEnabled=false;vsyncFaulted=true;}
     LeoGraphicsCall note={0,0,LEO_GRAPHICS_REASON_NONE,UINT32_MAX,false};
     LeoGraphicsEvent event=graphicsEvent(current?LEO_GRAPHICS_EVENT_SEND_FAILURE:
         LEO_GRAPHICS_EVENT_STALE_SEND,9,result,note);
@@ -1279,9 +1385,10 @@ IOReturn IOS7LabFramebufferClient::registerNotificationPortGated(mach_port_t por
     }
     mach_port_t oldPort=vsyncPort;
     vsyncPort=port;
+    vsyncFaulted=false; /* An explicit new destination may recover delivery. */
     if(!++vsyncGeneration)++vsyncGeneration;
     uint64_t generation=vsyncGeneration;
-    vsyncEnabled=vsyncRequested && IPC_PORT_VALID(vsyncPort) && vsyncCallback;
+    vsyncEnabled=!vsyncPaused && vsyncRequested && IPC_PORT_VALID(vsyncPort) && vsyncCallback;
     bool enabled=vsyncEnabled;
     IOLockUnlock(transactionLock);
     IOReturn timerResult=applyVsyncTimer(enabled,generation);
@@ -1299,9 +1406,10 @@ IOReturn IOS7LabFramebufferClient::setVsyncCallbackGated(io_user_reference_t cal
     IOLockLock(transactionLock);
     if(vsyncClosed){IOLockUnlock(transactionLock);return kIOReturnNotOpen;}
     vsyncCallback=callback;vsyncRefcon=refcon;vsyncRequested=callback!=0;
+    vsyncFaulted=false; /* An explicit callback update starts a fresh session. */
     if(!++vsyncGeneration)++vsyncGeneration;
     uint64_t generation=vsyncGeneration;
-    vsyncEnabled=vsyncRequested && IPC_PORT_VALID(vsyncPort);
+    vsyncEnabled=!vsyncPaused && vsyncRequested && IPC_PORT_VALID(vsyncPort);
     bool enable=vsyncEnabled;
     IOLockUnlock(transactionLock);
     IOReturn result=applyVsyncTimer(enable,generation);
@@ -1313,6 +1421,12 @@ IOReturn IOS7LabFramebufferClient::setVsyncCallbackGated(io_user_reference_t cal
 void IOS7LabFramebufferClient::free(void)
 {
     stopVsync();
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    if(vsyncWorkLoop && displayPowerJoined){
+        LeoVsyncAction left={LEO_VSYNC_LEAVE,MACH_PORT_NULL,0,0,0,0};
+        (void)vsyncWorkLoop->runAction(&IOS7LabFramebufferClient::vsyncWorkAction,this,&left);
+    }
+#endif
     if (vsyncWorkLoop && vsyncTimer) vsyncWorkLoop->removeEventSource(vsyncTimer);
     if (vsyncTimer) { vsyncTimer->release(); vsyncTimer = 0; }
     if (vsyncWorkLoop) { vsyncWorkLoop->release(); vsyncWorkLoop = 0; }
@@ -1655,9 +1769,8 @@ IOReturn IOS7LabFramebufferClient::performExternalMethod(uint32_t selector,
            args->scalarOutputCount || args->structureOutputSize)
             return kIOReturnBadArgument;
 #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
-        int result=ios7leo_display_power((uint32_t)args->scalarInput[0]);
-        recordDisplayPower((uint32_t)args->scalarInput[0],result);
-        return result==0?kIOReturnSuccess:result==2?kIOReturnBusy:kIOReturnNotReady;
+        LeoVsyncAction action={LEO_VSYNC_POWER,MACH_PORT_NULL,(uint32_t)args->scalarInput[0],0,0,0};
+        return vsyncWorkLoop->runAction(&IOS7LabFramebufferClient::vsyncWorkAction,this,&action);
 #else
         return kIOReturnSuccess;
 #endif
@@ -2247,6 +2360,10 @@ void ios7leo_register_display(IOService *platform)
     if(budget>available)budget=available;if(budget>16U*1024U*1024U)budget=16U*1024U*1024U;
     displayBudget=(uint32_t)budget;
     if(displayBudget<offscreenPixelBytes+4096U+65536U || !ios7lab_primary_ready())return;
+#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+    i9100_display_vsync_workloop=IOWorkLoop::workLoop();
+    if(!i9100_display_vsync_workloop)return;
+#endif
     IOSurfaceRoot *surfaces = new IOCoreSurfaceRoot;
     IOMobileFramebuffer *display = new AppleCLCD;
     bool surfacesAttached=false,displayAttached=false;
