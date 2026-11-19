@@ -102,6 +102,15 @@ int main(void)
  assert(!i9100_bt_stream_pause(&stream,0));
  uint8_t complete[]={0x0e,4,1,3,0x0c,0};frame=(struct i9100_bt_frame){4,complete,6};assert(!i9100_bt_stream_receive(&stream,&frame));step();
  assert(!status().host_reset_pending);assert(!i9100_bt_stream_write(&stream,&client,cmd,4));step();assert(model.commands==2U);
+ setup();stream.status.owned=0;stream.client=0;
+ assert(!i9100_bt_stream_allow_host_reset(&stream,1));assert(!i9100_bt_stream_open(&stream,&client));
+ assert(!i9100_bt_stream_write(&stream,&client,reset,4));step();assert(status().paused&&model.commands==1U);
+ model.ns+=1900000001ULL;assert(i9100_bt_stream_step(&stream,1)==I9100_BTS_TIMEOUT&&status().fault&&model.commands==1U);
+ setup();stream.status.owned=0;stream.client=0;
+ assert(!i9100_bt_stream_allow_host_reset(&stream,1));assert(!i9100_bt_stream_open(&stream,&client));model.busy=1;
+ assert(!i9100_bt_stream_write(&stream,&client,reset,4));uint8_t unrelated[]={0xff,1,0xab};frame=(struct i9100_bt_frame){4,unrelated,3};
+ assert(!i9100_bt_stream_receive(&stream,&frame));step();assert(status().host_reset_pending&&!model.commands&&model.bytes==4U);
+ assert(i9100_bt_stream_write(&stream,&client,cmd,4)==I9100_BTS_AGAIN);
  puts("PASS actual H4 stream:fragmented/coalesced TX,managed ACL generation,atomic malformed rejection,44B termios,no synthetic reply,socket backpressure,bounded queues,partial-write no replay,close/reentry/owner/timeout/clock");
  return 0;
 }
