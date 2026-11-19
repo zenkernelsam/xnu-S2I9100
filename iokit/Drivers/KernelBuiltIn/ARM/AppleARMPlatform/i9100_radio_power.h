@@ -32,11 +32,14 @@ struct i9100_radio_status {
  int32_t error,cleanup_error;
  uint32_t native_bound,native_closing,native_uart_owned,native_sdio_owned;
  int32_t native_error,native_cleanup_error;
+ uint32_t native_uart_epoch_used;
 };
 int i9100_radio_power_init(struct i9100_radio_power *,int enabled,struct i9100_gpio_broker *,const struct i9100_radio_io *,int eur_u1_verified);
 int i9100_radio_set_power(struct i9100_radio_power *,enum i9100_radio_role,int on);
 int i9100_radio_hold_get(struct i9100_radio_power *,enum i9100_radio_role,struct i9100_radio_hold *);
 int i9100_radio_hold_put(struct i9100_radio_hold *);
+int i9100_radio_power_verify(struct i9100_radio_power *,enum i9100_radio_role,uint32_t expected_generation);
+int i9100_radio_power_verify_held(struct i9100_radio_power *,enum i9100_radio_role,uint32_t expected_generation);
 int i9100_radio_power_status(struct i9100_radio_power *,struct i9100_radio_status *);
 int i9100_radio_power_close(struct i9100_radio_power *);
 /* Default OFF. EUR U1 control pins only: GPL1.2 WLAN_EN, GPL0.4 BT_EN,

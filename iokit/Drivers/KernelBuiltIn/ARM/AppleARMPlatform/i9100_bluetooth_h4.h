@@ -15,6 +15,7 @@ struct i9100_bt_io {
 struct i9100_bt_frame {uint8_t type;const uint8_t *bytes;uint32_t length;};
 struct i9100_bt_h4 {
  struct i9100_bt_io io;
+ uintptr_t self;
  uint64_t command_started;
  uint32_t initialized,enabled,fault,link_generation,pending,used,needed,header,packets;
  uint16_t opcode,last_opcode;

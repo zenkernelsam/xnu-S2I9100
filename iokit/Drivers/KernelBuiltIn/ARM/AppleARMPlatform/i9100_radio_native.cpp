@@ -12,7 +12,7 @@ void absolutetime_to_nanoseconds(uint64_t,uint64_t *);
 struct i9100_radio_native {
  i9100_peripheral_native *parent;i9100_radio_supply supply;IOLock *lock;
  i9100_radio_power power;i9100_native_transport_lease uart,sdio;
- i9100_radio_hold uart_hold,sdio_hold;uint32_t bound,closing;int32_t error,cleanup_error;
+ i9100_radio_hold uart_hold,sdio_hold;uint32_t bound,closing,uart_epoch_used;int32_t error,cleanup_error;
 };
 static int control_lock(void *cookie)
 {i9100_radio_native *r=(i9100_radio_native *)cookie;return !ml_get_interrupts_enabled()||!IOLockTryLock(r->lock)?-1:0;}
@@ -59,7 +59,9 @@ int i9100_radio_native_uart_open(i9100_radio_native *r,uint32_t clock,uint32_t b
 {
  if(!output_valid(r,out,sizeof(*out)))return I9100_RADIO_ARGUMENT;if(r->closing)return I9100_RADIO_DISABLED;
  if(r->uart.owned||r->uart_hold.owned)return I9100_RADIO_BUSY;
+ if(r->power.generation[1]&&r->power.generation[1]<=r->uart_epoch_used)return I9100_RADIO_OWNER;
  int e=i9100_radio_hold_get(&r->power,I9100_RADIO_BT,&r->uart_hold);if(e)return e;
+ r->uart_epoch_used=r->uart_hold.generation;
  e=i9100_peripheral_native_uart_open_owned(r->parent,&r->uart,clock,baud,fraction,1,out);
  if(e&&!r->uart.owned)r->cleanup_error=i9100_radio_hold_put(&r->uart_hold);
  r->error=e;return e;
@@ -95,7 +97,17 @@ int i9100_radio_native_status(i9100_radio_native *r,i9100_radio_status *out)
  if(!output_valid(r,out,sizeof(*out)))return I9100_RADIO_ARGUMENT;
  int e=i9100_radio_power_status(&r->power,out);
  if(!e){out->native_bound=r->bound;out->native_closing=r->closing;out->native_uart_owned=r->uart.owned;out->native_sdio_owned=r->sdio.owned;
-  out->native_error=r->error;out->native_cleanup_error=r->cleanup_error;}return e;
+  out->native_error=r->error;out->native_cleanup_error=r->cleanup_error;out->native_uart_epoch_used=r->uart_epoch_used;}return e;
+}
+int i9100_radio_native_verify(i9100_radio_native *r,enum i9100_radio_role role,uint32_t generation)
+{
+ if(!r||(role!=I9100_RADIO_BT&&role!=I9100_RADIO_WLAN)||r->closing)return I9100_RADIO_OWNER;
+ return i9100_radio_power_verify(&r->power,role,generation);
+}
+int i9100_radio_native_verify_uart_cleanup(i9100_radio_native *r,uint32_t generation)
+{
+ if(!r||!r->uart.owned||!r->uart_hold.owned||r->uart_hold.generation!=generation)return I9100_RADIO_OWNER;
+ return i9100_radio_power_verify_held(&r->power,I9100_RADIO_BT,generation);
 }
 int i9100_radio_native_close(i9100_radio_native **owner)
 {

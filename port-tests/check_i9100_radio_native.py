@@ -11,6 +11,7 @@ sources=["i9100_gpio_broker.c","i9100_clock_gates.c","i9100_irq_registry.c","i91
 helper=REPO/"port-tests/i9100_native_parent_model.h"
 before=hashlib.sha256(helper.read_bytes()).hexdigest()
 e=Evidence("radio-native-offline")
+e.wait_idle_seconds=60
 e.model_cpp("i9100_radio_native_test.cpp",sources,["i9100_radio_native.cpp"])
 if hashlib.sha256(helper.read_bytes()).hexdigest()!=before:raise RuntimeError("Native fixture changed during verification")
 e.result["native_parent_fixture_sha256"]=before

@@ -3,14 +3,17 @@
 #include <string.h>
 static uint16_t le16(const uint8_t *b){return (uint16_t)(b[0]|((uint16_t)b[1]<<8));}
 static uint32_t le32(const uint8_t *b){return b[0]|((uint32_t)b[1]<<8)|((uint32_t)b[2]<<16)|((uint32_t)b[3]<<24);}
+static int valid(const struct i9100_bt_h4 *b){return b&&b->initialized&&b->self==(uintptr_t)b;}
+static int overlaps(const void *a,unsigned an,const void *c,unsigned cn)
+{uintptr_t x=(uintptr_t)a,y=(uintptr_t)c;return x>UINTPTR_MAX-an||y>UINTPTR_MAX-cn||(x+an>y&&y+cn>x);}
 int i9100_bt_init(struct i9100_bt_h4 *b,const struct i9100_bt_io *io)
 {
  if(!b||b->initialized||!io||!io->lock||!io->unlock||!io->write||!io->quiesce||!io->now_ns)return I9100_BT_ARGUMENT;
- memset(b,0,sizeof(*b));b->io=*io;b->initialized=1;return 0;
+ memset(b,0,sizeof(*b));b->io=*io;b->self=(uintptr_t)b;b->initialized=1;return 0;
 }
 int i9100_bt_enable(struct i9100_bt_h4 *b,int enabled,uint32_t generation)
 {
- if(!b||!b->initialized||(enabled!=0&&enabled!=1))return I9100_BT_ARGUMENT;
+ if(!valid(b)||(enabled!=0&&enabled!=1))return I9100_BT_ARGUMENT;
  if(b->io.lock(b->io.cookie))return I9100_BT_BUSY;
  int e=0;
  if(enabled){
@@ -25,7 +28,7 @@ done:
 }
 int i9100_bt_command(struct i9100_bt_h4 *b,uint16_t opcode,const uint8_t *payload,unsigned length)
 {
- if(!b||!b->initialized||!opcode||length>255U||(length&&!payload))return I9100_BT_ARGUMENT;
+ if(!valid(b)||!opcode||length>255U||(length&&(!payload||overlaps(b,sizeof(*b),payload,length))))return I9100_BT_ARGUMENT;
  if(b->io.lock(b->io.cookie))return I9100_BT_BUSY;
  int e=0;
  if(!b->enabled){e=I9100_BT_DISABLED;goto done;}
@@ -45,18 +48,26 @@ static int event(struct i9100_bt_h4 *b)
  if(b->frame[0]!=4U)return 0;
  uint8_t code=b->frame[1],length=b->frame[2];
  if(code!=0x0eU&&code!=0x0fU)return 0;
- if((code==0x0eU&&length<4U)||(code==0x0fU&&length!=4U))return I9100_BT_FRAME;
+ if((code==0x0eU&&length<3U)||(code==0x0fU&&length!=4U))return I9100_BT_FRAME;
  unsigned base=code==0x0eU?4U:5U;uint16_t opcode=le16(b->frame+base);
- uint8_t credits=b->frame[code==0x0eU?3U:4U],status=b->frame[code==0x0eU?6U:3U];
- b->credits=credits;
+ uint8_t credits=b->frame[code==0x0eU?3U:4U];
+ if(code==0x0eU&&!opcode){if(length!=3U)return I9100_BT_FRAME;b->credits=credits;return 0;}
+ if(code==0x0eU&&length<4U)return I9100_BT_FRAME;
+ uint8_t status=b->frame[code==0x0eU?6U:3U];
  if(!b->pending||opcode!=b->opcode)return I9100_BT_UNMATCHED;
+ uint64_t now=b->io.now_ns(b->io.cookie);
+ if(now<b->command_started||now-b->command_started>1000000000ULL){b->fault=1;return I9100_BT_TIMEOUT;}
+ b->credits=credits;
  b->pending=0;b->last_opcode=opcode;b->last_status=status;b->last_completion=code;
  return status?I9100_BT_CONTROLLER:0;
 }
 int i9100_bt_feed(struct i9100_bt_h4 *b,const uint8_t *input,unsigned length,unsigned *consumed,struct i9100_bt_frame *out)
 {
- if(consumed)*consumed=0;
- if(!b||!b->initialized||!input||!length||length>65536U||!consumed||!out)return I9100_BT_ARGUMENT;
+ if(!valid(b)||!input||!length||length>65536U||!consumed||!out||
+    overlaps(b,sizeof(*b),input,length)||overlaps(b,sizeof(*b),consumed,sizeof(*consumed))||
+    overlaps(b,sizeof(*b),out,sizeof(*out))||overlaps(input,length,consumed,sizeof(*consumed))||
+    overlaps(input,length,out,sizeof(*out))||overlaps(consumed,sizeof(*consumed),out,sizeof(*out)))return I9100_BT_ARGUMENT;
+ *consumed=0;memset(out,0,sizeof(*out));
  if(b->io.lock(b->io.cookie))return I9100_BT_BUSY;
  int e=0;
  if(!b->enabled){e=I9100_BT_DISABLED;goto done;}if(b->fault){e=I9100_BT_IO;goto done;}
@@ -75,8 +86,8 @@ int i9100_bt_feed(struct i9100_bt_h4 *b,const uint8_t *input,unsigned length,uns
    b->needed=b->header+payload;
   }
   if(b->needed&&b->used==b->needed){
-   e=event(b);if(e==I9100_BT_FRAME)goto fail;
-   out->type=b->frame[0];out->bytes=b->frame+1;out->length=b->used-1U;b->packets++;
+   e=event(b);if(e==I9100_BT_FRAME||e==I9100_BT_TIMEOUT)goto fail;
+   out->type=b->frame[0];out->bytes=b->frame+1;out->length=b->used-1U;if(b->packets!=UINT32_MAX)b->packets++;
    if(!e)e=1;goto done;
   }
  }
@@ -88,7 +99,7 @@ done:
 }
 int i9100_bt_poll(struct i9100_bt_h4 *b)
 {
- if(!b||!b->initialized)return I9100_BT_ARGUMENT;
+ if(!valid(b))return I9100_BT_ARGUMENT;
  if(b->io.lock(b->io.cookie))return I9100_BT_BUSY;
  int e=0;
  if(!b->enabled)e=I9100_BT_DISABLED;else if(b->fault)e=I9100_BT_IO;

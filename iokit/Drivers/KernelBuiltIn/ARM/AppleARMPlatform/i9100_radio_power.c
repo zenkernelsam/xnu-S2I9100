@@ -163,6 +163,28 @@ int i9100_radio_power_status(struct i9100_radio_power *p,struct i9100_radio_stat
  for(unsigned n=0;n<2U;n++){out->powered[n]=p->powered[n];out->power_owned[n]=p->power_owned[n];out->generation[n]=p->generation[n];out->holds[n]=p->holds[n];}
  drop(p);return 0;
 }
+int i9100_radio_power_verify(struct i9100_radio_power *p,enum i9100_radio_role role,uint32_t generation)
+{
+ if((role!=I9100_RADIO_WLAN&&role!=I9100_RADIO_BT)||!generation)return I9100_RADIO_ARGUMENT;
+ int e=take(p);if(e)return e;unsigned index=role-1U;
+ if(!p->enabled||!p->ready||p->closing||p->fault||!p->powered[index]||!p->power_owned[index]||
+    p->generation[index]!=generation||!p->supply_owned)e=I9100_RADIO_OWNER;
+ else if(p->io.supply_verify(p->io.cookie))e=I9100_RADIO_NOT_READY;
+ else{
+  e=index==0U?level(p,1,2,1):level(p,0,4,1);
+  if(!e&&index==1U)e=level(p,1,0,1);if(!e&&index==1U)e=level(p,2,1,1);
+ }
+ drop(p);return e; /* read-only proof; no invented reset/recovery or state clearing */
+}
+int i9100_radio_power_verify_held(struct i9100_radio_power *p,enum i9100_radio_role role,uint32_t generation)
+{
+ if((role!=I9100_RADIO_WLAN&&role!=I9100_RADIO_BT)||!generation)return I9100_RADIO_ARGUMENT;
+ int e=take(p);if(e)return e;unsigned index=role-1U;
+ if(!p->enabled||!p->power_owned[index]||!p->holds[index]||p->generation[index]!=generation||!p->supply_owned)e=I9100_RADIO_OWNER;
+ else if(p->io.supply_verify(p->io.cookie))e=I9100_RADIO_NOT_READY;
+ else {e=index==0U?level(p,1,2,1):level(p,0,4,1);if(!e&&index==1U)e=level(p,1,0,1);if(!e&&index==1U)e=level(p,2,1,1);}
+ drop(p);return e; /* A closing owner still permits electrically-qualified host quiesce. */
+}
 int i9100_radio_power_close(struct i9100_radio_power *p)
 {
  int e=take(p);if(e)return e;e=close_locked(p);p->cleanup_error=e;if(e)p->fault=1;drop(p);return e;

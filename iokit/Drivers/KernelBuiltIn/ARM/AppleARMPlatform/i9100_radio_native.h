@@ -18,6 +18,8 @@ int i9100_radio_native_sdio_open(struct i9100_radio_native *,uint32_t verified_s
 int i9100_radio_native_transport_close(struct i9100_radio_native *,enum i9100_radio_role);
 int i9100_radio_native_borrow(struct i9100_radio_native *,enum i9100_radio_role,struct i9100_native_transport_hold *);
 int i9100_radio_native_status(struct i9100_radio_native *,struct i9100_radio_status *);
+int i9100_radio_native_verify(struct i9100_radio_native *,enum i9100_radio_role,uint32_t expected_generation);
+int i9100_radio_native_verify_uart_cleanup(struct i9100_radio_native *,uint32_t expected_generation);
 int i9100_radio_native_close(struct i9100_radio_native **);
 /* Default OFF, real broker + IOLock/MCT timebase/native-owned hosts, no new
  * raw MMIO map or automatic registration. The supply provider remains owned
@@ -29,6 +31,8 @@ int i9100_radio_native_close(struct i9100_radio_native **);
  * borrow registers a native hold for an active UART/SDIO host. A session
  * holds one until firmware/H4 is halted; each workloop holds another until
  * all event sources are stopped/removed. Release via native hold_put.
+ * A physical BT power generation permits one UART open attempt; closing H4
+ * cannot turn the same ROM/partial-write epoch into a fresh initialization.
  * Close blocks new opens, confirms GPIO/supply shutdown, then unbinds and
  * frees context. Any failure keeps parent/provider/context alive. The owner
  * serializes context pointer lifetime/close against wrapper API calls.
