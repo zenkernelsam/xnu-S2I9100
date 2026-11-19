@@ -48,7 +48,8 @@ int i9100_dma_native_allocate_aligned(int enabled,uint32_t bytes,uint32_t alignm
  if(!result)return I9100_DMA_ARGUMENT;*result=0;
  if(enabled!=1)return I9100_DMA_DISABLED;
  if(!engine_idle||!bytes||(bytes&4095U)||bytes>8U*1024U*1024U||
-    (alignment!=4096U&&alignment!=8192U&&alignment!=16384U&&alignment!=32768U))return I9100_DMA_ARGUMENT;
+    (alignment!=4096U&&alignment!=8192U&&alignment!=16384U&&alignment!=32768U&&
+     alignment!=65536U&&alignment!=131072U))return I9100_DMA_ARGUMENT;
  i9100_dma_native *n=(i9100_dma_native *)IOMalloc(sizeof(*n));
  if(!n)return I9100_DMA_IO;
  memset(n,0,sizeof(*n));n->engine_cookie=engine_cookie;n->engine_idle=engine_idle;

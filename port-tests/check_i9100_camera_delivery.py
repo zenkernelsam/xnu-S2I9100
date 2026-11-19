@@ -46,6 +46,7 @@ def main():
     p.add_argument("--kernel", type=Path, required=True)
     p.add_argument("--references", type=Path, required=True)
     p.add_argument("--patch-check", type=Path, required=True)
+    p.add_argument("--firmware-check", type=Path, help="Audit default-unreviewed MFC preparation against actual core output")
     a = p.parse_args()
     e = Evidence("camera-delivery")
     e.wait_idle_seconds = 60
@@ -63,6 +64,13 @@ def main():
         for name, expected in m.get("facade_headers", {}).items():
             if sha(REPO / "port-tests/offline-native-sdk" / name) != expected:
                 raise RuntimeError("Host facade changed")
+        for name, expected in m.get("extra_facade_headers", {}).items():
+            if sha(REPO / name) != expected:
+                raise RuntimeError("Extra host allocation/PTE facade changed")
+        if m.get("host_source_override"):
+            override = m["host_source_override"]
+            if sha(PLATFORM / "i9100_dma_native.cpp") != override["original_sha256"] or sha(folder / "i9100_dma_native.cpp") != override["copy_sha256"]:
+                raise RuntimeError("Actual DMA source/host-only CPU barrier substitution drift")
         models[str(folder.relative_to(ROOT))] = sha(folder / "manifest.json")
     kernel_folder, kernel = retained(a.kernel)
     if not kernel.get("complete_kernel_link") or sha(kernel_folder / "mach_kernel.sys") != kernel["linked_kernel_sha256"]:
@@ -88,7 +96,10 @@ def main():
     compile_items = []
     cursor = kernel_folder
     seen = set()
-    needed = {"i9100_camera_engine_io.c", "i9100_csis.c", "i9100_fimc.c", "i9100_camera_native.cpp", "i9100_camera_mmio.cpp"}
+    needed = {name for name in names if name.startswith(("i9100_camera_", "i9100_csis.", "i9100_fimc.", "i9100_mfc"))
+              and name != "i9100_camera_protocol.c"}
+    if "i9100_mfc_native.cpp" in names:
+        needed.add("i9100_dma_native.cpp")
     for _ in range(32):
         if cursor in seen:
             raise RuntimeError("Cyclic complete reference")
@@ -130,6 +141,31 @@ def main():
     reference_tool = loader / "scripts/i9100/research-camera-capture.py"
     if sha(reference_tool) != r["verifier_sha256"]:
         raise RuntimeError("Reference verifier changed")
+    firmware_check = None
+    if a.firmware_check:
+        checked = a.firmware_check.resolve()
+        if not checked.is_relative_to(loader / "out"):
+            raise RuntimeError("Firmware fixture evidence escaped loader out")
+        check = json.loads((checked / "test-result.json").read_text())
+        if check.get("result") != "PASS" or check.get("hardware_tested") is not False or check.get("device_contacted") is not False:
+            raise RuntimeError("Bad firmware preparation fixture")
+        for name, key in (("prepare-mfc-firmware.py", "preparer_sha256"), ("check-mfc-firmware.py", "checker_sha256")):
+            if sha(loader / "scripts/i9100" / name) != check[key]:
+                raise RuntimeError("Firmware tool changed")
+        proof_path, proof = retained(ROOT / check["core_model"])
+        if sha(proof_path / "manifest.json") != check["core_manifest_sha256"] or sha(proof_path / "mfc-core.json") != check["core_output_sha256"]:
+            raise RuntimeError("Actual C-core producer drift")
+        if sha(REPO / "port-tests" / proof["models"]) != proof["models_sha256"]:
+            raise RuntimeError("Actual C-core output fixture changed")
+        prepared = (ROOT / check["prepared"]).resolve()
+        if not prepared.is_relative_to(loader / "out"):
+            raise RuntimeError("Prepared firmware escaped loader out")
+        fm = json.loads((prepared / "manifest.json").read_text())
+        if not fm["model_fixture"] or fm["board_data_reviewed"] or fm["profile"]["board_data_reviewed"] or fm["hardware_tested"] or fm["device_contacted"]:
+            raise RuntimeError("Fixture became production firmware evidence")
+        if sha(prepared / "mfc_fw.bin") != fm["profile"]["sha256"] or fm["header_plan"] != json.loads((proof_path / "mfc-core.json").read_text())["plan"]:
+            raise RuntimeError("Prepared firmware/SHA/C layout mismatch")
+        firmware_check = dict(path=str(checked.relative_to(ROOT)), sha256=sha(checked / "test-result.json"))
     patch_folder, joint = retained(a.patch_check)
     for name, expected in joint["live_source_sha256"].items():
         if sha(REPO / name) != expected:
@@ -160,7 +196,7 @@ def main():
                                           sha256=kernel["linked_kernel_sha256"], objects=len(inputs), peripherals=len(names)),
                     joint_patch_proof_sha256=sha(patch_folder / "manifest.json"),
                     loader_source_sha256=record["source_sha256"], loader_patch_sha256=record["patch_sha256"],
-                    live_builder_modified=False)
+                    firmware_preparation_fixture=firmware_check, live_builder_modified=False)
     e.finish([], "Current camera cores/native/ARM objects, frozen full kernel, pinned source facts and out-only integration; no hardware or loader deployment")
 
 
