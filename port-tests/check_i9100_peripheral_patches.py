@@ -9,12 +9,15 @@ from i9100_offline_build import Evidence, REPO
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("--power-shared", action="store_true")
+p.add_argument("--emmc-storage", action="store_true")
 args = p.parse_args()
 e = Evidence("peripheral-patch-check")
 e.wait_idle_seconds = 60
 paths = ["iokit/conf/files.arm", "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp"]
 if args.power_shared:
     paths += ["iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_power_bus.c", "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100Power.cpp"]
+if args.emmc_storage:
+    paths += ["iokit/Kernel/Storage/IOMediaBSDClient.cpp","iokit/bsddev/IOKitBSDInit.cpp"]
 tree = e.out / "integration-tree"
 captured = {}
 for path in paths:
@@ -27,6 +30,8 @@ patches = [REPO / "port-tests/i9100_emmc_integration.patch",
            REPO / "port-tests/i9100_peripheral_buses_build.patch"]
 if args.power_shared:
     patches.append(REPO / "port-tests/i9100_power_shared_integration.patch")
+if args.emmc_storage:
+    patches.append(REPO / "port-tests/i9100_emmc_storage_integration.patch")
 patch_hashes = {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest() for path in patches}
 prefix = str(tree.relative_to(REPO))
 e.run(["git", "apply", "--check", "--directory=" + prefix, *map(str, patches)], "joint-apply-check", cwd=REPO)
@@ -55,4 +60,5 @@ for path in patches:
 e.result.update(live_source_sha256=captured, integration_patch_sha256=patch_hashes,
                 object_count=len(names), live_tree_modified=False, patched_only=str(tree.relative_to(REPO)))
 e.result["shared_power_integration"]=args.power_shared
+e.result["emmc_storage_integration"]=args.emmc_storage
 e.finish([], "Both eMMC/peripheral patches composed on two out file copies; full inventory once, live files unchanged, no device")

@@ -149,5 +149,8 @@ static void tests(const char *path)
  id=setup_writer(path,0);assert(!i9100_emmc_writer_open(&writer,1,&wm.card,&id,I9100_EMMC_DATA_VOLUME,3489792ULL,8));wm.m.regs[EM_CTRL/4]|=1U<<25;
  assert(i9100_emmc_writer_write(&writer,0,1,transfer_bytes)==I9100_EMMC_UNSUPPORTED&&!wm.write_commands);done();
 }
-int main(int argc,char **argv)
+#ifndef I9100_EMMC_WRITER_MAIN
+#define I9100_EMMC_WRITER_MAIN main
+#endif
+int I9100_EMMC_WRITER_MAIN(int argc,char **argv)
 {assert(argc==2);tests(argv[1]);puts("PASS actual eMMC writer + lower command whitelist: current historical GPT/PIT/SYNTHETIC backup, CID/window binding, 32-sector >4GiB writes/readback, counters/flush, protected partitions, copied grants and failure-without-retry");return 0;}

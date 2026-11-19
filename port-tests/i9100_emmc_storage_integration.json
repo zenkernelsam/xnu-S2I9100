@@ -1,0 +1,14 @@
+{
+  "sources": {
+    "iokit/Kernel/Storage/IOMediaBSDClient.cpp": "6cb9844240aeeed83e97f93b43976fd56be0219bcac8fd29a7bb3b24fd8735ba",
+    "iokit/bsddev/IOKitBSDInit.cpp": "bac1b44544519f96b07a0b42035356d8940258b1fca434be02bec1018a75dd01"
+  },
+  "patch_sha256": "80d7a8070ba030a194d7384fb607f300ce549729c32ff98436f21e99fb4ff9d5",
+  "applied": false,
+  "hardware_enabled": false,
+  "paired_objects": [
+    "iokit/IOMediaBSDClient.cpo",
+    "iokit/IOKitBSDInit.cpo"
+  ],
+  "requirements": "Explicit native0 DATA_RW+readonly-whole/pair publication and reviewed current profile; no live registration or device use"
+}

@@ -11,6 +11,7 @@
 #include <machine/machine_routines.h>
 #include <pexpert/pexpert.h>
 #include "i9100_emmc.h"
+#include "i9100_emmc_host.h"
 #include "IOS7LabStoragePersonalities.h"
 #undef absolutetime_to_nanoseconds /* use the underlying uint64 kernel timebase function */
 extern void ios7i9100_install_gpt_ro_personality(void);
@@ -24,6 +25,7 @@ class IOS7I9100EMMC : public IOBlockStorageDevice {
  IOMemoryDescriptor *mmio;IOMemoryMap *mapping;volatile UInt8 *regs;
  IOLock *mutex;UInt8 *bounce;bool initialized,lastPresent;
  struct i9100_emmc_card card;
+ struct i9100_emmc_host_lease *hostLease;
  static uint32_t read32(void *cookie,unsigned offset){
   IOS7I9100EMMC *s=(IOS7I9100EMMC *)cookie;
   OSSynchronizeIO();UInt32 value=*(volatile UInt32 *)(s->regs+offset);OSSynchronizeIO();return value;
@@ -48,7 +50,7 @@ class IOS7I9100EMMC : public IOBlockStorageDevice {
  }
 public:
  virtual bool init(OSDictionary *p=0){
-  mmio=0;mapping=0;regs=0;mutex=0;bounce=0;initialized=lastPresent=false;
+  mmio=0;mapping=0;regs=0;mutex=0;bounce=0;hostLease=0;initialized=lastPresent=false;
   i9100_emmc_io io={this,read32,write32,now,pause,0,20000000U,50000U};
   i9100_emmc_init(&card,&io);return IOBlockStorageDevice::init(p);
  }
@@ -57,6 +59,8 @@ public:
   if(!PE_parse_boot_argn("i9100emmcro",&requested,sizeof(requested))||requested!=1||
      !PE_parse_boot_argn("i9100emmcclk",&clock,sizeof(clock))||clock<400000||clock>200000000)return false;
   if(ml_at_interrupt_context()||!ml_get_interrupts_enabled()||!IOBlockStorageDevice::start(provider))return false;
+  hostLease=(i9100_emmc_host_lease *)IOMalloc(sizeof(*hostLease));if(!hostLease)return false;
+  bzero(hostLease,sizeof(*hostLease));if(i9100_emmc_host_acquire(hostLease))return false;
   mutex=IOLockAlloc();bounce=(UInt8 *)IOMalloc(512U*I9100_EMMC_MAX_SECTORS);
   mmio=IOMemoryDescriptor::withPhysicalAddress(I9100_EMMC_PA,I9100_EMMC_MMIO_SIZE,kIODirectionInOut);
   if(!mutex||!bounce||!mmio)return false;
@@ -73,6 +77,15 @@ public:
   initialized=true;return true;
  }
  virtual void free(){
+  if(hostLease){
+   bool idle=!regs||!(read32(this,EM_CMD)&(1U<<31))&&
+    !(read32(this,EM_STATUS)&((15U<<4)|(1U<<9)|(1U<<10)|(0x1fffU<<17)|(1U<<30)|(1U<<31)));
+   if(!hostLease->owned||!i9100_emmc_host_release(hostLease,idle?1:0))IOFree(hostLease,sizeof(*hostLease));
+   else IOLog("i9100 eMMC RO: preserve failed host lease; controller is not quiescent\n");
+   /* A retained lease has standalone memory, never a freed IOService
+    * address. It prevents a second driver from adopting a failed card. */
+   hostLease=0;
+  }
   if(bounce)IOFree(bounce,512U*I9100_EMMC_MAX_SECTORS);
   if(mutex)IOLockFree(mutex);if(mapping)mapping->release();if(mmio)mmio->release();
   IOBlockStorageDevice::free();

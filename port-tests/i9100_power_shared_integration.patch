@@ -38,15 +38,15 @@
  {uint8_t data=0;if(!value || !transfer(hw,0,0x25,reg,&data,1,0))return 0;*value=data;return 1;}
 --- a/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100Power.cpp
 +++ b/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100Power.cpp
-@@ -9,6 +9,7 @@
+@@ -10,6 +10,7 @@
  /* Private shared header; object-only rebuilds do not export new headers. */
  #include "../../../../../pexpert/arm/i9100_usb_stats.h"
  #include "i9100_power.h"
 +#include "i9100_power_shared.h"
+ #include "i9100_charge_adopt.h"
  #include "i9100_charge_diag.h"
  #include "i9100_power_budget_diag.h"
- #include "IOS7LeoGraphicsState.h"
-@@ -99,6 +100,8 @@
+@@ -103,6 +104,8 @@
  public:
   virtual bool init(void);
   virtual bool start(IOService *);
@@ -55,7 +55,7 @@
   virtual void free(void);
  };
  OSDefineMetaClassAndStructors(IOS7I9100Power,IOPMPowerSource)
-@@ -174,7 +177,8 @@
+@@ -201,7 +204,8 @@
     i9100_lpm_poweroff_call=thread_call_allocate(i9100_lpm_poweroff_worker,0);
    __sync_synchronize();i9100_lpm_poweroff_ready=i9100_lpm_poweroff_call!=0;
   }
@@ -65,7 +65,7 @@
  }
  void IOS7I9100Power::sample(void)
  {
-@@ -240,8 +244,23 @@
+@@ -267,8 +271,23 @@
    s->setIsCharging(false);s->updateStatus();IOLog("I9100 POWER timer failed; charging stopped\n");
   }
  }

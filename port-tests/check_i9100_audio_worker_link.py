@@ -52,13 +52,17 @@ def main():
     p.add_argument("--append", action="append", default=[], metavar="SOURCE", help="Append a new opt-in object")
     p.add_argument("--wait-idle", type=int, default=60, choices=range(61))
     p.add_argument("--sensor-hid-service", action="store_true", help="Compile the explicit sensor HID extension only on a source copy")
+    p.add_argument("--emmc-storage",action="store_true",help="Compile exact BSD media/root alias integration only on source copies")
     args = p.parse_args()
     changed=tuple(args.replace) if args.replace else () if args.append else CHANGED
     added=tuple(args.append)
     if args.sensor_hid_service and "IOS7LeoHIDTouch.cpp" not in changed:
         p.error("--sensor-hid-service requires --replace IOS7LeoHIDTouch.cpp")
+    if args.emmc_storage and not {"IOMediaBSDClient.cpp","IOKitBSDInit.cpp"}.issubset(changed):
+        p.error("--emmc-storage requires paired IOMediaBSDClient.cpp and IOKitBSDInit.cpp replacements")
     if len(set(changed+added))!=len(changed+added) or any(
-            not re.fullmatch(r"[A-Za-z0-9_]+\.(c|cpp)", name) or not (REPO/"iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform"/name).is_file()
+            not re.fullmatch(r"[A-Za-z0-9_]+\.(c|cpp)", name) or not ((REPO/"iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform"/name).is_file()
+            or args.emmc_storage and name in ("IOMediaBSDClient.cpp","IOKitBSDInit.cpp"))
             for name in changed+added):
         raise RuntimeError("Use unique, existing platform source names")
     base = args.base.resolve()
@@ -131,6 +135,10 @@ def main():
     if args.sensor_hid_service:
         from i9100_sensor_hid_service_copy import prepare as prepare_sensor_service, verify as verify_sensor_service
         overrides=prepare_sensor_service(e)
+    if args.emmc_storage:
+        from i9100_emmc_storage_copy import prepare as prepare_emmc_service,verify as verify_emmc_service
+        copies=prepare_emmc_service(e)
+        overrides=dict(overrides or {},**copies)
     e.cross_compile(list(changed+added),overrides)
     replaced = {}
     def object_name(path):return re.sub(r"^(?:[0-9]{4}-)+","",Path(path).name)
@@ -166,6 +174,8 @@ def main():
     if args.sensor_hid_service:verify_sensor_service(e)
     elif manifest.get("sensor_service_copy"):
         e.result["sensor_service_copy"] = manifest["sensor_service_copy"]
+    if args.emmc_storage:verify_emmc_service(e)
+    elif manifest.get("emmc_service_copy"):e.result["emmc_service_copy"]=manifest["emmc_service_copy"]
     prior_peripherals=manifest.get("peripheral_objects")
     if prior_peripherals is None:
         prior_peripherals=manifest.get("retained_peripheral_objects")
@@ -178,7 +188,8 @@ def main():
                     reference_sha256=expected, link_flags_sha256=flags_sha,
                     linked_kernel_sha256=digest(kernel), kernel_bytes=kernel.stat().st_size,
                     frozen_input_manifests=[str(x.relative_to(ROOT)) for x in (snapshot, aux_snapshot, final_snapshot)])
-    e.finish(list(changed+added), "Full retained reference reproduced except LC_UUID; exact bytes verified after normalization; only explicit audio objects replaced/appended; no live BUILD/loader/hardware changes")
+    e.finish([name for name in changed+added if (REPO/"iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform"/name).is_file()],
+             "Full retained reference reproduced except LC_UUID; exact bytes verified after normalization; only explicit objects replaced/appended; source-copy hooks retained separately; no live BUILD/loader/hardware changes")
     result = json.loads((e.out / "manifest.json").read_text())
     result["complete_kernel_link"] = True
     (e.out / "manifest.json").write_text(json.dumps(result, indent=2) + "\n")

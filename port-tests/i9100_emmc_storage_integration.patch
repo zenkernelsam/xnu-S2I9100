@@ -1,0 +1,157 @@
+--- a/iokit/Kernel/Storage/IOMediaBSDClient.cpp
++++ b/iokit/Kernel/Storage/IOMediaBSDClient.cpp
+@@ -42,6 +42,9 @@
+ #include <IOKit/storage/IOBlockStorageDriver.h>
+ #include <IOKit/storage/IOMedia.h>
+ #include <IOKit/storage/IOMediaBSDClient.h>
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++#include "i9100_emmc_alias.h"
++#endif
+ 
+ #define super IOService
+ OSDefineMetaClassAndStructors(IOMediaBSDClient, IOService)
+@@ -299,11 +302,24 @@
+ 
+     // Create bdevsw and cdevsw nodes for the new media object.
+ 
+-    createNodes(media);
++    bool i9100CreatedNodes = createNodes(media);
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    // Pin under BSD state before a concurrent minor removal can release it.
++    uint64_t i9100AliasTicket = i9100CreatedNodes ? i9100_emmc_alias_ticket(media) : 0;
++    if (i9100AliasTicket) media->retain();
++#endif
+ 
+     // Enable access to tables.
+ 
+     gIOMediaBSDClientGlobals.unlockState();
++
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    if (!i9100CreatedNodes && i9100_emmc_alias_required(media)) return false;
++    if (i9100AliasTicket) {
++        i9100_emmc_alias_commit(media, i9100AliasTicket);
++        media->release();
++    }
++#endif
+ 
+     // Register this object so it can be found via notification requests. It is
+     // not being registered to have I/O Kit attempt to have drivers match on it,
+@@ -2693,6 +2709,18 @@
+         return kInvalidMinorID;
+     }
+ 
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    uint64_t i9100NewAliasTicket = 0;
++    if (i9100_emmc_alias_publish(media, bdevNode, cdevNode, &i9100NewAliasTicket) != 0)
++    {
++        devfs_remove(cdevNode);
++        devfs_remove(bdevNode);
++        i9100_emmc_alias_unpublish(media, i9100NewAliasTicket);
++        IODelete(minorName, char, minorNameSize);
++        return kInvalidMinorID;
++    }
++#endif
++
+     // Construct a name for the node.
+ 
+     snprintf(minorName, minorNameSize, "disk%d%s", (int) anchorID, slicePath);
+@@ -2742,8 +2770,15 @@
+ 
+     // Release the resources retained in the minor slot and zero it.
+ 
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    uint64_t i9100RemovedAliasTicket = i9100_emmc_alias_ticket(_table[minorID].media);
++    i9100_emmc_alias_invalidate(_table[minorID].media);
++#endif
+     devfs_remove(_table[minorID].cdevNode);
+     devfs_remove(_table[minorID].bdevNode);
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    i9100_emmc_alias_unpublish(_table[minorID].media, i9100RemovedAliasTicket);
++#endif
+     IODelete(_table[minorID].name, char, strlen(_table[minorID].name) + 1);
+     _table[minorID].client->release();             // (release client)
+     _table[minorID].media->release();              // (release media)
+@@ -2816,6 +2851,11 @@
+ 
+     if ( minorID == _tableCount )  return kInvalidMinorID;
+ 
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    if (i9100_emmc_alias_required(media) || i9100_emmc_alias_required(_table[minorID].media))
++        return kInvalidMinorID;
++#endif
++
+     // Update the slot and retain the appropriate objects.
+ 
+     _table[minorID].client->release();             // (release client)
+@@ -2922,6 +2962,9 @@
+     // Mark the minor as obsolete so that it can be removed from the table as
+     // soon as the last close arrives (dkclose function's responsibility).
+ 
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    i9100_emmc_alias_invalidate(_table[minorID].media);
++#endif
+     _table[minorID].isObsolete = true;
+ }
+ 
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -34,6 +34,10 @@
+ #include <IOKit/IOKitKeys.h>
+ #include <IOKit/IOPlatformExpert.h>
+ #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++#include <IOKit/storage/IOMedia.h>
++#include "i9100_emmc_alias.h"
++#endif
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+ #include "../../pexpert/arm/i9100_root_wait.h"
+ #endif
+ 
+@@ -365,6 +369,10 @@
+     char *		str;
+     const char *	look = 0;
+     int			len;
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    bool i9100InternalRoot = false;
++    IOMedia *i9100PinnedRoot = 0;
++#endif
+     bool		debugInfoPrintedOnce = false;
+     const char * 	uuidStr = NULL;
+ 
+@@ -530,6 +538,13 @@
+                 IOFree( uuid, kMaxBootVar );
+             }
+ 	} else {
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++            if (strcmp(look, "i9100-system") == 0) {
++                matching = IOService::resourceMatching("i9100-system-media");
++                if (!matching) panic("i9100 root matching allocation failed");
++                i9100InternalRoot = true;
++            } else
++#endif
+ 	    matching = IOBSDNameMatching( look );
+ 	}
+     }
+@@ -602,6 +617,13 @@
+ #endif
+     matching->release();
+ 
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    if (i9100InternalRoot) {
++        i9100PinnedRoot = i9100_emmc_alias_copy_root();
++        if (!i9100PinnedRoot) panic("i9100 internal volume pair withdrawn before root selection");
++        service = i9100PinnedRoot;
++    }
++#endif
+     if ( service && mediaProperty ) {
+         service = (IOService *)service->getProperty(mediaProperty);
+     }
+@@ -665,6 +687,9 @@
+     IOFree( str,  kMaxPathBuf + kMaxBootVar );
+ 
+ iofrootx:
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    if (i9100PinnedRoot) i9100PinnedRoot->release();
++#endif
+     if( (gIOKitDebug & (kIOLogDTree | kIOLogServiceTree | kIOLogMemory)) && !debugInfoPrintedOnce) {
+ #if 0
+ 	IOService::getPlatform()->waitQuiet();

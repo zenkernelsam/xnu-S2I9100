@@ -106,6 +106,7 @@ def main():
         needed.add("i9100_dma_native.cpp")
     if a.include_emmc:
         needed.update(("i9100_emmc.c", "i9100_emmc_writer.c", "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp"))
+        needed.update(name for name in names if name.startswith(("i9100_emmc_","IOS6I9100EMMC")))
     for _ in range(32):
         if cursor in seen:
             raise RuntimeError("Cyclic complete reference")
@@ -134,6 +135,20 @@ def main():
         matching = [path for path in inputs if object_name(path) in (name + kind, Path(name).stem + kind)]
         if len(matching) != 1 or sha(matching[0]) != sha(ROOT / chosen["object"]):
             raise RuntimeError("Frozen camera input differs from actual compiled object")
+    if kernel.get("emmc_service_copy"):
+        service=kernel["emmc_service_copy"]
+        for name,expected in service["live_sources"].items():
+            if sha(REPO/name)!=expected:raise RuntimeError("Current BSD alias/root integration source changed")
+        patch=REPO/"port-tests/i9100_emmc_storage_integration.patch"
+        if sha(patch)!=service["patch_sha256"]:raise RuntimeError("BSD alias/root patch changed")
+        for name,expected in service["copied_sources"].items():
+            if sha(REPO/name)!=expected:raise RuntimeError("Compiled alias/root source copy changed")
+            source_name=Path(name).name
+            matches=[item for item in compile_items if item["source"]==source_name]
+            if not matches or matches[0]["source_sha256"]!=expected:raise RuntimeError("Patched BSD source was not actually compiled")
+            suffixes=(source_name+".cpo",Path(source_name).stem+".cpo")
+            matching=[path for path in inputs if object_name(path) in suffixes]
+            if len(matching)!=1 or sha(matching[0])!=sha(ROOT/matches[0]["object"]):raise RuntimeError("Patched BSD object missing from actual final freeze")
     refs = a.references.resolve()
     if not refs.is_relative_to(ROOT / "research"):
         raise RuntimeError("Reference evidence escaped research")
