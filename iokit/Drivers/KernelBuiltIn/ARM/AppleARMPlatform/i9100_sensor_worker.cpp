@@ -5,7 +5,7 @@
 #include <IOKit/IOTimerEventSource.h>
 #include <machine/machine_routines.h>
 #include <string.h>
-enum {CAPACITY=32,OPEN=1,START,STOP,RECOVER_STOP,READ,STATUS,DETACH};
+enum {CAPACITY=32,OPEN=1,START,STOP,RECOVER_STOP,READ,STATUS,DETACH,CONSUMER_GET,CONSUMER_PUT};
 struct sensor_worker_state {
  i9100_peripheral_native *parent;IOWorkLoop *loop;IOTimerEventSource *timer;
  i9100_sensor_worker_profile profile;i9100_sensor sensor[3];
@@ -15,6 +15,7 @@ struct sensor_worker_state {
  uint32_t ready,running,stopping,fault,closed,added,busy;
  uint64_t busy_since[3],produced,consumed,dropped,not_ready,overflows,timer_ticks;
  int32_t error,cleanup_error;
+ i9100_sensor_consumer_lease *consumer;uint32_t consumer_generation;
 };
 struct i9100_sensor_worker : public OSObject {
  OSDeclareDefaultStructors(i9100_sensor_worker)
@@ -114,9 +115,32 @@ static void process(i9100_sensor_worker *w)
 }
 static void timer_action(OSObject *owner,IOTimerEventSource *){process((i9100_sensor_worker *)owner);}
 struct read_request {i9100_sensor_sample *samples;uint32_t capacity,*received;};
-static IOReturn control(OSObject *owner,void *operation,void *argument,void *,void *)
+static int consumer_valid(i9100_sensor_worker *w,i9100_sensor_consumer_lease *l)
+{return l&&l->owned&&l->self==(uintptr_t)l&&l->worker==w&&w->s.consumer==l&&
+ l->generation==w->s.consumer_generation?0:I9100_SENSOR_ARGUMENT;}
+static IOReturn control(OSObject *owner,void *operation,void *argument,void *consumer,void *)
 {
  i9100_sensor_worker *w=(i9100_sensor_worker *)owner;
+ unsigned op=(unsigned)(uintptr_t)operation;auto *lease=(i9100_sensor_consumer_lease *)consumer;
+ if(op==CONSUMER_GET){
+  auto *l=(i9100_sensor_consumer_lease *)argument;
+  if(!l||l->owned||l->self||l->worker||!separate(w,l,sizeof(*l)))return I9100_SENSOR_ARGUMENT;
+  if(w->s.consumer||!w->s.ready||w->s.running||w->s.stopping||w->s.fault||w->s.closed)return I9100_SENSOR_BUSY;
+  if(w->s.consumer_generation==0xffffffffU)return I9100_SENSOR_ARGUMENT;
+  memset(l,0,sizeof(*l));l->worker=w;l->self=(uintptr_t)l;l->generation=++w->s.consumer_generation;l->owned=1;
+  w->s.consumer=l;w->retain();return 0;
+ }
+ if(op==CONSUMER_PUT){
+  int e=consumer_valid(w,lease);if(e)return e;
+  if(!w->s.closed||w->s.running||w->s.ready||w->s.bus[0].owned||w->s.bus[1].owned)return I9100_SENSOR_BUSY;
+  for(unsigned b=0;b<2;b++)if(w->s.worker[b].owned)return I9100_SENSOR_BUSY;
+  for(unsigned n=0;n<3;n++)if(w->s.device[n].owned||w->s.sensor[n].active||w->s.sensor[n].converting)return I9100_SENSOR_BUSY;
+  w->s.consumer=0;lease->owned=0;return 0;
+ }
+ if(op!=STATUS){
+  if(lease){int e=consumer_valid(w,lease);if(e)return e;if(op==OPEN||op==DETACH)return I9100_SENSOR_BUSY;}
+  else if(w->s.consumer)return I9100_SENSOR_BUSY;
+ }
  switch((uintptr_t)operation){
  case OPEN:return open_devices(w);
  case START:
@@ -132,11 +156,14 @@ static IOReturn control(OSObject *owner,void *operation,void *argument,void *,vo
   w->s.head=(w->s.head+count)%CAPACITY;w->s.count-=count;
   for(unsigned n=0;n<count;n++)inc(&w->s.consumed);*r->received=count;return 0;}
  case STATUS:{
+  if(w->s.consumer){uintptr_t a=(uintptr_t)argument,b=(uintptr_t)w->s.consumer;
+   if(a+sizeof(struct i9100_sensor_worker_status)>b&&b+sizeof(*w->s.consumer)>a)return I9100_SENSOR_ARGUMENT;}
   struct i9100_sensor_worker_status s;memset(&s,0,sizeof(s));
   s.ready=w->s.ready;s.running=w->s.running;s.stopping=w->s.stopping;s.fault=w->s.fault;s.closed=w->s.closed;
   s.mask=w->s.profile.mask;s.queued=w->s.count;s.capacity=CAPACITY;s.busy=w->s.busy;
   s.produced=w->s.produced;s.consumed=w->s.consumed;s.dropped=w->s.dropped;s.not_ready=w->s.not_ready;
   s.overflows=w->s.overflows;s.timer_ticks=w->s.timer_ticks;s.error=w->s.error;s.cleanup_error=w->s.cleanup_error;
+  s.consumer_owned=w->s.consumer!=0;s.consumer_generation=w->s.consumer_generation;
   for(unsigned b=0;b<2;b++){if(w->s.bus[b].owned)s.bus_owned|=1U<<b;if(w->s.worker[b].owned)s.worker_holds|=1U<<b;}
   for(unsigned n=0;n<3;n++){
    if(w->s.device[n].owned)s.device_holds|=1U<<n;if(w->s.sensor[n].converting)s.converting|=1U<<n;
@@ -167,11 +194,11 @@ int i9100_sensor_worker_create(int enabled,i9100_peripheral_native *parent,const
   if(cleanup){w->s.cleanup_error=cleanup;w->s.fault=1;*out=w;}else w->release();return e;}
  *out=w;return 0;
 }
-static int run(i9100_sensor_worker *w,unsigned op,void *argument=0)
+static int run(i9100_sensor_worker *w,unsigned op,void *argument=0,i9100_sensor_consumer_lease *lease=0)
 {
  if(!w||!w->s.loop||!w->s.timer||!ml_get_interrupts_enabled())return I9100_SENSOR_ARGUMENT;
  if(w->s.loop->onThread()&&op!=STATUS&&op!=READ)return I9100_SENSOR_BUSY;
- return w->s.loop->runAction(control,w,(void *)(uintptr_t)op,argument);
+ return w->s.loop->runAction(control,w,(void *)(uintptr_t)op,argument,lease);
 }
 int i9100_sensor_worker_start(i9100_sensor_worker *w){return run(w,START);}
 int i9100_sensor_worker_stop(i9100_sensor_worker *w){return run(w,STOP);}
@@ -189,4 +216,24 @@ int i9100_sensor_worker_destroy(i9100_sensor_worker **out)
 {
  if(!out||!*out)return I9100_SENSOR_ARGUMENT;i9100_sensor_worker *w=*out;
  int e=run(w,DETACH);if(e)return e;w->release();*out=0;return 0;
+}
+int i9100_sensor_worker_consumer_get(i9100_sensor_worker *w,i9100_sensor_consumer_lease *l)
+{return run(w,CONSUMER_GET,l);}
+int i9100_sensor_worker_consumer_put(i9100_sensor_consumer_lease *l)
+{
+ if(!l||!l->owned||l->self!=(uintptr_t)l||!l->worker)return I9100_SENSOR_ARGUMENT;
+ auto *w=l->worker;int e=run(w,CONSUMER_PUT,0,l);if(!e)w->release();return e;
+}
+int i9100_sensor_worker_consumer_start(i9100_sensor_consumer_lease *l)
+{return !l||!l->owned||l->self!=(uintptr_t)l||!l->worker?I9100_SENSOR_ARGUMENT:run(l->worker,START,0,l);}
+int i9100_sensor_worker_consumer_stop(i9100_sensor_consumer_lease *l,int recover)
+{return !l||!l->owned||l->self!=(uintptr_t)l||!l->worker||(recover!=0&&recover!=1)?I9100_SENSOR_ARGUMENT:run(l->worker,recover?RECOVER_STOP:STOP,0,l);}
+int i9100_sensor_worker_consumer_read(i9100_sensor_consumer_lease *l,i9100_sensor_sample *samples,uint32_t capacity,uint32_t *received)
+{
+ if(!l||!l->owned||l->self!=(uintptr_t)l||!l->worker||!capacity||capacity>CAPACITY||!separate(l->worker,samples,capacity*sizeof(*samples))||
+    !separate(l->worker,received,sizeof(*received)))return I9100_SENSOR_ARGUMENT;
+ uintptr_t a=(uintptr_t)samples,b=(uintptr_t)received,c=(uintptr_t)l;
+ if(c>~(uintptr_t)0-sizeof(*l)||(a+capacity*sizeof(*samples)>b&&b+sizeof(*received)>a)||
+    (a+capacity*sizeof(*samples)>c&&c+sizeof(*l)>a)||(b+sizeof(*received)>c&&c+sizeof(*l)>b))return I9100_SENSOR_ARGUMENT;
+ read_request r={samples,capacity,received};return run(l->worker,READ,&r,l);
 }

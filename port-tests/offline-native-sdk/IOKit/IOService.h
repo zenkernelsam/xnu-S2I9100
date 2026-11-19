@@ -6,7 +6,7 @@ typedef void *task_t;
 class OSDictionary {};class IOUserClient;
 enum {kIOReturnNoMemory=-2,kIOReturnError=-3,kIOReturnExclusiveAccess=-4,
  kIOReturnNotReady=-5,kIOReturnIOError=-6,kIOReturnUnsupported=-7,
- kIOReturnNotAttached=-8,kIOReturnNotPermitted=-9};
+ kIOReturnNotAttached=-8,kIOReturnNotPermitted=-9,kIOReturnNotFound=-10,kIOReturnNoSpace=-11};
 void IOLockLock(IOLock *);
 class IOService : public OSObject {
  IOService *provider=nullptr;

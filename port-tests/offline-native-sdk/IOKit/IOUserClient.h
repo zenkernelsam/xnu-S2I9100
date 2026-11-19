@@ -13,6 +13,9 @@ struct IOExternalMethodArguments {
  uint32_t __reserved[30]={};
 };
 struct IOExternalMethodDispatch {};
+typedef uint32_t mach_port_t;
+typedef uint32_t IOOptionBits;
+typedef uint64_t io_user_reference_t;
 class IOUserClient : public IOService {
 public:
  virtual bool initWithTask(task_t,void *,UInt32,OSDictionary *){return OSObject::init();}

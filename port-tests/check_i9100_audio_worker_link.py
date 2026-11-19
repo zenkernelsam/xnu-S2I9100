@@ -51,9 +51,12 @@ def main():
     p.add_argument("--replace", action="append", default=[], metavar="SOURCE", help="Replace a uniquely retained peripheral object")
     p.add_argument("--append", action="append", default=[], metavar="SOURCE", help="Append a new opt-in object")
     p.add_argument("--wait-idle", type=int, default=60, choices=range(61))
+    p.add_argument("--sensor-hid-service", action="store_true", help="Compile the explicit sensor HID extension only on a source copy")
     args = p.parse_args()
     changed=tuple(args.replace) if args.replace else () if args.append else CHANGED
     added=tuple(args.append)
+    if args.sensor_hid_service and "IOS7LeoHIDTouch.cpp" not in changed:
+        p.error("--sensor-hid-service requires --replace IOS7LeoHIDTouch.cpp")
     if len(set(changed+added))!=len(changed+added) or any(
             not re.fullmatch(r"[A-Za-z0-9_]+\.(c|cpp)", name) or not (REPO/"iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform"/name).is_file()
             for name in changed+added):
@@ -124,12 +127,17 @@ def main():
     for item in verify(snapshot):
         if digest(ROOT / item["source"]) != item["sha256"]:
             raise RuntimeError("Original reference input changed during reproduction")
-    e.cross_compile(list(changed+added))
+    overrides=None
+    if args.sensor_hid_service:
+        from i9100_sensor_hid_service_copy import prepare as prepare_sensor_service, verify as verify_sensor_service
+        overrides=prepare_sensor_service(e)
+    e.cross_compile(list(changed+added),overrides)
     replaced = {}
     def object_name(path):return re.sub(r"^(?:[0-9]{4}-)+","",Path(path).name)
     for name in changed:
         suffix=name+(".cpo" if name.endswith(".cpp") else ".o")
-        matches = [i for i, path in enumerate(inputs) if object_name(path) == suffix]
+        standard=Path(name).stem+(".cpo" if name.endswith(".cpp") else ".o")
+        matches = [i for i, path in enumerate(inputs) if object_name(path) in (suffix,standard)]
         if len(matches) != 1:
             raise RuntimeError("Replacement is missing or ambiguous: " + name)
         item = next(x for x in e.commands if x["source"] == name)
@@ -139,7 +147,8 @@ def main():
     appended={}
     for name in added:
         suffix=name+(".cpo" if name.endswith(".cpp") else ".o")
-        if any(object_name(path)==suffix for path in inputs):
+        standard=Path(name).stem+(".cpo" if name.endswith(".cpp") else ".o")
+        if any(object_name(path) in (suffix,standard) for path in inputs):
             raise RuntimeError("New object is already retained: "+name)
         item=next(x for x in e.commands if x["source"]==name)
         appended[name]=item["object"];captured.append(str(ROOT/item["object"]))
@@ -154,6 +163,9 @@ def main():
         verify(item)
     if digest(flags) != flags_sha or digest(base / "mach_kernel.sys") != expected:
         raise RuntimeError("Reference kernel/link controls changed during assembly")
+    if args.sensor_hid_service:verify_sensor_service(e)
+    elif manifest.get("sensor_service_copy"):
+        e.result["sensor_service_copy"] = manifest["sensor_service_copy"]
     prior_peripherals=manifest.get("peripheral_objects")
     if prior_peripherals is None:
         prior_peripherals=manifest.get("retained_peripheral_objects")

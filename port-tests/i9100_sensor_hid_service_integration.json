@@ -1,0 +1,8 @@
+{
+  "source": "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7LeoHIDTouch.cpp",
+  "source_sha256": "ec52b7b1f8be5b6ee5d0d4f986ed44ecffe35275478f70c17773875b74088c40",
+  "patch_sha256": "5dfd05aa0a637200277c40cc82d3772b6096647215d5a144622592897b91c28b",
+  "applied": false,
+  "hardware_enabled": false,
+  "companion": "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS6I9100SensorHIDService.inc"
+}

@@ -1,0 +1,132 @@
+--- a/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7LeoHIDTouch.cpp
++++ b/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7LeoHIDTouch.cpp
+@@ -26,6 +26,9 @@
+ #include "IOS7LeoTouchWire.h"
+ #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+ #include "i9100_home.h"
++#include "i9100_sensor_hid_service.h"
++#include "i9100_sensor_hid_endpoint.h"
++#include <machine/machine_routines.h>
+ #include "IOS6I9100HIDWire.h"
+ #include "I9100InputTest.h"
+ #include "i9100_home_observation.h"
+@@ -166,7 +169,9 @@
+  IOS7LeoHIDTouchClient *consumer;
+  LeoTouchState state;
+ #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+- bool homeDevice,ios6Wire;
++ bool homeDevice,ios6Wire,sensorDevice;
++ i9100_sensor_hid_endpoint *sensorEndpoint;uint32_t sensorKind;IOS7LeoHIDTouchClient *sensorClient;IOLock *sensorLock;
++ bool sensorProperties();
+  uint64_t inputStart,inputDuration;
+  void pollInput(void);
+  uint32_t homeSavedCon,homeSavedPull;
+@@ -215,6 +220,11 @@
+  IOReturn setPort(IOS7LeoHIDTouchClient *,mach_port_t,UInt32);
+  IOReturn mapQueue(UInt32,IOOptionBits *,IOMemoryDescriptor **);
+  void notePublished(void);
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++ int sensorConfigure(i9100_sensor_hid *,uint32_t);
++ bool sensorStart(IOService *);
++ int sensorClose();
++#endif
+ };
+ class IOS7LeoHIDTouchClient : public IOUserClient {
+  OSDeclareDefaultStructors(IOS7LeoHIDTouchClient)
+@@ -237,6 +247,9 @@
+ OSDefineMetaClassAndStructors(IOS7LeoHIDQueue,IOSharedDataQueue)
+ OSDefineMetaClassAndStructors(IOHIDEventService,IOService)
+ OSDefineMetaClassAndStructors(IOS7LeoHIDTouchClient,IOUserClient)
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++#include "IOS6I9100SensorHIDService.inc"
++#endif
+ 
+ bool IOHIDEventService::init(OSDictionary *dictionary)
+ {
+@@ -245,10 +258,11 @@
+  queueMemory=0;lock=0;loop=0;timer=0;queue=0;consumer=0;
+  bzero(&state,sizeof(state));
+ #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++ sensorEndpoint=0;sensorKind=0;sensorClient=0;sensorLock=0;sensorDevice=getProperty("I9100SensorEndpoint")!=0;
+  homeDevice=getProperty("I9100HomeButton")!=0;homeSavedCon=homeSavedPull=powerSavedCon=powerSavedPull=0;
+  int wireABI=0;PE_parse_boot_argn("i9100hidabi",&wireABI,sizeof(wireABI));ios6Wire=wireABI==6;
+  inputStart=inputDuration=0;
+- if(!homeDevice){
++ if(!homeDevice && !sensorDevice){
+   int enabled=0,control=0,diagnostic=0;
+   PE_parse_boot_argn("i9100inputtest",&enabled,sizeof(enabled));
+   PE_parse_boot_argn("i9100control",&control,sizeof(control));
+@@ -374,6 +388,9 @@
+ bool IOHIDEventService::publishProperties(void)
+ {
+ #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++ if(sensorKind)return sensorProperties();
++#endif
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
+  if(homeDevice){
+   setName("IOS7I9100HomeButton");setProperty("HIDServiceSupport",true);
+   setProperty("PrimaryUsagePage",12,32);setProperty("PrimaryUsage",1,32);
+@@ -448,6 +465,9 @@
+ }
+ bool IOHIDEventService::start(IOService *provider)
+ {
++ #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++ if(sensorKind)return sensorStart(provider);
++#endif
+  if(!IOService::start(provider))return false;
+  lock=IOLockAlloc();queue=new IOS7LeoHIDQueue;
+  if(!lock || !queue || !queue->initWithCapacity(4096))return false;
+@@ -540,6 +560,9 @@
+ }
+ void IOHIDEventService::free(void)
+ {
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++ if(sensorDevice||sensorKind){assert(!sensorEndpoint&&!sensorClient);if(sensorLock)IOLockFree(sensorLock);IOService::free();return;}
++#endif
+  if(timer)timer->cancelTimeout();if(loop && timer)loop->removeEventSource(timer);
+  if(timer)timer->release();if(loop)loop->release();
+  if(queueMemory)queueMemory->release();if(queue)queue->release();
+@@ -834,14 +857,23 @@
+ }
+ bool IOHIDEventService::claim(IOS7LeoHIDTouchClient *client)
+ {
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++ if(sensorKind){IOLockLock(sensorLock);bool ok=!sensorClient&&!i9100_sensor_hid_endpoint_claim(sensorEndpoint,client);if(ok)sensorClient=client;IOLockUnlock(sensorLock);return ok;}
++#endif
+  IOLockLock(lock);bool accepted=client && !consumer;if(accepted){consumer=client;clientPID=(unsigned)proc_selfpid();publishSnapshot();}IOLockUnlock(lock);return accepted;
+ }
+ void IOHIDEventService::unclaim(IOS7LeoHIDTouchClient *client)
+ {
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++ if(sensorKind){IOLockLock(sensorLock);if(!i9100_sensor_hid_endpoint_unclaim(sensorEndpoint,client))sensorClient=0;IOLockUnlock(sensorLock);return;}
++#endif
+  IOLockLock(lock);if(consumer==client){closeReader();consumer=0;clientPID=0;queue->setNotificationPort(MACH_PORT_NULL);publishSnapshot();}IOLockUnlock(lock);
+ }
+ IOReturn IOHIDEventService::setPort(IOS7LeoHIDTouchClient *client,mach_port_t port,UInt32 type)
+ {
++ #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++ if(sensorKind){IOLockLock(sensorLock);IOReturn e=i9100_sensor_hid_endpoint_port(sensorEndpoint,client,port,type);IOLockUnlock(sensorLock);return e;}
++#endif
+  if(type)return kIOReturnUnsupported;
+  IOLockLock(lock);
+  if(consumer!=client){IOLockUnlock(lock);return kIOReturnNotAttached;}
+@@ -851,6 +883,9 @@
+ }
+ IOReturn IOHIDEventService::mapQueue(UInt32 type,IOOptionBits *options,IOMemoryDescriptor **memory)
+ {
++ #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++ if(sensorKind){IOLockLock(sensorLock);IOReturn e=i9100_sensor_hid_endpoint_map(sensorEndpoint,sensorClient,type,options,memory);IOLockUnlock(sensorLock);return e;}
++#endif
+  if(type || !options || !memory || !queueMemory)return kIOReturnBadArgument;
+  queueMemory->retain();*options=0;*memory=queueMemory;
+  IOLockLock(lock);leo_touch_inc(&mapCalls);publishSnapshot();IOLockUnlock(lock);
+@@ -859,6 +894,9 @@
+ }
+ IOReturn IOHIDEventService::method(uint32_t selector,IOExternalMethodArguments *args)
+ {
++ #if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++ if(sensorKind){IOLockLock(sensorLock);IOReturn e=i9100_sensor_hid_endpoint_method(sensorEndpoint,sensorClient,selector,args);IOLockUnlock(sensorLock);return e;}
++#endif
+  if(!args || args->structureInputDescriptor || args->structureOutputDescriptor)return kIOReturnBadArgument;
+  static unsigned logs;if(logs<12U){++logs;IOLog(TOUCH_LOG_PREFIX " method=%u sin=%u stin=%u sout=%u stout=%u\n",selector,args->scalarInputCount,args->structureInputSize,args->scalarOutputCount,args->structureOutputSize);}
+  if((selector==0 || selector==1) && args->scalarInputCount==1 && args->scalarInput &&
