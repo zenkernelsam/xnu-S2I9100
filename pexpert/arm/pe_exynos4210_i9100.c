@@ -62,7 +62,7 @@ static vm_offset_t i9100_panel_gpio;
 static unsigned i9100_panel_sleep_enabled;
 static struct i9100_panel_spi i9100_panel_spi;
 static struct i9100_panel_sleep i9100_panel_sleep;
-volatile uint32_t i9100_panel_sleep_diag[16]={1};
+volatile uint32_t i9100_panel_sleep_diag[20]={2};
 static uint32_t i9100_panel_gpio_read(void *cookie,unsigned off)
 {__asm__ volatile("dsb sy" ::: "memory");return *(volatile uint32_t *)((vm_offset_t)cookie+off);}
 static void i9100_panel_gpio_write(void *cookie,unsigned off,uint32_t value)
@@ -83,12 +83,14 @@ static void i9100_panel_scan_write(void *cookie,uint32_t value)
 static void i9100_panel_wait(void *cookie,unsigned ms){(void)cookie;IOSleep(ms);}
 static void i9100_panel_diag_publish(void)
 {
- uint32_t fields[14]={i9100_panel_sleep_enabled,i9100_panel_sleep.qualified,i9100_panel_sleep.stage,
+ uint32_t fields[18]={i9100_panel_sleep_enabled,i9100_panel_sleep.qualified,i9100_panel_sleep.stage,
   i9100_panel_sleep.error,i9100_panel_sleep.cleanup_error,i9100_panel_sleep.mode,
   i9100_panel_sleep.commands,i9100_panel_sleep.requests,i9100_panel_sleep.saved_scanout,
-  i9100_panel_sleep.owned_scanout,i9100_panel_sleep.id[0],i9100_panel_sleep.id[1],i9100_panel_sleep.id[2],i9100_panel_sleep.identity_reads};
+  i9100_panel_sleep.owned_scanout,i9100_panel_sleep.id[0],i9100_panel_sleep.id[1],i9100_panel_sleep.id[2],i9100_panel_sleep.identity_reads,
+  i9100_panel_sleep.recovery_attempts,i9100_panel_sleep.recovery_commands,
+  i9100_fimd_map?i9100_panel_scan_read(0):0xffffffffU,0};
  ++i9100_panel_sleep_diag[1];__sync_synchronize();
- for(unsigned n=0;n<14;n++)i9100_panel_sleep_diag[n+2]=fields[n];
+ for(unsigned n=0;n<18;n++)i9100_panel_sleep_diag[n+2]=fields[n];
  __sync_synchronize();++i9100_panel_sleep_diag[1];__sync_synchronize();
 }
 volatile uint32_t i9100_display_power_diag[12]={1};

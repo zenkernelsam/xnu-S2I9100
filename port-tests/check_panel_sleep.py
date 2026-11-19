@@ -75,7 +75,8 @@ static int read_byte(void*cookie,unsigned reg,uint8_t*out){struct panel*p=cookie
  if(p->wire.fail_read)return 0;return i9100_panel_spi_read_byte(&p->spi,reg,out);}
 static int command(void*cookie,unsigned reg){struct panel*p=cookie;return i9100_panel_spi_word(&p->spi,reg);}
 static uint32_t scan_read(void*cookie){return ((struct panel*)cookie)->scanout;}
-static void scan_write(void*cookie,uint32_t value){struct panel*p=cookie;++p->scan_writes;if(!p->drop_scan)p->scanout=value;}
+static void scan_write(void*cookie,uint32_t value){struct panel*p=cookie;++p->scan_writes;
+ if(p->drop_scan!=1 && !(p->drop_scan==2 && p->scan_writes==1))p->scanout=value;}
 static void wait_ms(void*cookie,unsigned ms){struct panel*p=cookie;assert(!p->wire.lock && (ms==120 || ms==34));p->waits+=ms;}
 static void panel_init(struct panel*p,struct i9100_panel_sleep*s){memset(p,0,sizeof(*p));memset(s,0,sizeof(*s));initialize(&p->wire,&p->spi);
  p->scanout=0x991003;s->io=(struct i9100_panel_sleep_io){p,read_byte,command,scan_read,scan_write,wait_ms};}
@@ -95,7 +96,7 @@ int main(){
  unsigned commands=s.commands;assert(!i9100_panel_sleep_change(&s,0)&&s.commands==commands);
  assert(!i9100_panel_sleep_change(&s,1)&&s.stage==I9P_AWAKE&&p.scanout==scan);
  assert(p.wire.words[2]==0x11&&p.wire.words[3]==0x29&&p.waits==274);restored(&p.wire);
- for(unsigned scenario=0;scenario<6;scenario++){
+ for(unsigned scenario=0;scenario<8;scenario++){
   panel_init(&p,&s);
   if(scenario==0)p.wire.ids[1]=0x13;
   if(scenario==1)p.wire.id_change=1;
@@ -103,19 +104,38 @@ int main(){
   if(scenario==3)p.scanout&=~3U;
   if(scenario==4)p.wire.fail_read=1;
   if(scenario==5)p.wire.regs[0x1a0/4]&=~I9P_MUX4;
+  if(scenario==6)p.wire.mode=0xff;
+  if(scenario==7)p.scanout=0xffffffffU;
   assert(i9100_panel_probe(&s)&&!s.qualified&&!p.wire.count&&!p.scan_writes);
   if(scenario==0)assert(s.id[0]==0xa2 && s.id[1]==0x13 && s.id[2]==0x11 && s.identity_reads==0x3f);
   if(scenario==1)assert(s.id[0]==0xa2 && (s.identity_reads&0x40));
-  if(scenario>=2 && scenario<=3)assert(s.identity_reads==0x3f);
-  if(scenario>=4)assert(s.identity_reads==0);
+  if((scenario>=2 && scenario<=3) || scenario>=6)assert(s.identity_reads==0x3f);
+  if(scenario==4 || scenario==5)assert(s.identity_reads==0);
  }
  panel_init(&p,&s);assert(!i9100_panel_probe(&s));p.wire.drop_mode=1;
  assert(i9100_panel_sleep_change(&s,0)==I9P_ERROR_MODE&&s.stage==I9P_FAULT&&!p.scan_writes);
- commands=s.commands;assert(i9100_panel_sleep_change(&s,1)==I9P_ERROR_MODE&&s.commands==commands);
+ commands=s.commands;assert(!i9100_panel_sleep_change(&s,1)&&s.stage==I9P_AWAKE&&s.commands==commands&&s.recovery_attempts==1&&s.error==I9P_ERROR_MODE);
+ // Panel was already awake: recovery sends no duplicate command and keeps
+ // the first fault for diagnosis; a later failure cannot repeat recovery.
+ assert(i9100_panel_sleep_change(&s,0)==I9P_ERROR_MODE&&s.stage==I9P_FAULT);
+ commands=s.commands;assert(i9100_panel_sleep_change(&s,1)==I9P_ERROR_MODE&&s.commands==commands&&s.recovery_attempts==1);
  panel_init(&p,&s);assert(!i9100_panel_probe(&s));p.drop_scan=1;
  assert(i9100_panel_sleep_change(&s,0)==I9P_ERROR_SCANOUT&&s.stage==I9P_FAULT);
+ panel_init(&p,&s);assert(!i9100_panel_probe(&s));p.drop_scan=2;
+ assert(i9100_panel_sleep_change(&s,0)==I9P_ERROR_SCANOUT&&s.stage==I9P_FAULT&&p.scan_writes==1);
+ p.drop_scan=0;assert(!i9100_panel_sleep_change(&s,1)&&s.stage==I9P_AWAKE&&s.recovery_attempts==1&&s.recovery_commands==2&&s.error==I9P_ERROR_SCANOUT);
  panel_init(&p,&s);assert(!i9100_panel_probe(&s)&&!i9100_panel_sleep_change(&s,0));p.scanout^=0x100;
  commands=s.commands;assert(i9100_panel_sleep_change(&s,1)==I9P_ERROR_SCANOUT&&s.commands==commands);
+ assert(i9100_panel_sleep_change(&s,1)==I9P_ERROR_SCANOUT&&s.commands==commands&&s.recovery_attempts==1);
+ panel_init(&p,&s);assert(!i9100_panel_probe(&s));p.drop_scan=2;
+ assert(i9100_panel_sleep_change(&s,0)==I9P_ERROR_SCANOUT);
+ p.drop_scan=0;p.wire.ids[1]=0x13;commands=s.commands;
+ assert(i9100_panel_sleep_change(&s,1)==I9P_ERROR_IDENTITY&&s.commands==commands&&s.error==I9P_ERROR_SCANOUT&&s.cleanup_error==I9P_ERROR_IDENTITY);
+ panel_init(&p,&s);assert(!i9100_panel_probe(&s));p.drop_scan=2;
+ assert(i9100_panel_sleep_change(&s,0)==I9P_ERROR_SCANOUT);
+ p.drop_scan=0;p.wire.drop_mode=1;commands=s.commands;
+ assert(i9100_panel_sleep_change(&s,1)==I9P_ERROR_MODE&&s.recovery_commands==1&&s.commands==commands+1);
+ commands=s.commands;assert(i9100_panel_sleep_change(&s,1)==I9P_ERROR_MODE&&s.commands==commands);
  puts("PASS production 9bit mode3 commands/read dummy cycles, GPIO field restore, real-id/mode qualifications, retained scanout sleep/wake, command order, delays and IO/readback/foreign owner failures");
 }
 '''

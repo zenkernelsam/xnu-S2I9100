@@ -12,6 +12,9 @@ while depth:depth+=(text[end]=='{')-(text[end]=='}');end+=1
 blocked_start=text.index('unsigned ios7i9100_display_refresh_blocked(void)');blocked_begin=text.index('{',blocked_start)
 blocked_end=blocked_begin+1;depth=1
 while depth:depth+=(text[blocked_end]=='{')-(text[blocked_end]=='}');blocked_end+=1
+publish_start=text.index('static void i9100_panel_diag_publish(void)');publish_begin=text.index('{',publish_start)
+publish_end=publish_begin+1;depth=1
+while depth:depth+=(text[publish_end]=='{')-(text[publish_end]=='}');publish_end+=1
 out=repo/'out'/('panel-pe-gate-check-'+datetime.now().strftime('%Y%m%d-%H%M%S'));out.mkdir()
 code=r'''
 #include <stdint.h>
@@ -30,7 +33,8 @@ static int ml_at_interrupt_context(void){return irq;}static int ml_get_interrupt
 static uint32_t i9100_display_map_read(void*c){(void)c;return mapping;}
 static void i9100_display_map_write(void*c,uint32_t value){(void)c;++map_writes;mapping=value;}
 static void i9100_display_map_sync(void*c){(void)c;}
-static unsigned publishes;static void i9100_panel_diag_publish(void){++publishes;}
+static volatile uint32_t i9100_panel_sleep_diag[20]={2};
+static uint32_t i9100_panel_scan_read(void*c){(void)c;return scanout;}
 static int read_byte(void*c,unsigned reg,uint8_t*value){(void)c;
  *value=reg==0xda?0xa1:reg==0xdb?0x12:reg==0xdc?0x11:(uint8_t)mode;return 1;}
 static int command(void*c,unsigned cmd){(void)c;++commands;
@@ -42,7 +46,7 @@ static void reset(void){memset(&i9100_panel_sleep,0,sizeof(i9100_panel_sleep));m
  i9100_panel_sleep.io=(struct i9100_panel_sleep_io){0,read_byte,command,scan_read,scan_write,wait_ms};
  mode=0x9c;fail_mode=commands=delay_ms=map_writes=irq=0;interrupts=processor_avail_count=1;
  mapping=0x80000000U;scanout=0x1003;i9100_display_power_guard=0;i9100_panel_sleep_enabled=1;}
-'''+text[blocked_start:blocked_end]+'\n'+text[start:end]+r'''
+'''+text[publish_start:publish_end]+'\n'+text[blocked_start:blocked_end]+'\n'+text[start:end]+r'''
 int main(void){reset();assert(!ios7leo_display_power(1)&&i9100_panel_sleep.qualified&&!commands);
  assert(!ios7leo_display_power(0)&&i9100_panel_sleep.stage==I9P_SLEEP&&i9100_display_power_state.blanked&&scanout==0x1000);
  assert(ios7i9100_display_refresh_blocked());
@@ -52,7 +56,13 @@ int main(void){reset();assert(!ios7leo_display_power(1)&&i9100_panel_sleep.quali
   assert(ios7leo_display_power(0)==1&&!commands&&!map_writes&&!i9100_display_power_guard);}
  reset();fail_mode=1;assert(ios7leo_display_power(0)==1&&i9100_display_power_state.blanked&&i9100_panel_sleep.stage==I9P_FAULT);
  assert(ios7i9100_display_refresh_blocked());
- unsigned count=commands,writes=map_writes;assert(ios7leo_display_power(1)==1&&commands==count&&map_writes==writes);
+ unsigned count=commands;assert(!ios7leo_display_power(1)&&commands==count&&!i9100_display_power_state.blanked);
+ assert(i9100_panel_sleep.recovery_attempts==1 && i9100_panel_sleep.error==I9P_ERROR_MODE);
+ assert(!ios7i9100_display_refresh_blocked());
+ FILE*fixture=fopen("PANEL_RECOVERY_FIXTURE","wb");assert(fixture && fwrite((const void*)i9100_panel_sleep_diag,1,80,fixture)==80);fclose(fixture);
+ assert(ios7leo_display_power(0)==1 && i9100_display_power_state.blanked);
+ unsigned writes=map_writes;count=commands;
+ assert(ios7leo_display_power(1)==1&&commands==count&&map_writes==writes&&ios7i9100_display_refresh_blocked());
  reset();i9100_panel_sleep_enabled=0;assert(!ios7leo_display_power(0)&&!commands&&i9100_display_power_state.blanked);
  assert(ios7i9100_display_refresh_blocked());
  assert(!ios7leo_display_power(1)&&!commands&&!i9100_display_power_state.blanked);
@@ -60,6 +70,7 @@ int main(void){reset();assert(!ios7leo_display_power(1)&&i9100_panel_sleep.quali
  reset();i9100_display_power_guard=1;assert(ios7leo_display_power(0)==2&&!commands&&!map_writes);
  puts("PASS actual PE wrapper: explicit panel mode, legacy path, IRQ/SMP refusal, preserved black fault, no blind unblank, successful qualified sleep/wake");}
 '''
+code=code.replace('PANEL_RECOVERY_FIXTURE',str(out/'panel-recovery.bin'))
 (out/'model.c').write_text(code)
 for n,cmd in enumerate((['clang','-std=c99','-O1','-g','-fno-pie','-no-pie','-Wall','-Wextra','-Werror','-Wno-int-to-void-pointer-cast',
  '-fsanitize=address,undefined','-fno-sanitize-recover=all','-I'+str(repo/'pexpert/arm'),str(out/'model.c'),'-o',str(out/'model')],[str(out/'model')])):
@@ -77,6 +88,19 @@ bad=bytearray(raw);struct.pack_into('<I',bad,60,0x80)
 try:host.decode_panel_sleep(bad)
 except ValueError:pass
 else:raise AssertionError('Malformed ID-read mask accepted')
+current=struct.pack('<20I',2,4,1,1,1,4,0,0x9c,2,3,0x1003,0x1000,0xa1,0x12,0x11,0x3f,1,0,0x1003,0)
+decoded=host.decode_panel_sleep(current,current[:8])
+assert decoded['consistent'] and decoded['recovery_attempts']==1 and decoded['error']==4 and not decoded['cleanup_error']
+assert not host.decode_panel_sleep(current,struct.pack('<2I',2,6))['consistent']
+bad=bytearray(current);struct.pack_into('<I',bad,64,2)
+try:host.decode_panel_sleep(bad)
+except ValueError:pass
+else:raise AssertionError('Unlimited recovery budget accepted')
+raw_published=(out/'panel-recovery.bin').read_bytes()
+published=host.decode_panel_sleep(raw_published,raw_published[:8])
+assert published['version']==2 and published['consistent'] and published['recovery_attempts']==1 and published['stage']==1
+assert published['error']==4 and published['cleanup_error']==0 and published['current_scanout']==0x1003
+(out/'panel-recovery.json').write_text(json.dumps(published,indent=2)+'\n')
 (out/'result.json').write_text(json.dumps(dict(result='PASS',hardware=False,source_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
  limit='Actual PE wrapper/production sleep state; clock/MMIO/transport model, no hardware energy or display evidence'),indent=2)+'\n')
 print('EVIDENCE',out,flush=True)
