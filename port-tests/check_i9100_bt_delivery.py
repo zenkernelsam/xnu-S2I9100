@@ -29,6 +29,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--model',type=Path,action='append',required=True)
     p.add_argument('--kernel',type=Path,required=True);p.add_argument('--hcd-test',type=Path,required=True)
     p.add_argument('--controller-proof-test',type=Path,help='Verify raw ROM/patched exporter and retained model provenance')
+    p.add_argument('--btserver-native',type=Path,help='Audit original BTServer ARM configuration execution evidence')
     a=p.parse_args()
     e=Evidence('bt-delivery');e.wait_idle_seconds=60
     models={}
@@ -41,10 +42,18 @@ def main():
             if sha(REPO/'port-tests'/name)!=digest:raise RuntimeError('Nested model fixture changed')
         for name,digest in m.get('facade_headers',{}).items():
             if sha(REPO/'port-tests/offline-native-sdk'/name)!=digest:raise RuntimeError('Host facade changed')
+        for name,digest in m.get('bsd_facade_headers',{}).items():
+            if sha(REPO/'port-tests/bt-control-sdk'/name)!=digest:raise RuntimeError('BSD socket/proc facade changed')
+        for name,digest in m.get('extra_facade_headers',{}).items():
+            if sha(REPO/name)!=digest:raise RuntimeError('Additional host facade changed')
         if m.get('rom_probe_json_sha256'):
             report=path/'rom-probe.json'
             if sha(report)!=m['rom_probe_json_sha256']:raise RuntimeError('Raw ROM probe output changed')
             if json.loads(report.read_text()).get('model_fixture') is not True:raise RuntimeError('Modeled ROM output lost its provenance marker')
+        if m.get('btserver_native'):
+            item=m['btserver_native'];native_path=(ROOT/item['path']).resolve()
+            if not native_path.is_relative_to(ROOT/'uniloader-S2I9100/out') or sha(native_path/'native-btserver.json')!=item['sha256']:
+                raise RuntimeError('Native ARM-to-control callback evidence changed')
         models[str(path.relative_to(ROOT))]=sha(path/'manifest.json')
     kernel_path,kernel=retained(a.kernel)
     if not kernel.get('complete_kernel_link') or sha(kernel_path/'mach_kernel.sys')!=kernel['linked_kernel_sha256']:
@@ -75,6 +84,19 @@ def main():
             raise RuntimeError('Model controller identity was marked as real/reviewed')
         if sha(proof_dir/'export/controller-proof.json')!=export['proof_sha256']:raise RuntimeError('Exported controller proof changed')
         controller_proof=str(proof_dir.relative_to(ROOT))
+    native_proof=None
+    if a.btserver_native:
+        native=a.btserver_native.resolve()
+        if not native.is_relative_to(loader/'out'):raise RuntimeError('BTServer evidence escaped loader out')
+        proof=json.loads((native/'native-btserver.json').read_text())
+        image=ROOT/'research/ios6-btserver-20261119/BTServer.bin'
+        if proof.get('result')!='PASS' or proof.get('hardware_tested') is not False or proof.get('device_contacted') is not False:
+            raise RuntimeError('Native BTServer evidence is incomplete or misattributed')
+        if proof['original_image_sha256']!=sha(image) or proof['original_image_uuid']!='af0150d5085e326598edff072a23d146':
+            raise RuntimeError('Original BTServer changed')
+        for name,key in (('verify-ios6-btserver.py','verifier_sha256'),('research-ios6-btserver.py','analyzer_sha256')):
+            if sha(loader/'scripts/i9100'/name)!=proof[key]:raise RuntimeError('Original native verifier changed')
+        native_proof=dict(path=str(native.relative_to(ROOT)),sha256=sha(native/'native-btserver.json'))
     tree=loader/'out'/e.out.name/'builder-copy';target=tree/'scripts/i9100/prepare-automation.py';target.parent.mkdir(parents=True);target.write_bytes(source.read_bytes())
     e.run(['git','apply','--check',str(patch)],'loader-live-apply-check',cwd=loader)
     e.run(['git','apply','--directory='+str(tree.relative_to(loader)),str(patch)],'loader-copy-apply',cwd=loader)
@@ -82,7 +104,7 @@ def main():
     if lists!=[objects] or sha(source)!=record['source_sha256']:raise RuntimeError('Patched builder AST/live source changed')
     e.result.update(model_proofs=models,validated_kernel=dict(path=str(kernel_path.relative_to(ROOT)),bytes=kernel['kernel_bytes'],sha256=kernel['linked_kernel_sha256'],objects=kernel['total_link_objects'],peripherals=len(inventory)),
         loader_source_sha256=record['source_sha256'],loader_patch_sha256=record['patch_sha256'],hcd_fixture=str(hcd.relative_to(ROOT)),
-        controller_proof_fixture=controller_proof,live_builder_modified=False)
+        controller_proof_fixture=controller_proof,btserver_native=native_proof,live_builder_modified=False)
     e.finish([], 'Current H4/probe/bootstrap/ACL/native-worker proof, frozen full kernel, HCD/controller export fixtures and live/copied opt-in object inventory; no device/radio/flash')
 
 

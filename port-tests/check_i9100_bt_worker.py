@@ -7,7 +7,7 @@ from i9100_offline_build import Evidence,REPO
 p=argparse.ArgumentParser(description=__doc__);p.add_argument('--cross-compile',action='store_true');a=p.parse_args()
 c=['i9100_gpio_broker.c','i9100_clock_gates.c','i9100_irq_registry.c','i9100_peripheral_board.c',
  'i9100_i2c_samsung.c','i9100_uart_bluetooth.c','i9100_sdio.c','i9100_radio_power.c','i9100_irq_cascade.c',
- 'i9100_bluetooth_h4.c','i9100_bt_boot.c','i9100_bt_probe.c','i9100_bt_acl.c']
+ 'i9100_bluetooth_h4.c','i9100_bt_boot.c','i9100_bt_probe.c','i9100_bt_acl.c','i9100_bt_stream.c']
 cpp=['i9100_radio_native.cpp','i9100_bt_worker.cpp']
 e=Evidence('bt-worker-offline');e.wait_idle_seconds=60
 os.environ['I9100_BT_PROBE_OUTPUT']=str(e.out)

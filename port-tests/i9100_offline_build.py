@@ -139,15 +139,21 @@ class Evidence:
         self.result["cross_compiled"] = True
 
     def model_cpp(self, test_file, c_sources, cpp_sources, libraries=(), source_overrides=None,
-                  wrapped_functions=()):
+                  wrapped_functions=(),extra_sdk=None):
         """Run native bridge logic with a host-only IOKit facade, not an ARM SDK."""
         sdk = REPO / "port-tests/offline-native-sdk"
+        extra=[]
+        if extra_sdk:
+            extra_sdk=Path(extra_sdk).resolve()
+            if not extra_sdk.is_relative_to(REPO/'port-tests') or not extra_sdk.is_dir():
+                raise ValueError('Additional host SDK must remain in project port-tests')
+            extra=['-I'+str(extra_sdk)]
         source_overrides = source_overrides or {}
         if any(not name.isascii() or not name.isidentifier() for name in wrapped_functions):
             raise ValueError("Linker wrapping requires plain C symbol names")
         common = ["-O1", "-Wall", "-Wextra", "-Werror", "-fno-pie",
                   "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
-                  "-I" + str(sdk), "-I" + str(PLATFORM)]
+                  *extra,"-I" + str(sdk), "-I" + str(PLATFORM)]
         objects = []
         for source in c_sources + cpp_sources:
             cpp = source.endswith(".cpp")
@@ -169,6 +175,9 @@ class Evidence:
                                            for path in sorted(sdk.rglob("*.h"))})
         if wrapped_functions:
             self.result.setdefault("native_wrapped_functions", {})[test_file] = list(wrapped_functions)
+        if extra_sdk:
+            self.result['extra_facade_headers']={str(path.relative_to(REPO)):hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(extra_sdk.rglob('*.h'))}
 
     def finish(self, sources, scope):
         for item in self.commands:

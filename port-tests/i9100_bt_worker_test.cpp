@@ -1,7 +1,10 @@
 /* SPDX-License-Identifier: BSD-2-Clause; true native UART/power and boot worker. */
+#pragma push_macro("main")
+#undef main
 #define main radio_native_reference_main
 #include "i9100_radio_native_test.cpp"
 #undef main
+#pragma pop_macro("main")
 #include "i9100_bt_worker.h"
 #include "offline-native-sdk/IOKit/i9100_model_events.h"
 #include <openssl/sha.h>
@@ -79,6 +82,12 @@ static i9100_bt_worker_profile wp()
  assert(!sha(nullptr,firmware,sizeof(firmware),p.controller.hcd_sha256));return p;
 }
 static i9100_bcm_fw_integrity integrity={nullptr,sha};static i9100_bt_output output={nullptr,rx};
+static unsigned stream_refs,stream_delivered,stream_busy;
+static int stream_client;
+static void stream_retain(void *){stream_refs++;}
+static void stream_release(void *){assert(stream_refs);stream_refs--;}
+static int stream_receive(void *,const uint8_t *p,unsigned bytes)
+{assert(p&&bytes>=3U&&p[0]==4U);if(stream_busy)return I9100_BTS_AGAIN;stream_delivered+=bytes;return 0;}
 static struct i9100_bt_worker_status worker_status()
 {struct i9100_bt_worker_status s={};assert(!i9100_bt_worker_status(worker,&s));return s;}
 static void start_context(i9100_peripheral_native **parent,i9100_radio_native **r)
@@ -134,6 +143,31 @@ static void native_acl_path()
  assert(i9100_bt_worker_acl_send(worker,1,fresh.generation,2,payload,64)==I9100_BA_IO&&worker_status().fault&&worker_status().acl.outstanding[0]==1);
  peer.tx_stuck=false;finish_worker(c,r);
 }
+static void native_stream_path()
+{
+ i9100_peripheral_native *c=nullptr;i9100_radio_native *r=nullptr;start_context(&c,&r);auto p=wp();
+ assert(!i9100_bt_worker_create(1,r,&p,firmware,sizeof(firmware),&integrity,&output,&worker));
+ i9100_bt_stream_consumer consumer={&stream_client,stream_retain,stream_release,stream_receive};
+ assert(!i9100_bt_worker_stream_attach(worker,&consumer)&&stream_refs==1U);
+ assert(i9100_bt_worker_stream_open(worker,&stream_client)==I9100_BT_BOOT_BUSY);
+ assert(!i9100_bt_worker_start(worker));
+ for(unsigned n=0;n<700U&&!worker_status().ready;n++){ns+=1000000;bt_loop->tick();}
+ assert(worker_status().ready&&!stream_delivered&&!rx_delivered);
+ assert(!i9100_bt_worker_stream_open(worker,&stream_client));
+ assert(i9100_bt_worker_destroy(&worker)==I9100_BT_BOOT_BUSY&&worker&&stream_refs==1);
+ assert(i9100_bt_worker_command(worker,0x1001U,nullptr,0)==I9100_BT_BOOT_BUSY);
+ uint8_t command_bytes[]={1,1,0x10,0};unsigned sent_before=peer.commands;
+ assert(!i9100_bt_worker_stream_write(worker,&stream_client,command_bytes,2));ns++;bt_loop->tick();assert(peer.commands==sent_before);
+ assert(!i9100_bt_worker_stream_write(worker,&stream_client,command_bytes+2,2));stream_busy=1;
+ ns++;bt_loop->tick();assert(peer.commands==sent_before+1U);ns++;bt_loop->tick();assert(worker_status().stream.rx_queued==15U&&!stream_delivered);
+ stream_busy=0;ns++;bt_loop->tick();assert(stream_delivered==15U&&!worker_status().stream.rx_queued&&!rx_delivered);
+ uint8_t raw[44];assert(!i9100_bt_worker_stream_attributes(worker,&stream_client,raw,44,0));
+ assert(!i9100_bt_worker_stream_attributes(worker,&stream_client,raw,44,1));
+ assert(i9100_bt_worker_stream_detach(worker)==I9100_BT_BOOT_BUSY);
+ assert(!i9100_bt_worker_stream_close(worker,&stream_client)&&!worker_status().running&&worker_status().stream.closed);
+ assert(!i9100_bt_worker_stream_detach(worker)&&!stream_refs);
+ finish_worker(c,r);
+}
 int main()
 {
  assert(!radio_native_reference_main());i9100_peripheral_native *c=nullptr;i9100_radio_native *r=nullptr;
@@ -156,7 +190,7 @@ int main()
  peer.fifo.clear();peer.head=peer.assembled=peer.reset_count=0;
  assert(!i9100_bt_worker_create(1,r,&p,firmware,sizeof(firmware),&integrity,&output,&worker)&&worker_status().boot.generation==2U);
  finish_worker(c,r);
- probe_native_path();native_acl_path();
+ probe_native_path();native_acl_path();native_stream_path();
  start_context(&c,&r);p=wp();p.controller.hcd_sha256[0]^=1;before=peer.commands;
  assert(i9100_bt_worker_create(1,r,&p,firmware,sizeof(firmware),&integrity,&output,&worker)==I9100_BT_BOOT_HASH&&!worker&&!status(r).native_uart_owned&&peer.commands==before);
  peer.enabled=false;close(c,r);

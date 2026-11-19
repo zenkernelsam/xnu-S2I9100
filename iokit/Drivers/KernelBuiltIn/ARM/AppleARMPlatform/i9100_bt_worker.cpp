@@ -12,6 +12,7 @@ struct bt_worker_state {
  i9100_bt_boot boot;uint8_t *hcd;uint32_t bytes,records,added,generation;
  i9100_bt_probe probe;uint32_t probe_mode;
  i9100_bt_acl acl;
+ i9100_bt_stream stream;i9100_bt_stream_consumer consumer;uint32_t stream_attached;
  i9100_bt_hcd_record *index;
  struct i9100_bt_worker_status status;
 };
@@ -23,7 +24,8 @@ public:
  virtual void free();
 };
 OSDefineMetaClassAndStructors(i9100_bt_worker,OSObject)
-enum {BW_START=1,BW_COMMAND,BW_STOP,BW_STATUS,BW_DETACH,BW_ACL_LINK,BW_ACL_SEND};
+enum {BW_START=1,BW_COMMAND,BW_STOP,BW_STATUS,BW_DETACH,BW_ACL_LINK,BW_ACL_SEND,
+ BW_STREAM_ATTACH,BW_STREAM_OPEN,BW_STREAM_WRITE,BW_STREAM_ATTRIBUTES,BW_STREAM_CLOSE,BW_STREAM_DETACH};
 static int wire_lock(void *cookie)
 {auto *w=(i9100_bt_worker *)cookie;if(i9100_radio_native_verify_uart_cleanup(w->s.radio,w->s.generation))return -1;
  return w->s.native.lock(w->s.native.cookie);}
@@ -63,12 +65,28 @@ static int wire_receive(void *cookie,const i9100_bt_frame *frame)
 {auto *w=(i9100_bt_worker *)cookie;
  if(w->s.boot.status.ready){int e=acl_prepare(w);if(!e)e=i9100_bt_acl_receive(&w->s.acl,frame);
   if(e){if(!w->s.status.error)w->s.status.error=e;return e;}}
+ if(w->s.stream_attached&&w->s.stream.status.initialized)return i9100_bt_stream_receive(&w->s.stream,frame);
  return w->s.output.receive(w->s.output.cookie,frame);}
+static int stream_verify(void *cookie,uint32_t generation)
+{auto *w=(i9100_bt_worker *)cookie;if(!w->s.status.ready||!w->s.status.running||w->s.status.closing||w->s.status.fault)return I9100_BTS_OWNER;
+ return wire_verify(w,generation);}
+static int stream_command(void *cookie,uint16_t op,const uint8_t *p,unsigned bytes)
+{auto *w=(i9100_bt_worker *)cookie;int e=i9100_bt_boot_command(&w->s.boot,op,p,bytes);
+ return e==I9100_BT_BUSY?I9100_BTS_AGAIN:e;}
+static int stream_link(void *cookie,uint16_t handle,struct i9100_bt_acl_link *out)
+{auto *w=(i9100_bt_worker *)cookie;return i9100_bt_acl_link(&w->s.acl,handle,out);}
+static int stream_acl(void *cookie,uint16_t handle,uint32_t generation,unsigned boundary,const uint8_t *p,unsigned bytes)
+{auto *w=(i9100_bt_worker *)cookie;int e=i9100_bt_acl_send(&w->s.acl,handle,generation,boundary,p,bytes);
+ return e==I9100_BA_CREDIT?I9100_BTS_AGAIN:e;}
+static int stream_receive(void *cookie,const uint8_t *p,unsigned bytes)
+{auto *w=(i9100_bt_worker *)cookie;return w->s.consumer.receive(w->s.consumer.cookie,p,bytes);}
 static void sources_off(i9100_bt_worker *w)
 {w->s.status.running=0;if(w->s.timer){w->s.timer->disable();w->s.timer->cancelTimeout();}}
 static int halt(i9100_bt_worker *w)
 {
  sources_off(w);w->s.status.closing=1;int e=0;
+ if(w->s.stream.status.initialized&&!w->s.stream.status.closed){
+  (void)i9100_bt_stream_close(&w->s.stream,(const void *)w->s.stream.client);}
  if(w->s.acl.status.initialized)(void)i9100_bt_acl_stop(&w->s.acl);
  if(w->s.probe_mode&&w->s.probe.status.initialized)e=i9100_bt_probe_stop(&w->s.probe);
  else if(w->s.boot.status.initialized)e=i9100_bt_boot_stop(&w->s.boot);
@@ -88,11 +106,13 @@ static void process(i9100_bt_worker *w)
  if(w->s.probe_mode&&w->s.probe.status.completed){(void)halt(w);return;}
  w->s.status.ready=w->s.probe_mode?0:w->s.boot.status.ready;
  if(w->s.status.ready){e=acl_prepare(w);if(e){fault(w,e);return;}}
+ if(w->s.stream.status.owned){e=i9100_bt_stream_step(&w->s.stream,4);if(e){fault(w,e);return;}}
  if(w->s.timer->setTimeoutUS(w->s.profile.poll_us)!=kIOReturnSuccess)fault(w,I9100_BT_BOOT_IO);
 }
 static void timer(OSObject *owner,IOTimerEventSource *){process((i9100_bt_worker *)owner);}
 static int detach(i9100_bt_worker *w)
 {
+ if(w->s.stream_attached)return I9100_BT_BOOT_BUSY;
  int e=halt(w);if(e)return e;
  if(w->s.added){e=w->s.loop->removeEventSource(w->s.timer);if(e){w->s.status.cleanup_error=e;return e;}w->s.added=0;}
  if(w->s.status.uart_owned){e=i9100_radio_native_verify_uart_cleanup(w->s.radio,w->s.generation);
@@ -106,6 +126,7 @@ static int detach(i9100_bt_worker *w)
 struct command_request {uint16_t opcode;const uint8_t *bytes;unsigned count;};
 struct acl_link_request {uint16_t handle;struct i9100_bt_acl_link *out;};
 struct acl_send_request {uint16_t handle;uint32_t generation,boundary;const uint8_t *bytes;unsigned count;};
+struct stream_request {const void *client;uint8_t *bytes;unsigned count,set;};
 static IOReturn action(OSObject *owner,void *operation,void *argument,void *,void *)
 {
  auto *w=(i9100_bt_worker *)owner;
@@ -116,6 +137,7 @@ static IOReturn action(OSObject *owner,void *operation,void *argument,void *,voi
   w->s.status.running=1;w->s.timer->enable();
   if(w->s.timer->setTimeoutUS(w->s.profile.poll_us)!=kIOReturnSuccess){fault(w,I9100_BT_BOOT_IO);return I9100_BT_BOOT_IO;}return 0;
  case BW_COMMAND:{
+  if(w->s.stream.status.initialized)return I9100_BT_BOOT_BUSY;
   if(w->s.probe_mode||!w->s.status.running||!w->s.status.ready||w->s.status.closing||w->s.status.fault)return I9100_BT_BOOT_BUSY;
   auto *r=(command_request *)argument;int e=i9100_bt_boot_command(&w->s.boot,r->opcode,r->bytes,r->count);
   if(e&&e!=I9100_BT_BUSY&&e!=I9100_BT_ARGUMENT&&e!=I9100_BT_BOOT_ARGUMENT)fault(w,e);return e;}
@@ -124,17 +146,41 @@ static IOReturn action(OSObject *owner,void *operation,void *argument,void *,voi
   auto *r=(acl_link_request *)argument;int e=i9100_bt_acl_link(&w->s.acl,r->handle,r->out);
   if(e&&((e!=I9100_BA_OWNER&&e!=I9100_BA_ARGUMENT)||w->s.acl.status.fault))fault(w,e);return e;}
  case BW_ACL_SEND:{
+  if(w->s.stream.status.initialized)return I9100_BT_BOOT_BUSY;
   if(w->s.probe_mode||!w->s.status.running||!w->s.status.ready||w->s.status.closing||w->s.status.fault)return I9100_BT_BOOT_BUSY;
   auto *r=(acl_send_request *)argument;int e=i9100_bt_acl_send(&w->s.acl,r->handle,r->generation,r->boundary,r->bytes,r->count);
   if(e&&e!=I9100_BA_CREDIT&&e!=I9100_BA_ARGUMENT&&e!=I9100_BA_OWNER)fault(w,e);
   else if(e==I9100_BA_OWNER&&w->s.acl.status.fault)fault(w,e);return e;}
  case BW_STOP:return halt(w);
+ case BW_STREAM_ATTACH:{
+  auto *consumer=(i9100_bt_stream_consumer *)argument;
+  if(w->s.stream_attached||w->s.stream.status.initialized||w->s.probe_mode||w->s.status.running||w->s.status.ready||
+     w->s.status.closed||w->s.status.closing||w->s.status.fault)return I9100_BT_BOOT_BUSY;
+  w->s.consumer=*consumer;w->s.consumer.retain(w->s.consumer.cookie);w->s.stream_attached=1;return 0;}
+ case BW_STREAM_OPEN:{
+  if(!w->s.stream_attached||!w->s.status.ready||!w->s.status.running||w->s.status.closed||w->s.status.closing||w->s.status.fault||
+     w->s.boot.h4.pending||(w->s.boot.h4.used&&w->s.boot.h4.used!=w->s.boot.h4.needed)||
+     w->s.boot.rx_offset!=w->s.boot.rx_used)return I9100_BT_BOOT_BUSY;
+  if(!w->s.stream.status.initialized){i9100_bt_stream_io io={w,stream_verify,wire_time,stream_command,stream_link,stream_acl,stream_receive};
+   int e=i9100_bt_stream_init(&w->s.stream,1,&io,w->s.generation,115200U);if(e)return e;}
+  {int e=i9100_bt_stream_open(&w->s.stream,argument);if(e&&w->s.stream.status.fault)fault(w,e);return e;}}
+ case BW_STREAM_WRITE:{auto *r=(stream_request *)argument;int e=i9100_bt_stream_write(&w->s.stream,r->client,r->bytes,r->count);
+  if(e&&w->s.stream.status.fault)fault(w,e);return e;}
+ case BW_STREAM_ATTRIBUTES:{auto *r=(stream_request *)argument;
+  return r->set?i9100_bt_stream_set_attributes(&w->s.stream,r->client,r->bytes,r->count):
+               i9100_bt_stream_get_attributes(&w->s.stream,r->client,r->bytes,r->count);}
+ case BW_STREAM_CLOSE:{int e=i9100_bt_stream_close(&w->s.stream,argument);if(e)return e;return halt(w);}
+ case BW_STREAM_DETACH:
+  if(!w->s.stream_attached)return I9100_BT_BOOT_ARGUMENT;
+  if(w->s.stream.status.initialized&&!w->s.stream.status.closed)return I9100_BT_BOOT_BUSY;
+  w->s.stream_attached=0;w->s.consumer.release(w->s.consumer.cookie);memset(&w->s.consumer,0,sizeof(w->s.consumer));return 0;
  case BW_DETACH:return detach(w);
  case BW_STATUS:{auto s=w->s.status;s.session_hold=w->s.session.owned;s.worker_hold=w->s.hold.owned;
   s.poll_us=w->s.profile.poll_us;s.boot=w->s.boot.status;
   if(w->s.boot.status.initialized)(void)i9100_bt_boot_status(&w->s.boot,&s.boot);
   s.probe_mode=w->s.probe_mode;if(w->s.probe.status.initialized)(void)i9100_bt_probe_status(&w->s.probe,&s.probe);
   if(w->s.acl.status.initialized){s.acl_ready=!w->s.acl.status.closed&&!w->s.acl.status.fault;(void)i9100_bt_acl_status(&w->s.acl,&s.acl);}
+  s.stream_attached=w->s.stream_attached;if(w->s.stream.status.initialized)(void)i9100_bt_stream_status(&w->s.stream,&s.stream);
   *(struct i9100_bt_worker_status *)argument=s;return 0;}
  default:return I9100_BT_BOOT_ARGUMENT;
  }
@@ -225,3 +271,29 @@ int i9100_bt_worker_destroy(i9100_bt_worker **owner)
 {if(!owner||!*owner)return I9100_BT_BOOT_ARGUMENT;auto *w=*owner;uintptr_t a=(uintptr_t)w,b=(uintptr_t)owner;
  if(a>~(uintptr_t)0-sizeof(*w)||b>~(uintptr_t)0-sizeof(*owner)||(a+sizeof(*w)>b&&b+sizeof(*owner)>a))return I9100_BT_BOOT_ARGUMENT;
  int e=run(w,BW_DETACH);if(e)return e;w->release();*owner=0;return 0;}
+int i9100_bt_worker_stream_attach(i9100_bt_worker *w,const i9100_bt_stream_consumer *consumer)
+{
+ if(!w||!consumer||!consumer->cookie||!consumer->retain||!consumer->release||!consumer->receive)return I9100_BTS_ARGUMENT;
+ uintptr_t a=(uintptr_t)w,b=(uintptr_t)consumer;
+ if(a>~(uintptr_t)0-sizeof(*w)||b>~(uintptr_t)0-sizeof(*consumer)||(a+sizeof(*w)>b&&b+sizeof(*consumer)>a))return I9100_BTS_ARGUMENT;
+ auto copy=*consumer;return run(w,BW_STREAM_ATTACH,&copy);
+}
+int i9100_bt_worker_stream_open(i9100_bt_worker *w,const void *client)
+{return client?run(w,BW_STREAM_OPEN,(void *)client):I9100_BTS_ARGUMENT;}
+int i9100_bt_worker_stream_write(i9100_bt_worker *w,const void *client,const uint8_t *p,unsigned bytes)
+{
+ if(!w||!client||!p||!bytes||bytes>I9100_BT_STREAM_CAP)return I9100_BTS_ARGUMENT;
+ uintptr_t a=(uintptr_t)w,b=(uintptr_t)p;
+ if(a>~(uintptr_t)0-sizeof(*w)||b>~(uintptr_t)0-bytes||(a+sizeof(*w)>b&&b+bytes>a))return I9100_BTS_ARGUMENT;
+ stream_request request={client,(uint8_t *)p,bytes,0};return run(w,BW_STREAM_WRITE,&request);
+}
+int i9100_bt_worker_stream_attributes(i9100_bt_worker *w,const void *client,uint8_t *p,unsigned bytes,int set)
+{
+ if(!w||!client||!p||bytes!=44U||(set!=0&&set!=1))return I9100_BTS_ARGUMENT;
+ uintptr_t a=(uintptr_t)w,b=(uintptr_t)p;
+ if(a>~(uintptr_t)0-sizeof(*w)||b>~(uintptr_t)0-bytes||(a+sizeof(*w)>b&&b+bytes>a))return I9100_BTS_ARGUMENT;
+ stream_request request={client,p,bytes,(unsigned)set};return run(w,BW_STREAM_ATTRIBUTES,&request);
+}
+int i9100_bt_worker_stream_close(i9100_bt_worker *w,const void *client)
+{return client?run(w,BW_STREAM_CLOSE,(void *)client):I9100_BTS_ARGUMENT;}
+int i9100_bt_worker_stream_detach(i9100_bt_worker *w){return run(w,BW_STREAM_DETACH);}

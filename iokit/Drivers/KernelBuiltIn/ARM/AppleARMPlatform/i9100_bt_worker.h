@@ -6,6 +6,7 @@
 #include "i9100_bcm_firmware.h"
 #include "i9100_bt_probe.h"
 #include "i9100_bt_acl.h"
+#include "i9100_bt_stream.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -20,11 +21,16 @@ struct i9100_bt_probe_worker_profile {
 struct i9100_bt_output {
  void *cookie;int (*receive)(void *,const struct i9100_bt_frame *);
 };
+struct i9100_bt_stream_consumer {
+ void *cookie;void (*retain)(void *);void (*release)(void *);
+ int (*receive)(void *,const uint8_t *,unsigned);
+};
 struct i9100_bt_worker_status {
  uint32_t ready,running,fault,closing,closed,uart_owned,session_hold,worker_hold,poll_us;
  uint64_t timer_ticks;struct i9100_bt_boot_status boot;int32_t error,cleanup_error;
  uint32_t probe_mode;struct i9100_bt_probe_status probe;
  uint32_t acl_ready;struct i9100_bt_acl_status acl;
+ uint32_t stream_attached;struct i9100_bt_stream_status stream;
 };
 int i9100_bt_worker_create(int enabled,struct i9100_radio_native *,const struct i9100_bt_worker_profile *,
  const uint8_t *reviewed_hcd,uint32_t bytes,const struct i9100_bcm_fw_integrity *,
@@ -36,6 +42,12 @@ int i9100_bt_worker_acl_link(struct i9100_bt_worker *,uint16_t handle,struct i91
 int i9100_bt_worker_acl_send(struct i9100_bt_worker *,uint16_t handle,uint32_t link_generation,unsigned packet_boundary,
  const uint8_t *kernel_payload,unsigned bytes);
 int i9100_bt_worker_stop(struct i9100_bt_worker *);
+int i9100_bt_worker_stream_attach(struct i9100_bt_worker *,const struct i9100_bt_stream_consumer *);
+int i9100_bt_worker_stream_open(struct i9100_bt_worker *,const void *kernel_client);
+int i9100_bt_worker_stream_write(struct i9100_bt_worker *,const void *kernel_client,const uint8_t *,unsigned);
+int i9100_bt_worker_stream_attributes(struct i9100_bt_worker *,const void *kernel_client,uint8_t *,unsigned,int set);
+int i9100_bt_worker_stream_close(struct i9100_bt_worker *,const void *kernel_client);
+int i9100_bt_worker_stream_detach(struct i9100_bt_worker *);
 int i9100_bt_worker_status(struct i9100_bt_worker *,struct i9100_bt_worker_status *);
 int i9100_bt_worker_destroy(struct i9100_bt_worker **);
 /* Default OFF. Real OSObject/IOWorkLoop keeps private HCD/index; opens only
@@ -56,6 +68,10 @@ int i9100_bt_worker_destroy(struct i9100_bt_worker **);
  * BR/LE buffer replies. RX events update credits before synchronous delivery;
  * host sends carry the current connection generation. Partial UART writes
  * keep outstanding counts and stop this session, without replay or release.
+ * Optional stream consumer is retained until explicit detach, blocking destroy
+ * while socket callbacks exist. Complete runtime frames go to one client only,
+ * never to both original kernel consumer and socket. Disconnect closes the
+ * stream and quiesces this physical generation; no silent reconnect/reset.
  */
 #ifdef __cplusplus
 }

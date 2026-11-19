@@ -36,17 +36,21 @@ C_SOURCES = [
     "i9100_pl330_ring.c",
     "i9100_sensor_hid_wire.c", "i9100_sensor_hid_queue.c",
     "i9100_bt_boot.c",
-    "i9100_bt_probe.c", "i9100_bt_acl.c",
+    "i9100_bt_probe.c", "i9100_bt_acl.c", "i9100_bt_stream.c",
 ]
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp",
-               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_sensor_worker.cpp", "i9100_haptic_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp", "IOS6I9100AudioPCM.cpp", "i9100_pl330_ring_native.cpp", "i9100_pl330_ring_mmio.cpp", "i9100_audio_gated.cpp", "i9100_sensor_hid.cpp", "i9100_sensor_hid_endpoint.cpp", "i9100_bt_worker.cpp"]
+               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_sensor_worker.cpp", "i9100_haptic_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp", "IOS6I9100AudioPCM.cpp", "i9100_pl330_ring_native.cpp", "i9100_pl330_ring_mmio.cpp", "i9100_audio_gated.cpp", "i9100_sensor_hid.cpp", "i9100_sensor_hid_endpoint.cpp", "i9100_bt_worker.cpp", "i9100_bt_control.cpp"]
 TESTS = [
+    ("i9100_bt_stream_test.c", ["i9100_bt_stream.c"]),
+    ("i9100_bt_control_test.cpp", ["i9100_gpio_broker.c","i9100_clock_gates.c","i9100_irq_registry.c","i9100_peripheral_board.c",
+        "i9100_i2c_samsung.c","i9100_uart_bluetooth.c","i9100_sdio.c","i9100_radio_power.c","i9100_irq_cascade.c",
+        "i9100_bluetooth_h4.c","i9100_bt_boot.c","i9100_bt_probe.c","i9100_bt_acl.c","i9100_bt_stream.c","i9100_radio_native.cpp","i9100_bt_worker.cpp","i9100_bt_control.cpp"]),
     ("i9100_bt_probe_test.c", ["i9100_bluetooth_h4.c","i9100_bt_boot.c","i9100_bt_probe.c"]),
     ("i9100_bt_acl_test.c", ["i9100_bt_acl.c"]),
     ("i9100_bt_boot_test.c", ["i9100_bluetooth_h4.c","i9100_bt_boot.c"]),
     ("i9100_bt_worker_test.cpp", ["i9100_gpio_broker.c","i9100_clock_gates.c","i9100_irq_registry.c","i9100_peripheral_board.c",
         "i9100_i2c_samsung.c","i9100_uart_bluetooth.c","i9100_sdio.c","i9100_radio_power.c","i9100_irq_cascade.c",
-        "i9100_bluetooth_h4.c","i9100_bt_boot.c","i9100_bt_probe.c","i9100_bt_acl.c","i9100_radio_native.cpp","i9100_bt_worker.cpp"]),
+        "i9100_bluetooth_h4.c","i9100_bt_boot.c","i9100_bt_probe.c","i9100_bt_acl.c","i9100_bt_stream.c","i9100_radio_native.cpp","i9100_bt_worker.cpp"]),
     ("i9100_sensor_hid_wire_test.c", ["i9100_sensor_hid_wire.c"]),
     ("i9100_sensor_hid_queue_test.c", ["i9100_sensor_hid_wire.c","i9100_sensor_hid_queue.c"]),
     ("i9100_sensor_hid_test.cpp", ["i9100_gpio_broker.c","i9100_clock_gates.c","i9100_irq_registry.c",
@@ -194,16 +198,18 @@ def main():
                     overrides={"i9100-pdev.c":folder/"i9100-pdev.c"}
                 e.model_cpp(test, [name for name in sources if name.endswith(".c")]+extra,
                             [name for name in sources if name.endswith(".cpp")],
-                            libraries=["crypto"] if test in ("i9100_bcm_worker_test.cpp","i9100_bt_worker_test.cpp") else ["pthread"] if test in ("i9100_power_shared_test.cpp","i9100_power_haptic_test.cpp","i9100_haptic_worker_test.cpp") else (),
+                            libraries=["crypto"] if test in ("i9100_bcm_worker_test.cpp","i9100_bt_worker_test.cpp","i9100_bt_control_test.cpp") else ["pthread"] if test in ("i9100_power_shared_test.cpp","i9100_power_haptic_test.cpp","i9100_haptic_worker_test.cpp") else (),
                             source_overrides=overrides,
                             wrapped_functions=("i9100_sdio_init",) if test=="i9100_native_sdio_success_test.cpp" else
+                            ("i9100_uart_bt_init","i9100_bt_worker_stream_open") if test=="i9100_bt_control_test.cpp" else
                             ("i9100_uart_bt_init",) if test=="i9100_bt_worker_test.cpp" else
                             ("i9100_i2c_samsung_init",) if test in ("i9100_native_i2c_test.cpp","i9100_sensor_worker_test.cpp",
                                 "i9100_sensor_hid_test.cpp","i9100_sensor_hid_endpoint_test.cpp","i9100_sensor_hid_service_test.cpp") else
                             ("i9100_ring_mmio_read","i9100_ring_mmio_write","pthread_mutex_init","pthread_mutex_lock","pthread_mutex_unlock") if test=="i9100_audio_gated_pdev_test.cpp" else
                             ("pthread_mutex_init","pthread_mutex_lock","pthread_mutex_unlock") if test=="i9100_audio_pdev_test.cpp" else
                             ("i9100_ring_mmio_read","i9100_ring_mmio_write") if test in
-                            ("i9100_pl330_ring_native_test.cpp","i9100_audio_gated_pipeline_test.cpp","i9100_audio_gated_user_test.cpp") else ())
+                            ("i9100_pl330_ring_native_test.cpp","i9100_audio_gated_pipeline_test.cpp","i9100_audio_gated_user_test.cpp") else (),
+                            extra_sdk=REPO/'port-tests/bt-control-sdk' if test=='i9100_bt_control_test.cpp' else None)
                 if test=="i9100_power_shared_test.cpp":
                     for n in range(1,4):e.run([str(e.out/"models"),str(n)],"shared-prepare-failure-"+str(n)+"-tests")
                 if test in ("i9100_audio_pdev_test.cpp","i9100_audio_gated_pdev_test.cpp") and any(
