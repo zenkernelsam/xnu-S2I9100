@@ -7,7 +7,14 @@
 #include <libkern/c++/OSArray.h>
 #include <libkern/c++/OSUnserialize.h>
 #include <machine/machine_routines.h>
-#include "IOS7LabStoragePersonalities.h"
+static const char standard_personalities[]=
+ "<array><dict><key>IOClass</key><string>IOBlockStorageDriver</string>"
+ "<key>IOProviderClass</key><string>IOS6I9100EMMCRaw</string></dict>"
+ "<dict><key>IOClass</key><string>IOMediaBSDClient</string>"
+ "<key>IOMatchCategory</key><string>IOMediaBSDClient</string>"
+ "<key>IOProbeScore</key><integer>30000</integer>"
+ "<key>IOProviderClass</key><string>IOMedia</string>"
+ "<key>IOResourceMatch</key><string>IOBSD</string></dict></array>";
 bool ios6i9100_publish_emmc_storage(int enabled,IOService *platform,i9100_emmc_native *native,IOS6I9100EMMCRaw **out)
 {
  if(enabled!=1||!platform||!native||!out||*out||ml_at_interrupt_context()||!ml_get_interrupts_enabled())return false;
@@ -25,7 +32,9 @@ bool ios6i9100_publish_emmc_storage(int enabled,IOService *platform,i9100_emmc_n
   "<key>IOPropertyMatch</key><dict><key>Whole</key><true/></dict>"
   "</dict></array>";
  if(ok){
-  OSArray *standard=OSDynamicCast(OSArray,OSUnserializeXML(ios7labStoragePersonalities));
+  /* No DOS partition personality is added by internal boot. The custom
+   * validated pair is the only partition service for this RO whole. */
+  OSArray *standard=OSDynamicCast(OSArray,OSUnserializeXML(standard_personalities));
   OSArray *native_drivers=OSDynamicCast(OSArray,OSUnserializeXML(personalities));
   ok=standard&&native_drivers&&gIOCatalogue->addDrivers(standard)&&gIOCatalogue->addDrivers(native_drivers);
   if(standard)standard->release();if(native_drivers)native_drivers->release();

@@ -46,7 +46,7 @@
  #include "i9100_charge_adopt.h"
  #include "i9100_charge_epoch.h"
  #include "i9100_charge_diag.h"
-@@ -105,6 +106,8 @@
+@@ -119,6 +120,8 @@
  public:
   virtual bool init(void);
   virtual bool start(IOService *);
@@ -55,7 +55,7 @@
   virtual void free(void);
  };
  OSDefineMetaClassAndStructors(IOS7I9100Power,IOPMPowerSource)
-@@ -205,7 +208,8 @@
+@@ -219,7 +222,8 @@
     i9100_lpm_poweroff_call=thread_call_allocate(i9100_lpm_poweroff_worker,0);
    __sync_synchronize();i9100_lpm_poweroff_ready=i9100_lpm_poweroff_call!=0;
   }
@@ -65,7 +65,7 @@
  }
  void IOS7I9100Power::sample(void)
  {
-@@ -280,8 +284,23 @@
+@@ -285,8 +289,23 @@
    s->setIsCharging(false);s->updateStatus();IOLog("I9100 POWER timer failed; charging stopped\n");
   }
  }

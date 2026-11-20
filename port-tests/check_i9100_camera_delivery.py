@@ -127,6 +127,7 @@ def main():
         needed.add('i9100_power_shared.cpp')
     if kernel.get('hfs_boot_copy'):
         needed.update(Path(n).name for n in kernel['hfs_boot_copy']['copied_sources'])
+    if kernel.get('emmc_boot_pe_copy'):needed.add('AppleARMPE.cpp')
     for _ in range(32):
         if cursor in seen:
             raise RuntimeError("Cyclic complete reference")
@@ -147,7 +148,7 @@ def main():
         if not candidates:
             raise RuntimeError("Camera compile proof missing")
         chosen = candidates[0]
-        actual_source=ROOT/chosen['source_file'] if name in {'vfs_syscalls.c','hfs_vfsops.c','bsd_init.c','kern_shutdown.c','i9100_usbcdc.c'} else PLATFORM/name
+        actual_source=ROOT/chosen['source_file'] if name in {'vfs_syscalls.c','hfs_vfsops.c','bsd_init.c','kern_shutdown.c','i9100_usbcdc.c','AppleARMPE.cpp'} else PLATFORM/name
         if sha(actual_source) != chosen["source_sha256"]:
             raise RuntimeError("Current camera code was not linked: " + name)
         if chosen["module_header"] and sha(ROOT / chosen["module_header"]) != chosen["module_header_sha256"]:
@@ -174,6 +175,20 @@ def main():
             if len(matching)!=1 or sha(matching[0])!=sha(ROOT/matches[0]["object"]):raise RuntimeError("Patched BSD object missing from actual final freeze")
         for name,expected in service.get('companion_sources',{}).items():
             if sha(REPO/name)!=expected:raise RuntimeError('HFS boot companion changed')
+    if kernel.get('emmc_boot_pe_copy'):
+        pe=kernel['emmc_boot_pe_copy']
+        for name,expected in dict(pe['live_sources'],**pe['patches']).items():
+            if sha(REPO/name)!=expected:raise RuntimeError('Current PE boot integration changed')
+        if pe.get('shared_pe_original'):
+            text=(REPO/pe['shared_pe_original']).read_text();start=text.index('--- a/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp\n')
+            selected=text[start:];end=selected.find('\n--- a/',1)
+            if end>=0:selected=selected[:end+1]
+            if hashlib.sha256(selected.encode()).hexdigest()!=pe['shared_pe_fragment_sha256']:raise RuntimeError('Shared PE hook changed')
+        if sha(REPO/pe['copied_source'])!=pe['copied_source_sha256']:raise RuntimeError('Copied PE boot source changed')
+        candidates=[x for x in compile_items if x['source']=='AppleARMPE.cpp']
+        if not candidates or candidates[0]['source_sha256']!=pe['copied_source_sha256']:raise RuntimeError('Internal-root PE was not compiled')
+        actual=[path for path in inputs if object_name(path) in ('AppleARMPE.cpo','AppleARMPE.cpp.cpo')]
+        if len(actual)!=1 or sha(actual[0])!=sha(ROOT/candidates[0]['object']):raise RuntimeError('Internal-root PE object not frozen in final kernel')
     refs = a.references.resolve()
     if not refs.is_relative_to(ROOT / "research"):
         raise RuntimeError("Reference evidence escaped research")

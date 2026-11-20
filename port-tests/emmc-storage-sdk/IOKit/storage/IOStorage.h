@@ -24,6 +24,7 @@ public:
  using OSObject::init;
  std::vector<uint8_t> bytes;
  static OSData *withBytes(const void *p,unsigned n){auto *d=new OSData;if(d)d->bytes.assign((const uint8_t *)p,(const uint8_t *)p+n);return d;}
+ unsigned getLength()const{return bytes.size();}const void *getBytesNoCopy()const{return bytes.data();}
 };
 class IOService : public OSObject {
  IOService *provider=nullptr;
@@ -54,6 +55,7 @@ public:
  void setName(const char *v){strings["name"]=v;}void setLocation(const char *v){strings["location"]=v;}
  void registerService();
  static IOService *getResourceService();static void publishResource(const char *,OSObject *);
+ static IOService *fromPath(const char *,const void *);
  OSObject *getProperty(const char *k){if(!strcmp(k,"BSD Major"))return bsd_major.present?&bsd_major:nullptr;
   if(!strcmp(k,"BSD Minor"))return bsd_minor.present?&bsd_minor:nullptr;
   auto found=object_properties.find(k);return found==object_properties.end()?nullptr:found->second;}
@@ -62,6 +64,7 @@ public:
 };
 typedef IOService IORegistryEntry;
 static const void * const gIOServicePlane=nullptr;
+static const void * const gIODTPlane=nullptr;
 struct IOStorageAttributes {uint32_t options,reserved0032;uint64_t reserved0064;};
 struct IOStorageCompletion {void *target;void (*action)(void *,void *,IOReturn,UInt64);void *parameter;};
 class IOStorage : public IOService {

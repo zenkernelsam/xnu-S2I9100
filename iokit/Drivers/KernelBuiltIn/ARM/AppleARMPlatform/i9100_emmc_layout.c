@@ -141,6 +141,7 @@ int i9100_emmc_check_pit(const struct i9100_layout_io *io,struct i9100_emmc_layo
 static int hfs_header(const uint8_t *h,uint64_t capacity,struct i9100_hfs_volume *v)
 {
  v->signature=be16(h);v->version=be16(h+2);v->attributes=be32(h+4);
+ v->create_date=be32(h+16);v->journal_info_block=be32(h+12);memcpy(v->finder_volume_id,h+104,8);
  if(!((v->signature==0x482bU&&v->version==4)||(v->signature==0x4858U&&v->version==5)))return I9100_LAYOUT_HFS;
  v->allocation_block=be32(h+40);v->total_blocks=be32(h+44);v->free_blocks=be32(h+48);
  if(v->allocation_block<512U||v->allocation_block>1048576U||
@@ -157,6 +158,7 @@ int i9100_emmc_hfs_volume(const struct i9100_layout_io *io,const struct i9100_em
  e=read_sector(io,p->start_lba+v->bytes/512U-2U,h);if(e)return e;
  struct i9100_hfs_volume alternate;e=hfs_header(h,p->sectors*512U,&alternate);if(e)return e;
  if(alternate.signature!=v->signature||alternate.version!=v->version||
-    alternate.allocation_block!=v->allocation_block||alternate.total_blocks!=v->total_blocks)return I9100_LAYOUT_HFS;
+    alternate.allocation_block!=v->allocation_block||alternate.total_blocks!=v->total_blocks||
+    alternate.create_date!=v->create_date||memcmp(alternate.finder_volume_id,v->finder_volume_id,8))return I9100_LAYOUT_HFS;
  return 0;
 }

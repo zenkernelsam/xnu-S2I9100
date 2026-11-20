@@ -19,7 +19,9 @@ unsigned fixture_writes();unsigned fixture_sector_writes();unsigned fixture_flus
 enum {HOST,CMU,GPIO,GIC,CHIP,MAPS};
 static uint32_t regs[MAPS][65536/4];
 static struct model {unsigned count,fail_at,contexts,locks,maps,descriptors,put_fail;bool interrupts,interrupt_context;} m;
+#ifndef I9100_EMMC_REAL_PARENT_MODEL
 struct i9100_peripheral_native {unsigned holds;};static i9100_peripheral_native parent;
+#endif
 static bool fail(){return ++m.count==m.fail_at;}
 static std::map<IOLock *,std::mutex *> host_locks;
 void *IOMalloc(size_t bytes){if(fail())return nullptr;m.contexts++;return calloc(1,bytes);}
@@ -48,6 +50,12 @@ IOMemoryMap *IOMemoryDescriptor::map(unsigned flags)
  const uint32_t address[MAPS]={0x12550000U,0x10030000U,0x11000000U,0x10490000U,0x10000000U};
  for(unsigned k=0;k<MAPS;k++)if(physical==address[k]){assert(bytes==(k==CMU?65536U:4096U));
   auto *v=new IOMemoryMap;v->address=(uintptr_t)regs[k];m.maps++;return v;}
+#ifdef I9100_EMMC_REAL_PARENT_MODEL
+ static uint32_t gpio0[1024],gpz[1024],i2c1[1024],i2c6[1024],i2c7[1024],uart0[1024],sdio3[1024];
+ const uint32_t extra[]={0x11400000U,0x03860000U,0x13870000U,0x138c0000U,0x138d0000U,0x13800000U,0x12540000U};
+ uint32_t *memory[]={gpio0,gpz,i2c1,i2c6,i2c7,uart0,sdio3};
+ for(unsigned k=0;k<7;k++)if(physical==extra[k]){assert(bytes==4096);auto *v=new IOMemoryMap;v->address=(uintptr_t)memory[k];m.maps++;return v;}
+#endif
  assert(false);return nullptr;
 }
 #ifndef I9100_EMMC_STORAGE_MODEL
@@ -61,19 +69,26 @@ extern "C" uint32_t __wrap_i9100_camera_mmio_read(volatile uint8_t *base,unsigne
 {return base==(volatile uint8_t *)regs[HOST]&&off!=0x9c?fixture_read(off):__real_i9100_camera_mmio_read(base,off);}
 extern "C" void __wrap_i9100_camera_mmio_write(volatile uint8_t *base,unsigned off,uint32_t value)
 {assert(base==(volatile uint8_t *)regs[HOST]);fixture_write(off,value);}
+#ifndef I9100_EMMC_REAL_PARENT_MODEL
 int i9100_peripheral_native_hold_get(i9100_peripheral_native *p,i9100_native_parent_hold *h)
 {assert(!h->owned);p->holds++;h->context=p;h->self=(uintptr_t)h;h->owned=1;return 0;}
 int i9100_peripheral_native_hold_put(i9100_native_parent_hold *h)
 {assert(h->owned&&h->self==(uintptr_t)h&&h->context->holds);if(m.put_fail)return -1;h->context->holds--;h->owned=0;return 0;}
+#endif
 static i9100_emmc_inherited_profile profile={1,100000000U,6U<<16,0x500U,0x10001U,0x3133U,0U,0xaaU};
 static void setup(const char *source)
 {
- assert(!m.contexts&&!m.locks&&!m.maps&&!m.descriptors&&!parent.holds);memset(&m,0,sizeof(m));m.interrupts=true;
+ assert(!m.contexts&&!m.locks&&!m.maps&&!m.descriptors);
+#ifndef I9100_EMMC_REAL_PARENT_MODEL
+ assert(!parent.holds);
+#endif
+ memset(&m,0,sizeof(m));m.interrupts=true;
  memset(regs,0,sizeof(regs));regs[CMU][0xc940/4]=1U<<9;regs[CMU][0xc340/4]=1U<<16;
  regs[CMU][0xc240/4]=profile.source_mux;regs[CMU][0xc54c/4]=profile.source_divider;regs[HOST][0x9c/4]=profile.clksel;
  regs[GPIO][0x40/4]=profile.gpk0_mux;regs[GPIO][0x48/4]=profile.gpk0_pull;regs[GPIO][0x4c/4]=profile.gpk0_drive;regs[GPIO][0x44/4]=4U;
  regs[CHIP][0]=0x43210011U;assert(!fixture_setup(source));
 }
+#ifndef I9100_EMMC_REAL_PARENT_MODEL
 static void finish(i9100_emmc_native **n)
 {int e=i9100_emmc_native_close(n);if(e)fprintf(stderr,"close=%d maps=%u contexts=%u locks=%u\n",e,m.maps,m.contexts,m.locks);
  assert(!e&&!*n&&!m.contexts&&!m.locks&&!m.maps&&!m.descriptors&&!parent.holds);fixture_finish();}
@@ -142,3 +157,4 @@ int main()
  assert(retained_fault);fixture_finish();
  puts("PASS actual native eMMC + true MMC/read/write/GPT/PIT/HFS modules with explicit register/media/IOKit facades: 5maps/singlehost/currentCID/6GiB>4GiBwrite/readback/flush/consumers/failure-retention");return 0;
 }
+#endif

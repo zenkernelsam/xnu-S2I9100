@@ -11,6 +11,7 @@ p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("--power-shared", action="store_true")
 p.add_argument("--emmc-storage", action="store_true")
 p.add_argument("--hfs-boot",action="store_true")
+p.add_argument('--emmc-boot',action='store_true')
 args = p.parse_args()
 e = Evidence("peripheral-patch-check")
 e.wait_idle_seconds = 60
@@ -37,6 +38,7 @@ if args.emmc_storage:
     patches.append(REPO / "port-tests/i9100_emmc_storage_integration.patch")
 if args.hfs_boot:
     patches.append(REPO/'port-tests/i9100_hfs_boot_integration.patch')
+if args.emmc_boot:patches.append(REPO/'port-tests/i9100_emmc_boot_integration.patch')
 patch_hashes = {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest() for path in patches}
 prefix = str(tree.relative_to(REPO))
 e.run(["git", "apply", "--check", "--directory=" + prefix, *map(str, patches)], "joint-apply-check", cwd=REPO)
@@ -67,4 +69,5 @@ e.result.update(live_source_sha256=captured, integration_patch_sha256=patch_hash
 e.result["shared_power_integration"]=args.power_shared
 e.result["emmc_storage_integration"]=args.emmc_storage
 e.result['hfs_boot_integration']=args.hfs_boot
+e.result['emmc_boot_integration']=args.emmc_boot
 e.finish([], "Both eMMC/peripheral patches composed on two out file copies; full inventory once, live files unchanged, no device")

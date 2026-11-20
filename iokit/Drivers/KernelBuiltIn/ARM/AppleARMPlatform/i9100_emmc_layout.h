@@ -29,7 +29,8 @@ struct i9100_emmc_layout {
 };
 struct i9100_hfs_volume {
  uint64_t bytes;
- uint32_t allocation_block,total_blocks,free_blocks,attributes;
+ uint32_t allocation_block,total_blocks,free_blocks,attributes,create_date,journal_info_block;
+ uint8_t finder_volume_id[8];
  uint16_t signature,version;
 };
 int i9100_emmc_read_layout(const struct i9100_layout_io *,struct i9100_emmc_layout *);

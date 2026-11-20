@@ -15,6 +15,21 @@ int fixture_setup(const char *source)
 }
 void fixture_finish(void){done();}
 void fixture_identity(struct i9100_emmc_writer_identity *i){*i=expected_identity;}
+static void output_file(const char *folder,const char *name,const void *bytes,unsigned length)
+{char path[1024];int n=snprintf(path,sizeof(path),"%s/%s",folder,name);assert(n>0&&(unsigned)n<sizeof(path));FILE *f=fopen(path,"wb");assert(f&&fwrite(bytes,1,length,f)==length&&!fclose(f));}
+void fixture_export_table_evidence(const char *folder)
+{
+ uint8_t primary[512+16384],backup[512+16384],cid[16];
+ uint64_t sectors=wm.d.sectors;assert(!disk_read(&wm.d,1,primary)&&!disk_read(&wm.d,sectors-1,backup));
+ unsigned count=get32(primary+80),blocks=(count*128U+511U)/512U;assert(blocks<=32);
+ uint64_t pa=get64(primary+72),ba=get64(backup+72);
+ for(unsigned i=0;i<blocks;i++){assert(!disk_read(&wm.d,pa+i,primary+512+i*512U));assert(!disk_read(&wm.d,ba+i,backup+512+i*512U));}
+ for(unsigned i=0;i<4;i++)put32(cid+i*4U,expected_identity.cid[i]);
+ output_file(folder,"cid.bin",cid,sizeof(cid));output_file(folder,"gpt-primary.bin",primary,512+blocks*512U);
+ output_file(folder,"gpt-backup.bin",backup,512+blocks*512U);
+ unsigned pitbytes=28U+get32(wm.d.head+0x4404U)*132U;assert(0x4400U+pitbytes<=1048576U);
+ output_file(folder,"pit.bin",wm.d.head+0x4400U,pitbytes);
+}
 uint32_t fixture_read(unsigned off){return wread(&wm,off);}
 void fixture_write(unsigned off,uint32_t value)
 {
@@ -34,6 +49,8 @@ void fixture_delay(unsigned us){wm.m.time+=(uint64_t)us*1000U;}
 unsigned fixture_writes(void){return maps_started;}
 unsigned fixture_sector_writes(void){return wm.write_commands;}
 unsigned fixture_flushes(void){return wm.flushes;}
+void fixture_volume_ids(uint32_t system_date,uint32_t data_date,const uint8_t system[8],const uint8_t data[8])
+{big32(hfs_system+16,system_date);big32(hfs_data+16,data_date);memcpy(hfs_system+104,system,8);memcpy(hfs_data+104,data,8);big32(hfs_data+12,13U);}
 void fixture_fault(unsigned n)
 {
  if(n==1)wm.corrupt_readback=1;

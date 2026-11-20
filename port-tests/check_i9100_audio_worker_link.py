@@ -54,6 +54,7 @@ def main():
     p.add_argument("--sensor-hid-service", action="store_true", help="Compile the explicit sensor HID extension only on a source copy")
     p.add_argument("--emmc-storage",action="store_true",help="Compile exact BSD media/root alias integration only on source copies")
     p.add_argument("--hfs-boot",action="store_true",help="Compile exact VFS/HFS/prelaunchd and storage-safe USB shutdown source copies")
+    p.add_argument('--emmc-boot',action='store_true',help='Compile optional internal-root PE selection only on a source copy')
     args = p.parse_args()
     changed=tuple(args.replace) if args.replace else () if args.append else CHANGED
     added=tuple(args.append)
@@ -64,6 +65,7 @@ def main():
     hfs_names={"vfs_syscalls.c","hfs_vfsops.c","bsd_init.c","kern_shutdown.c","i9100_usbcdc.c"}
     if args.hfs_boot and not hfs_names.issubset(changed):
         p.error("--hfs-boot requires all five actual BSD/USB source replacements")
+    if args.emmc_boot and 'AppleARMPE.cpp' not in changed:p.error('--emmc-boot requires --replace AppleARMPE.cpp')
     if len(set(changed+added))!=len(changed+added) or any(
             not re.fullmatch(r"[A-Za-z0-9_]+\.(c|cpp)", name) or not ((REPO/"iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform"/name).is_file()
             or args.emmc_storage and name in ("IOMediaBSDClient.cpp","IOKitBSDInit.cpp")
@@ -145,6 +147,9 @@ def main():
         copies=prepare_emmc_service(e)
         overrides=dict(overrides or {},**copies)
     hfs_copies={}
+    if args.emmc_boot:
+        from i9100_emmc_boot_copy import prepare as prepare_boot,verify as verify_boot
+        overrides=dict(overrides or {},**prepare_boot(e))
     if args.hfs_boot:
         from i9100_hfs_boot_copy import prepare as prepare_hfs,verify as verify_hfs,compile_bsd
         hfs_copies=prepare_hfs(e)
@@ -188,6 +193,8 @@ def main():
     elif manifest.get("emmc_service_copy"):e.result["emmc_service_copy"]=manifest["emmc_service_copy"]
     if args.hfs_boot:verify_hfs(e)
     elif manifest.get("hfs_boot_copy"):e.result["hfs_boot_copy"]=manifest["hfs_boot_copy"]
+    if args.emmc_boot:verify_boot(e)
+    elif manifest.get('emmc_boot_pe_copy'):e.result['emmc_boot_pe_copy']=manifest['emmc_boot_pe_copy']
     prior_peripherals=manifest.get("peripheral_objects")
     if prior_peripherals is None:
         prior_peripherals=manifest.get("retained_peripheral_objects")

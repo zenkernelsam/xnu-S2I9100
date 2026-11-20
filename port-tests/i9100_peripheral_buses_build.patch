@@ -1,10 +1,12 @@
 --- a/iokit/conf/files.arm
 +++ b/iokit/conf/files.arm
-@@ -58,6 +58,86 @@
+@@ -58,6 +58,88 @@
  # i9100 Exynos4210 SDMMC (SDHCI PIO) block device
  iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100SDMMC.cpp optional iokitcpp
  iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_sdmmc.c standard
 +# Offline peripheral resource/protocol modules: no automatic hardware activation
++iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_emmc_boot_contract.c standard
++iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_emmc_boot.cpp optional iokitcpp
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_gpio_broker.c standard
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_i2c_gpio.c standard
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_clock_gates.c standard
