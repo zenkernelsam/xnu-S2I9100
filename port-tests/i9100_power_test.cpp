@@ -11,6 +11,8 @@
 
 struct BatteryModel {
  uint8_t pmic[256];uint16_t fuel[256];unsigned adc6=937,adc7=989;
+ uint8_t muic[256]={};unsigned muicReads=0,muicWrites=0,muicFailRead=0;
+ bool muicFailWrite=false,muicDropWrite=false;
  bool plugged=true,sub=false,adcOK=true,disableStuck=false,mainDisableStuck=false;
  unsigned ops=0,failAt=0,subWrites=0,subStops=0,mainWrites=0,mainStops=0;
  uint64_t time=1000000000ULL;
@@ -42,9 +44,59 @@ struct BatteryModel {
   if(!en&&m->disableStuck)return 0;
   m->sub=en;if(!en)m->subStops++;return m->operation();}
  static uint64_t now(void *c){return ((BatteryModel *)c)->time;}
+ static int muic_read(void *c,unsigned reg,uint8_t *v){
+  auto m=(BatteryModel *)c;assert(reg==0x0d || reg==5);
+  if(++m->muicReads==m->muicFailRead)return 0;*v=m->muic[reg];return 1;
+ }
+ static int muic_write(void *c,unsigned reg,uint8_t v){
+  auto m=(BatteryModel *)c;assert(reg==0x0d);m->muicWrites++;
+  if(m->muicFailWrite)return 0;if(!m->muicDropWrite)m->muic[reg]=v;return 1;
+ }
  i9100_power_io io(){i9100_power_io io={};io.cookie=this;io.pmic_read=read;io.pmic_write=write;
   io.fuel_read=gauge;io.adc_read=adc;io.sub_read=status;io.sub_enable=enable;io.now_ns=now;return io;}
+ i9100_power_io with_muic(){auto value=io();value.muic_read=muic_read;value.muic_write=muic_write;return value;}
 };
+static void muic_checks()
+{
+ for(unsigned rev: {7U,14U})for(unsigned inherited=0;inherited<256;inherited++){
+  BatteryModel m;m.muic[0x0d]=(uint8_t)inherited;m.muic[5]=1;
+  auto io=m.with_muic();i9100_power_state s;assert(!i9100_power_init(&s,&io,rev));
+  assert(m.muic[0x0d]==inherited && !m.muicReads && !m.muicWrites);
+  assert(!i9100_power_poll(&s) && s.valid && s.enabled && s.charging);
+  unsigned want=(inherited|4U)&~1U;
+  assert(m.muic[0x0d]==want && ((m.muic[0x0d]^inherited)&~5U)==0);
+  assert(m.muicWrites==(want!=inherited));
+  unsigned writes=m.muicWrites;uint64_t deadline=s.charge_start;
+  m.time+=1000000000ULL;assert(!i9100_power_poll(&s) && s.charge_start==deadline);
+  assert(m.muicWrites==writes);
+  m.plugged=false;m.pmic[0x10]=0;
+  assert(!i9100_power_poll(&s) && !s.enabled && !s.connected && m.muicWrites==writes);
+  m.plugged=true;m.pmic[0x10]=0x1a;m.muic[0x0d]=(uint8_t)((inherited|1U)&~4U);
+  assert(!i9100_power_poll(&s) && s.enabled && m.muic[0x0d]==want);
+ }
+ for(unsigned rev: {7U,14U})for(unsigned fault=0;fault<4;fault++){
+  BatteryModel m;m.muic[0x0d]=0xfb;m.muic[5]=1;
+  auto io=m.with_muic();i9100_power_state s;assert(!i9100_power_init(&s,&io,rev));
+  s.charge_start=1;s.charge_elapsed_base=2000000000ULL;
+  if(fault==0)m.muicFailRead=1;if(fault==1)m.muicFailWrite=true;
+  if(fault==2)m.muicDropWrite=true;if(fault==3)m.muicFailRead=2;
+  assert(i9100_power_poll(&s)==I9100_POWER_IO && !s.valid && !s.enabled && !m.sub);
+  assert(!(m.pmic[0x51]&0xc0) && !s.stop_uncertain && s.ready);
+  assert(s.charge_start==1 && s.charge_elapsed_base==2000000000ULL);
+  m.muicFailRead=0;m.muicFailWrite=m.muicDropWrite=false;
+  m.time+=1000000000ULL;assert(!i9100_power_poll(&s) && s.enabled);
+  assert(m.muic[0x0d]==0xfe && s.charge_start==1 && s.charge_elapsed_base==2000000000ULL);
+ }
+ for(unsigned mode=0;mode<5;mode++){
+  BatteryModel m;m.muic[0x0d]=0xfb;auto io=m.with_muic();i9100_power_state s;
+  assert(!i9100_power_init(&s,&io,14));
+  if(mode==0)m.plugged=false;if(mode==1)m.adc7=603;
+  if(mode==2)m.fuel[0]=8;if(mode==3)s.timeout=1;
+  if(mode==4){m.fuel[9]=53760;m.fuel[0xff]=100*256;}
+  assert(!i9100_power_poll(&s) && !s.enabled && !m.muicReads && !m.muicWrites && m.muic[0x0d]==0xfb);
+ }
+ puts("MUIC: all 256 inherited CONTROL2 bytes on both charger boards preserve ACCDET/other fields; attached LowPwr0/CPEn1 readback, faults stop without losing deadlines, detach and blocked samples leave routing alone");
+}
 static I9100ChargeHandoff handoff_record(unsigned revision,uint64_t sampled_seconds,
  unsigned elapsed,unsigned recharge=0)
 {
@@ -352,6 +404,7 @@ struct PowerGPIO {
  unsigned region,base,sda,scl,address;
  Phase phase=IDLE,next=IDLE;bool oldClock=true,oldData=true,slaveLow=false,expectAddress=true;
  bool readMode=false,nack=false,stuckClock=false,stuckData=false,masterACK=false,adcStuck=false;
+ bool dropEnablePull=false,dropEnableMux=false,dropEnableData=false;
  unsigned bits=0,ackPhase=0,rxByte=0,registerBytes=0,pointer=0,txByte=0,starts=0,stops=0,waits=0;
  unsigned enters=0,leaves=0,guard=0,adcSamples=0;std::vector<uint8_t> received;
  explicit PowerGPIO(bool fuel,bool haptic=false,bool rtc=false):withHaptic(haptic),withRTC(rtc),region(fuel?1:0),base(fuel?0x1a0:0x40),sda(fuel?0:6),scl(fuel?1:7),address(fuel?0x36:0x66){
@@ -405,6 +458,9 @@ struct PowerGPIO {
   assert((region==m->region && (off==m->base || off==m->base+4 || off==m->base+8)) ||
          (region==1 && (off==0x100 || off==0x104 || off==0x108)) ||
          (region==2 && off==0xc950) || (region==3 && (off==0 || off==0x18 || off==0x1c)));
+  if(region==1 && off==0x108 && m->dropEnablePull)value=(value&~(3U<<4))|(m->regs[region][off/4]&(3U<<4));
+  if(region==1 && off==0x100 && m->dropEnableMux)value=(value&~(15U<<8))|(m->regs[region][off/4]&(15U<<8));
+  if(region==1 && off==0x104 && m->dropEnableData)value=(value&~4U)|(m->regs[region][off/4]&4U);
   m->regs[region][off/4]=value;
   if(region==m->region && (off==m->base || off==m->base+4))m->step();
   if(region==3 && off==0 && (value&1U) && !m->adcStuck){
@@ -419,6 +475,21 @@ struct PowerGPIO {
 };
 static void bus_checks()
 {
+ for(unsigned enable=0;enable<2;enable++)for(unsigned pull=0;pull<4;pull++){
+  PowerGPIO g(false);auto hw=g.io();
+  const uint32_t con=0xabcde000,dat=0x88,pud=(0x5055U&~(3U<<4))|(pull<<4);
+  g.regs[1][0x100/4]=con;g.regs[1][0x104/4]=dat;g.regs[1][0x108/4]=pud;
+  assert(i9100_power_sub_enable(&hw,enable));
+  assert(g.regs[1][0x100/4]==((con&~(15U<<8))|(1U<<8)));
+  assert(g.regs[1][0x104/4]==((dat&~4U)|(enable?4U:0U)));
+  assert(g.regs[1][0x108/4]==(pud&~(3U<<4)));
+ }
+ for(unsigned enable=0;enable<2;enable++)for(unsigned fault=0;fault<3;fault++){
+  PowerGPIO g(false);auto hw=g.io();g.regs[1][0x108/4]=0x5055;
+  g.regs[1][0x100/4]=0x200;g.regs[1][0x104/4]=enable?0U:4U;
+  g.dropEnablePull=fault==0;g.dropEnableMux=fault==1;g.dropEnableData=fault==2;
+  assert(!i9100_power_sub_enable(&hw,enable));
+ }
  {
   PowerGPIO m(false,false,true);auto hw=m.io();uint64_t seconds=0,expected=0;
   uint8_t values[7]={29,1,13,2,11,26,20};m.rtcMemory[3]=2;
@@ -510,4 +581,4 @@ static void probe_checks()
  }
  puts("Charge probe: ADC1 restoration, bounded pause, original-policy restore, thermal/timeout/IO refusal and unchanged safety deadline passed");
 }
-int main(){policy_checks();handoff_checks();epoch_checks();failed_stop_recovery_checks();bus_checks();probe_checks();return 0;}
+int main(){muic_checks();policy_checks();handoff_checks();epoch_checks();failed_stop_recovery_checks();bus_checks();probe_checks();return 0;}
