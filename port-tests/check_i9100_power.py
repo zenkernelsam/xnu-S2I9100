@@ -22,8 +22,11 @@ for name in ['i9100_power.c', 'i9100_power_bus.c']:
 binary = work / 'power-tests'
 subprocess.run(['clang++', '-std=c++11', '-no-pie', *flags, str(root / 'port-tests/i9100_power_test.cpp'),
                 *objects, '-o', str(binary)], check=True)
-result=subprocess.run([str(binary)],check=True,capture_output=True,text=True)
+result=subprocess.run([str(binary)],capture_output=True,text=True)
 (work/'test.log').write_text(result.stdout+result.stderr,encoding='utf-8')
+if result.returncode:
+    print((result.stdout+result.stderr)[-2500:],file=sys.stderr)
+    result.check_returncode()
 print(result.stdout.strip(),flush=True)
 (work/'result.json').write_text(json.dumps(dict(result='PASS',hardware=False,
     source_sha256={str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in

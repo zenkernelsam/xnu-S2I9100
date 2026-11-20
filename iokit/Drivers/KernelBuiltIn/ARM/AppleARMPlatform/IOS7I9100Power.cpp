@@ -36,6 +36,7 @@ void _enable_preemption(void);
 /* Read-only panel diagnostics; one power workloop is the sole writer. */
 volatile uint32_t i9100_power_valid,i9100_power_percent,i9100_power_mv;
 volatile uint32_t i9100_power_connected,i9100_power_charging;
+volatile uint32_t i9100_power_stop_uncertain;
 volatile uint32_t i9100_power_revision_value=0xffffffffU;
 volatile int32_t i9100_power_temp;
 volatile int32_t i9100_power_reason=I9100_POWER_IO;
@@ -247,6 +248,7 @@ void IOS7I9100Power::sample(void)
  i9100_power_mv=battery.millivolts;i9100_power_connected=battery.connected;
  i9100_power_charging=battery.charging;i9100_power_temp=battery.temperature_deci_c;
  i9100_power_reason=battery.reason;
+ i9100_power_stop_uncertain=battery.stop_uncertain;
  i9100_power_policy[0]=1;i9100_power_policy[1]=battery.enabled;
  i9100_power_policy[2]=battery.full;i9100_power_policy[3]=battery.timeout;
  i9100_power_policy[4]=battery.recharging;i9100_power_policy[5]=battery.recharge_low_count;
@@ -282,6 +284,7 @@ void IOS7I9100Power::tick(OSObject *owner,IOTimerEventSource *timer)
  s->sample();
  if(timer->setTimeoutMS(1000)!=kIOReturnSuccess){
   (void)i9100_power_stop(&s->battery);i9100_power_charging=0;i9100_power_reason=I9100_POWER_IO;
+  i9100_power_stop_uncertain=s->battery.stop_uncertain;
   s->setIsCharging(false);s->updateStatus();IOLog("I9100 POWER timer failed; charging stopped\n");
  }
 }

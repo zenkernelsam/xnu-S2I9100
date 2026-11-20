@@ -9,9 +9,10 @@ extern "C" {
 /* The existing Power workloop is the only caller/writer. Fixed, non-IRQ
  * registers only; no new bus instance, charger writes or current-mode pulses.
  * Current/AvgCurrent remain raw: their calibration must be proved on U1.
- * v2 adds raw ADC1 and the bounded probe phase/result. No calibrated mA claim.
+ * v2 adds raw ADC1/probe; v3 adds a failed-disable/readback indicator in word39.
+ * No calibrated mA claim.
  * {version, sequence, stride, capacity}, then 16 published 40-word samples. */
-volatile uint32_t i9100_charge_diag[4 + 16 * 40] = {2, 0, 40, 16};
+volatile uint32_t i9100_charge_diag[4 + 16 * 40] = {3, 0, 40, 16};
 static unsigned i9100_charge_phase, i9100_charge_probe_result;
 
 static void i9100_charge_snapshot(const struct i9100_power_state *s,
@@ -65,6 +66,7 @@ static void i9100_charge_snapshot(const struct i9100_power_state *s,
     r[36]=0xffffffffU;
     if(i9100_power_charge_adc_read(hw,&adc)){r[36]=adc;r[6]|=1U<<15;}
     r[37]=i9100_charge_phase;r[38]=i9100_charge_probe_result;
+    r[39]=s->stop_uncertain;
     __sync_synchronize(); r[0] = sequence;
     __sync_synchronize(); i9100_charge_diag[1] = sequence;
 }

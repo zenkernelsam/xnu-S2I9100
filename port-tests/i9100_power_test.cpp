@@ -11,7 +11,8 @@
 
 struct BatteryModel {
  uint8_t pmic[256];uint16_t fuel[256];unsigned adc6=937,adc7=989;
- bool plugged=true,sub=false,adcOK=true;unsigned ops=0,failAt=0,subWrites=0;
+ bool plugged=true,sub=false,adcOK=true,disableStuck=false,mainDisableStuck=false;
+ unsigned ops=0,failAt=0,subWrites=0,subStops=0,mainWrites=0,mainStops=0;
  uint64_t time=1000000000ULL;
  BatteryModel(){
   memset(pmic,0,sizeof(pmic));memset(fuel,0,sizeof(fuel));
@@ -23,7 +24,10 @@ struct BatteryModel {
  static int read(void *c,unsigned reg,uint8_t *v){auto m=(BatteryModel *)c;if(!m->operation())return 0;*v=m->pmic[reg];return 1;}
  static int write(void *c,unsigned reg,uint8_t v){
   auto m=(BatteryModel *)c;assert((reg>=0x50 && reg<=0x55) || reg==0x5a);
-  if(!m->operation())return 0;m->pmic[reg]=v;return 1;
+  if(!m->operation())return 0;
+  if(reg==0x51){m->mainWrites++;if(!(v&0xc0)&&m->mainDisableStuck)return 1;
+   if(!(v&0xc0))m->mainStops++;}
+  m->pmic[reg]=v;return 1;
  }
  static int gauge(void *c,unsigned reg,uint16_t *v){auto m=(BatteryModel *)c;if(!m->operation())return 0;*v=m->fuel[reg];return 1;}
  static int adc(void *c,unsigned channel,unsigned *v){
@@ -34,7 +38,9 @@ struct BatteryModel {
   auto m=(BatteryModel *)c;if(!m->operation())return 0;
   *connected=m->plugged;*charging=m->sub && m->plugged;return 1;
  }
- static int enable(void *c,unsigned en){auto m=(BatteryModel *)c;assert(en<2);m->sub=en;m->subWrites++;return m->operation();}
+ static int enable(void *c,unsigned en){auto m=(BatteryModel *)c;assert(en<2);m->subWrites++;
+  if(!en&&m->disableStuck)return 0;
+  m->sub=en;if(!en)m->subStops++;return m->operation();}
  static uint64_t now(void *c){return ((BatteryModel *)c)->time;}
  i9100_power_io io(){i9100_power_io io={};io.cookie=this;io.pmic_read=read;io.pmic_write=write;
   io.fuel_read=gauge;io.adc_read=adc;io.sub_read=status;io.sub_enable=enable;io.now_ns=now;return io;}
@@ -214,6 +220,58 @@ static void policy_checks()
  assert(i9100_power_temperature(6,937,&temp) && temp==250);
  assert(i9100_power_temperature(7,989,&temp) && temp==250);
  printf("Charging policy: 16 revisions, full-stop recharge, 90min maintenance bound, refresh preserving deadline, timeout latch, voltage/thermal guards and %u injected I/O failures passed\n",faultChecks);
+}
+
+static void failed_stop_recovery_checks()
+{
+ BatteryModel m;auto io=m.io();i9100_power_state state;
+ assert(!i9100_power_init(&state,&io,14)&&!i9100_power_poll(&state));
+ uint64_t start=state.charge_start,refresh=state.charge_refresh;
+ m.disableStuck=true;m.adcOK=false;m.time+=1000000000ULL;
+ assert(i9100_power_poll(&state)==I9100_POWER_IO && !state.valid && !state.enabled);
+ assert(state.stop_uncertain);
+ assert(m.sub); // Hardware failed to stop despite the software enabled=0.
+ m.adcOK=true;m.time+=1000000000ULL;
+ unsigned requested=m.subWrites;
+ assert(i9100_power_poll(&state)==I9100_POWER_IO && state.stop_uncertain && !state.enabled);
+ assert(m.subWrites==requested+1U&&m.sub&&state.charge_start==start);
+ I9100ChargeEpoch epoch;i9100_charge_epoch_encode(&epoch,&state,m.time,1,1,900000000);
+ assert(epoch.flags!=3U); // Unknown stop state cannot qualify a new epoch.
+ m.adcOK=true;m.disableStuck=false;m.time+=1000000000ULL;
+ unsigned stops=m.subStops;
+ assert(!i9100_power_poll(&state)&&state.valid&&state.enabled&&state.charging);
+ assert(m.subStops>stops); // Recovery must confirm disable BEFORE enabling again.
+ assert(!state.stop_uncertain);
+ assert(state.charge_start==start&&state.charge_refresh==m.time&&refresh<m.time);
+ for(unsigned mode=0;mode<3;mode++){
+  BatteryModel chip;auto nio=chip.io();i9100_power_state next;
+  assert(!i9100_power_init(&next,&nio,14)&&!i9100_power_poll(&next));
+  uint64_t original=next.charge_start;chip.adcOK=false;chip.disableStuck=true;chip.time+=1000000000ULL;
+  assert(i9100_power_poll(&next)<0&&next.stop_uncertain);
+  chip.adcOK=true;chip.disableStuck=false;
+  if(mode==0)chip.time=original+18000000000000ULL;
+  if(mode==1)chip.adc7=603;
+  if(mode==2){chip.fuel[9]=53760;chip.fuel[0xff]=100*256;}
+  unsigned writes=chip.subWrites;
+  assert(!i9100_power_poll(&next)&&!next.enabled&&!next.stop_uncertain&&!chip.sub);
+  assert(chip.subWrites==writes+1U);
+  assert(next.reason==(mode==0?I9100_POWER_TIMEOUT:mode==1?I9100_POWER_TEMPERATURE:I9100_POWER_FULL));
+  if(mode!=2)assert(next.charge_start==original);
+ }
+ {
+  BatteryModel chip;auto nio=chip.io();i9100_power_state next;
+  assert(!i9100_power_init(&next,&nio,7)&&!i9100_power_poll(&next));
+  uint64_t original=next.charge_start;chip.adcOK=false;chip.mainDisableStuck=true;chip.time+=1000000000ULL;
+  assert(i9100_power_poll(&next)==I9100_POWER_IO&&next.stop_uncertain&&!next.enabled);
+  assert((chip.pmic[0x51]&0xc0)==0xc0); // ACK did not change the actual main charger.
+  chip.adcOK=true;chip.time+=1000000000ULL;unsigned writes=chip.mainWrites;
+  assert(i9100_power_poll(&next)==I9100_POWER_IO&&next.stop_uncertain);
+  assert(chip.mainWrites==writes+1U&&next.charge_start==original);
+  chip.mainDisableStuck=false;chip.time+=1000000000ULL;unsigned stopped=chip.mainStops;
+  assert(!i9100_power_poll(&next)&&next.enabled&&next.charging&&!next.stop_uncertain);
+  assert(chip.mainStops==stopped+1U&&(chip.pmic[0x51]&0xc0)==0xc0&&next.charge_start==original);
+ }
+ puts("Failed-stop recovery: healthy measurements cannot bypass a checked charger stop or reset the safety period");
 }
 
 static void epoch_checks()
@@ -452,4 +510,4 @@ static void probe_checks()
  }
  puts("Charge probe: ADC1 restoration, bounded pause, original-policy restore, thermal/timeout/IO refusal and unchanged safety deadline passed");
 }
-int main(){policy_checks();handoff_checks();epoch_checks();bus_checks();probe_checks();return 0;}
+int main(){policy_checks();handoff_checks();epoch_checks();failed_stop_recovery_checks();bus_checks();probe_checks();return 0;}
