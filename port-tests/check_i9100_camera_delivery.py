@@ -83,6 +83,8 @@ def main():
             if sha(ROOT/override['path'])!=override['sha256']:raise RuntimeError('Retained model source override changed')
         if m.get('native_model_artifact_sha256') and sha(ROOT/m['native_model_artifact'])!=m['native_model_artifact_sha256']:
             raise RuntimeError('Retained native model binary changed')
+        if m.get('model_artifact_sha256')and sha(folder/'models')!=m['model_artifact_sha256']:
+            raise RuntimeError('Retained model executable changed')
         if m.get('clock_source_references'):
             for name,item in m['clock_source_references'].items():
                 reference=(ROOT/name).resolve()

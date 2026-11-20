@@ -151,6 +151,7 @@ static int data_read(struct i9100_emmc_card *c,unsigned cmd,uint32_t arg,uint32_
  for(uint32_t i=0;i<c->io.poll_bound;i++){
   uint32_t irq=rd(c,EM_RINTSTS);e=interrupt_error(c,irq);if(e)return e;
   uint32_t st=rd(c,EM_STATUS),count=FIFO_WORDS(st);c->last_status=st;
+  uint32_t previous=received;
   if(count>words-received)return I9100_EMMC_IO;
   for(uint32_t n=0;n<count;n++){
    uint32_t value=rd(c,EM_DATA),at=received++*4U;
@@ -164,7 +165,9 @@ static int data_read(struct i9100_emmc_card *c,unsigned cmd,uint32_t arg,uint32_
   if(received==words && FIFO_WORDS(rd(c,EM_STATUS)))return I9100_EMMC_IO;
   uint64_t now=c->io.now_ns(c->io.cookie);
   if(now<start||now-start>=500000000ULL)return I9100_EMMC_TIMEOUT;
-  if(delay(c))return I9100_EMMC_IO;
+  /* Drain confirmed data continuously. Delaying after a successful FIFO
+   * drain only throttles PIO; empty polls still use the bounded backoff. */
+  if(received==previous&&delay(c))return I9100_EMMC_IO;
  }
  return I9100_EMMC_TIMEOUT;
 }
@@ -293,6 +296,7 @@ static int data_write(struct i9100_emmc_card *c,struct i9100_emmc_write_grant *g
  for(uint32_t n=0;n<c->io.poll_bound;n++){
   uint32_t irq=rd(c,EM_RINTSTS);e=interrupt_error(c,irq);if(e)return e;
   uint32_t status=rd(c,EM_STATUS);c->last_status=status;
+  uint32_t previous=g->words_submitted;
   if(status==UINT32_MAX)return I9100_EMMC_IO;
   if(irq&I_DATA_DONE){
    g->ciu_bytes=rd(c,EM_TCBCNT);g->host_bytes=rd(c,EM_TBBCNT);
@@ -306,7 +310,9 @@ static int data_write(struct i9100_emmc_card *c,struct i9100_emmc_write_grant *g
    wr(c,EM_DATA,value);g->words_submitted++;
   }
   uint64_t now=c->io.now_ns(c->io.cookie);if(now<start||now-start>=500000000ULL)return I9100_EMMC_TIMEOUT;
-  if(delay(c))return I9100_EMMC_IO;
+  /* Read FULL again before every word: no guessed FIFO capacity or burst.
+   * Sleep only on no progress, preserving time/error/poll bounds. */
+  if(g->words_submitted==previous&&delay(c))return I9100_EMMC_IO;
  }return I9100_EMMC_TIMEOUT;
 }
 int i9100_emmc_write(struct i9100_emmc_card *c,struct i9100_emmc_write_grant *g,uint64_t lba,uint32_t count,const uint8_t *bytes)

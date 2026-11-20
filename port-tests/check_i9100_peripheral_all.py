@@ -61,6 +61,7 @@ TESTS = [
     ("i9100_emmc_storage_test.cpp", ["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c","i9100_emmc_clock.c",
         "i9100_emmc_native.cpp","i9100_camera_mmio.cpp","IOS6I9100EMMCStorage.cpp","IOS6I9100EMMCRaw.cpp","IOS6I9100EMMCBlockDriver.cpp","i9100_emmc_alias.cpp"]),
     ("i9100_emmc_writer_test.c", ["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c"]),
+    ("i9100_emmc_pio_test.c", ["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c"]),
     ("i9100_mfc_native_test.cpp", ["i9100_mfc.c","i9100_mfc_layout.c","i9100_dma_guard.c",
         "i9100_mfc_native.cpp","i9100_camera_mmio.cpp"]),
     ("i9100_camera_capture_test.c", ["i9100_camera_engine_io.c","i9100_csis.c","i9100_fimc.c",
@@ -270,7 +271,7 @@ def main():
                     e.run(['clang','-std=c99','-O1','-Wall','-Wextra','-Werror','-fno-pie','-no-pie','-fsanitize=address,undefined','-fno-sanitize-recover=all',
                         '-I'+str(PLATFORM),str(REPO/'port-tests'/test),str(PLATFORM/'i9100_emmc_clock.c'),'-o',str(folder/'models')],'compile-clock-model')
                     e.run([str(folder/'models'),str(folder)],'clock-model-tests')
-                elif test=="i9100_emmc_writer_test.c":
+                elif test in ("i9100_emmc_writer_test.c","i9100_emmc_pio_test.c"):
                     historical=ROOT/"assets/i9100-backup/mmcblk0-head1mb.img"
                     digest=hashlib.sha256(historical.read_bytes()).hexdigest()
                     if digest!="879334a928bbffffc67d57b584906c03bee10f1310a88a0f1362fc6dfb3724ef":
