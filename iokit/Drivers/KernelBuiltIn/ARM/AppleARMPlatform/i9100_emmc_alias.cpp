@@ -148,13 +148,21 @@ int i9100_emmc_alias_seal_data(const uint32_t numbers[4],const uint64_t tickets[
  uint32_t actual[4];uint64_t generation[2];
  if(!numbers||!tickets||i9100_emmc_alias_devices(actual,generation)||memcmp(actual,numbers,sizeof(actual))||
     memcmp(generation,tickets,sizeof(generation)))return I9100_EMMC_OWNER;
- IOLock *lock=gate();IOLockLock(lock);int e=I9100_EMMC_OWNER;
+ IOLock *lock=gate();IOLockLock(lock);int e=I9100_EMMC_OWNER;IOS6I9100EMMCStorage *provider=0;
  if(valid_pair()&&slots[0].ticket==tickets[0]&&slots[1].ticket==tickets[1]){
-  e=slots[1].provider->sealData();
+  provider=slots[1].provider;provider->retain();
+ }
+ IOLockUnlock(lock);if(!provider)return e;
+ /* An ordered queue barrier can wait for callbacks that themselves enter
+  * BSD/alias matching. Pin the exact provider, but never hold alias gate
+  * across that wait. Recheck both original tickets before withdrawing. */
+ e=provider->sealData();IOLockLock(lock);
+ if(!e){
+  if(slots[0].provider!=provider||slots[1].provider!=provider||slots[0].ticket!=tickets[0]||slots[1].ticket!=tickets[1])e=I9100_EMMC_OWNER;
   if(!e){withdraw_pair();slots[0].eligible=slots[1].eligible=false;slots[0].committed=slots[1].committed=false;
    slots[0].media->setProperty("I9100EMMCAliasReady",false);slots[1].media->setProperty("I9100EMMCAliasReady",false);}
  }
- IOLockUnlock(lock);return e;
+ IOLockUnlock(lock);provider->release();return e;
 }
 void i9100_emmc_alias_unpublish(IOMedia *m,uint64_t ticket)
 {

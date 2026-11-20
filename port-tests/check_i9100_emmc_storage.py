@@ -14,7 +14,7 @@ fixture=e.out/"i9100_emmc_native_fixture.c";fixture.write_bytes((REPO/"port-test
 (e.out/"i9100_emmc_writer_test.c").write_bytes((REPO/"port-tests/i9100_emmc_writer_test.c").read_bytes())
 (e.out/"i9100_emmc_test.c").write_bytes((REPO/"port-tests/i9100_emmc_test.c").read_bytes())
 c=["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c","i9100_emmc_clock.c"]
-cpp=["i9100_emmc_native.cpp","i9100_camera_mmio.cpp","IOS6I9100EMMCStorage.cpp","IOS6I9100EMMCRaw.cpp","IOS6I9100EMMCBlockDriver.cpp","i9100_emmc_alias.cpp"]
+cpp=["i9100_emmc_native.cpp","i9100_emmc_worker.cpp","i9100_camera_mmio.cpp","IOS6I9100EMMCStorage.cpp","IOS6I9100EMMCRaw.cpp","IOS6I9100EMMCBlockDriver.cpp","i9100_emmc_alias.cpp"]
 c += ['i9100_emmc_idmac.c','i9100_dma_guard.c'];cpp += ['i9100_dma_native.cpp']
 from i9100_emmc_dma_model import prepare as prepare_dma
 dma_copies=prepare_dma(e)
@@ -23,5 +23,6 @@ e.model_cpp("i9100_emmc_storage_test.cpp",c+["i9100_emmc_native_fixture.c"],cpp,
  extra_sdk=REPO/"port-tests/emmc-storage-sdk",libraries=("pthread",))
 e.result["nested_fixtures"]={n:hashlib.sha256((REPO/"port-tests"/n).read_bytes()).hexdigest() for n in
  ("i9100_emmc_native_test.cpp","i9100_emmc_native_fixture.c","i9100_emmc_writer_test.c","i9100_emmc_test.c")}
+e.result['workloop_facade_sha256']=hashlib.sha256((REPO/'port-tests/i9100_emmc_workloop_facade.inc').read_bytes()).hexdigest()
 if a.cross_compile:e.cross_compile(c+cpp+["IOS7I9100EMMC.cpp","i9100_emmc_publication.cpp"])
 e.finish(c+cpp+["IOS7I9100EMMC.cpp","i9100_emmc_publication.cpp"],"Actual IOS6 IOStorage2IOMedia/nativeMMC/writer path with isolated IOKit+register+historical/syntheticmedia boundaries; no real volume mount or hardware")

@@ -11,6 +11,8 @@
 #include <condition_variable>
 #include <chrono>
 #include <unistd.h>
+#include <algorithm>
+#include "i9100_emmc_workloop_facade.inc"
 static std::map<IOMedia *,uint64_t> actual_tickets;
 #ifndef I9100_EMMC_REAL_PARENT_MODEL
 static int publish_alias(IOMedia *m,void *b,void *c)
@@ -45,8 +47,8 @@ void IOService::registerService()
  i9100_boot_model_registered(this);
 #endif
 }
-void *i9100_model_event_allocate(size_t n){if(++object_calls==object_fail)return nullptr;objects++;return calloc(1,n);}
-void i9100_model_event_free(void *p){assert(objects);objects--;free(p);}
+void *i9100_model_event_allocate(size_t n){if(__sync_add_and_fetch(&object_calls,1)==object_fail)return nullptr;__sync_add_and_fetch(&objects,1);return calloc(1,n);}
+void i9100_model_event_free(void *p){assert(objects);__sync_sub_and_fetch(&objects,1);free(p);}
 void IOLockLock(IOLock *l){host_locks.at(l)->lock();assert(!l->held);l->held=true;}
 void IOLog(const char *,...){}
 size_t IOMemoryDescriptor::readBytes(size_t at,void *out,size_t n)
@@ -55,13 +57,16 @@ size_t IOMemoryDescriptor::writeBytes(size_t at,const void *in,size_t n)
 {if(at>payload.size()||n>payload.size()-at)return 0;memcpy(payload.data()+at,in,n);return n;}
 void IOMemoryDescriptor::release()
 {assert(refs);if(!--refs){if(allocated){assert(m.descriptors);m.descriptors--;delete this;}}}
+static std::mutex emmc_completion_lock;static std::condition_variable emmc_completion_cv;
 static void completed(void *,void *,IOReturn e,UInt64 bytes)
-{completion_error=e;completion_bytes=bytes;callbacks++;}
+{std::lock_guard<std::mutex> lock(emmc_completion_lock);completion_error=e;completion_bytes=bytes;callbacks++;emmc_completion_cv.notify_all();}
 static IOStorageCompletion complete={nullptr,completed,nullptr};
 #ifndef I9100_EMMC_REAL_PARENT_MODEL
 static void submit(IOStorage *s,bool write,IOMedia *client,uint64_t start,IOMemoryDescriptor *buffer)
-{callbacks=0;completion_bytes=UINT64_MAX;completion_error=-1000;
+{{std::lock_guard<std::mutex> lock(emmc_completion_lock);callbacks=0;completion_bytes=UINT64_MAX;completion_error=-1000;}
  if(write)s->write(client,start,buffer,nullptr,&complete);else s->read(client,start,buffer,nullptr,&complete);
+ {std::unique_lock<std::mutex> lock(emmc_completion_lock);assert(emmc_completion_cv.wait_for(lock,std::chrono::seconds(5),[]{return callbacks==1;}));}
+ for(unsigned n=0;buffer->refs!=1&&n<1000;n++)std::this_thread::sleep_for(std::chrono::milliseconds(1));
  assert(callbacks==1&&buffer->refs==1);}
 #endif
 #ifndef I9100_EMMC_STORAGE_MAIN
@@ -148,6 +153,7 @@ int I9100_EMMC_STORAGE_MAIN()
  assert(!s->open(&fake,0,kIOStorageAccessReaderWriter));
  assert(i9100_emmc_native_close(&native)==I9100_EMMC_BUSY&&native);
  IOMemoryDescriptor buffer;buffer.payload.resize(16384);for(unsigned k=0;k<buffer.payload.size();k++)buffer.payload[k]=(uint8_t)(k*21U+11U);
+ buffer.direction=kIODirectionInOut;
  const uint64_t lba=3489792ULL+8388608ULL;
  submit(s,true,data,lba*512U,&buffer);assert(!completion_error&&completion_bytes==16384);
  std::vector<uint8_t> expected=buffer.payload;buffer.payload.assign(16384,0);

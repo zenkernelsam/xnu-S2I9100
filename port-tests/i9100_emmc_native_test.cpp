@@ -22,14 +22,14 @@ static struct model {unsigned count,fail_at,contexts,locks,maps,descriptors,put_
 #ifndef I9100_EMMC_REAL_PARENT_MODEL
 struct i9100_peripheral_native {unsigned holds;};static i9100_peripheral_native parent;
 #endif
-static bool fail(){return ++m.count==m.fail_at;}
+static bool fail(){return __sync_add_and_fetch(&m.count,1)==m.fail_at;}
 static std::map<IOLock *,std::mutex *> host_locks;
 #ifdef I9100_EMMC_IDMAC_NATIVE_MODEL
 static IOLock *idmac_buffer_locks[2];
 static unsigned idmac_try_calls,idmac_fail_lock_call;
 #endif
-void *IOMalloc(size_t bytes){if(fail())return nullptr;m.contexts++;return calloc(1,bytes);}
-void IOFree(void *p,size_t){assert(m.contexts);m.contexts--;free(p);}
+void *IOMalloc(size_t bytes){if(fail())return nullptr;__sync_add_and_fetch(&m.contexts,1);return calloc(1,bytes);}
+void IOFree(void *p,size_t){assert(m.contexts);__sync_sub_and_fetch(&m.contexts,1);free(p);}
 IOLock *IOLockAlloc(){if(fail())return nullptr;m.locks++;auto *l=new IOLock{false};host_locks[l]=new std::mutex;
 #ifdef I9100_EMMC_IDMAC_NATIVE_MODEL
  if(m.locks>=3U&&m.locks<=4U)idmac_buffer_locks[m.locks-3U]=l;

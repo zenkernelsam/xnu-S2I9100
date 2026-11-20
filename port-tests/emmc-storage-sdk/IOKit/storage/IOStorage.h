@@ -12,6 +12,7 @@ typedef unsigned IOOptionBits;
 enum {kIODirectionIn=1,kIODirectionOut=2};
 enum {kIOReturnNotWritable=-2,kIOReturnBusy=-3,kIOReturnNoMedia=-4,kIOReturnUnsupported=-5,
  kIOReturnIOError=-6,kIOReturnNotPermitted=-7,kIOReturnNotOpen=-8,kIOReturnUnderrun=-9};
+enum {kIOReturnAborted=-10,kIOReturnNoMemory=-11,kIOReturnTimeout=-12};
 enum {kIOStorageAccessReader=1,kIOStorageAccessReaderWriter=3,kIOServiceRequired=1};
 class OSString : public OSObject {
 public:

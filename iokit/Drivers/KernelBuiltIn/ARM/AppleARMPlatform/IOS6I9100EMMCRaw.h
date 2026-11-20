@@ -3,17 +3,21 @@
 #define IOS6_I9100_EMMC_RAW_H
 #include <IOKit/storage/IOBlockStorageDevice.h>
 #include "i9100_emmc_native.h"
+#include "i9100_emmc_worker.h"
 class IOS6I9100EMMCRaw : public IOBlockStorageDevice {
  OSDeclareDefaultStructors(IOS6I9100EMMCRaw)
  i9100_emmc_native *native;bool held;
- IOLock *lock;uint8_t *bounce;uint64_t sectors;
+ IOLock *lock;i9100_emmc_worker *worker;uint64_t sectors;bool stopping;
+ static IOReturn workValidate(OSObject *,UInt64,unsigned);
 public:
  bool init(OSDictionary *p=0) override;
  bool bind(int enabled,i9100_emmc_native *);
  bool matchPropertyTable(OSDictionary *,SInt32 *) override;
  bool start(IOService *) override;
+ bool terminate(IOOptionBits) override;
+ void stop(IOService *) override;
  void free() override;
- i9100_emmc_native *nativeContext() const{return held?native:0;}
+ i9100_emmc_native *nativeContext() const;
  IOReturn doAsyncReadWrite(IOMemoryDescriptor *,UInt64,UInt64,IOStorageAttributes *,IOStorageCompletion *) override;
  IOReturn doEjectMedia() override{return kIOReturnUnsupported;}
  IOReturn doFormatMedia(UInt64) override{return kIOReturnNotWritable;}

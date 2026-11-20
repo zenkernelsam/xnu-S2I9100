@@ -16,7 +16,7 @@ for name in ('i9100_emmc_native_fixture.c','i9100_emmc_writer_test.c','i9100_emm
 c=['i9100_emmc.c','i9100_emmc_layout.c','i9100_emmc_writer.c','i9100_emmc_host.c','i9100_emmc_boot_contract.c','i9100_emmc_clock.c']
 c+=['i9100_gpio_broker.c','i9100_clock_gates.c','i9100_irq_registry.c','i9100_peripheral_board.c','i9100_irq_cascade.c',
     'i9100_i2c_samsung.c','i9100_uart_bluetooth.c','i9100_sdio.c','i9100_bluetooth_h4.c','i9100_bcm_f2.c']
-cpp=['i9100_emmc_native.cpp','i9100_camera_mmio.cpp','IOS6I9100EMMCStorage.cpp','IOS6I9100EMMCRaw.cpp','IOS6I9100EMMCBlockDriver.cpp',
+cpp=['i9100_emmc_native.cpp','i9100_emmc_worker.cpp','i9100_camera_mmio.cpp','IOS6I9100EMMCStorage.cpp','IOS6I9100EMMCRaw.cpp','IOS6I9100EMMCBlockDriver.cpp',
      'i9100_emmc_alias.cpp','i9100_emmc_publication.cpp','i9100_emmc_boot.cpp','i9100_peripheral_native.cpp']
 c += ['i9100_emmc_idmac.c','i9100_dma_guard.c'];cpp += ['i9100_dma_native.cpp']
 from i9100_emmc_dma_model import prepare as prepare_dma
@@ -46,6 +46,7 @@ e.result['idmac_sdr_boot_path']=True;e.result['actual_idmac_sdr_contract_sha256'
 e.result['sdr_companion_header_sha256']=hashlib.sha256((REPO/'iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_emmc_sdr.h').read_bytes()).hexdigest()
 e.result['nested_fixtures']={n:hashlib.sha256((REPO/'port-tests'/n).read_bytes()).hexdigest() for n in
  ('i9100_emmc_storage_test.cpp','i9100_emmc_native_test.cpp','i9100_emmc_native_fixture.c','i9100_emmc_writer_test.c','i9100_emmc_test.c')}
+e.result['workloop_facade_sha256']=hashlib.sha256((REPO/'port-tests/i9100_emmc_workloop_facade.inc').read_bytes()).hexdigest()
 e.result['actual_contract_sha256']=hashlib.sha256((e.out/'actual-contract.bin').read_bytes()).hexdigest()
 e.result['model_table_evidence_sha256']={n:hashlib.sha256((e.out/n).read_bytes()).hexdigest() for n in ('cid.bin','gpt-primary.bin','gpt-backup.bin','pit.bin')}
 if a.cross_compile:e.cross_compile(c+cpp)

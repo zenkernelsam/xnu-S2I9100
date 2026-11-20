@@ -40,7 +40,7 @@ C_SOURCES = [
     "i9100_bt_probe.c", "i9100_bt_acl.c", "i9100_bt_stream.c",
     "i9100_emmc_host.c", "i9100_emmc_boot_contract.c", "i9100_emmc_clock.c", "i9100_emmc_idmac.c",
 ]
-CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp", "i9100_emmc_boot.cpp", "i9100_emmc_clock_native.cpp",
+CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp", "i9100_emmc_boot.cpp", "i9100_emmc_clock_native.cpp", "i9100_emmc_worker.cpp",
                "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_sensor_worker.cpp", "i9100_haptic_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp", "IOS6I9100AudioPCM.cpp", "i9100_pl330_ring_native.cpp", "i9100_pl330_ring_mmio.cpp", "i9100_audio_gated.cpp", "i9100_sensor_hid.cpp", "i9100_sensor_hid_endpoint.cpp", "i9100_bt_worker.cpp", "i9100_bt_control.cpp", "i9100_camera_native.cpp", "i9100_camera_mmio.cpp", "i9100_mfc_native.cpp", "i9100_emmc_native.cpp", "IOS6I9100EMMCStorage.cpp", "IOS6I9100EMMCRaw.cpp", "IOS6I9100EMMCBlockDriver.cpp", "i9100_emmc_alias.cpp", "i9100_emmc_publication.cpp"]
 TESTS = [
     ("i9100_emmc_clock_test.c", ["i9100_emmc_clock.c"]),
@@ -68,6 +68,9 @@ TESTS = [
     ("i9100_emmc_idmac_test.c",["i9100_emmc.c","i9100_emmc_idmac.c","i9100_dma_guard.c","i9100_emmc_layout.c","i9100_emmc_writer.c"]),
     ("i9100_emmc_idmac_native_test.cpp",["i9100_emmc.c","i9100_emmc_idmac.c","i9100_dma_guard.c","i9100_emmc_layout.c",
       "i9100_emmc_writer.c","i9100_emmc_host.c","i9100_emmc_clock.c","i9100_emmc_native.cpp","i9100_camera_mmio.cpp","i9100_dma_native.cpp"]),
+    ("i9100_emmc_worker_test.cpp",["i9100_emmc.c","i9100_emmc_idmac.c","i9100_dma_guard.c","i9100_emmc_layout.c",
+      "i9100_emmc_writer.c","i9100_emmc_host.c","i9100_emmc_clock.c","i9100_emmc_native.cpp","i9100_emmc_worker.cpp",
+      "i9100_dma_native.cpp","i9100_camera_mmio.cpp","IOS6I9100EMMCStorage.cpp","IOS6I9100EMMCRaw.cpp","IOS6I9100EMMCBlockDriver.cpp","i9100_emmc_alias.cpp"]),
     ("i9100_mfc_native_test.cpp", ["i9100_mfc.c","i9100_mfc_layout.c","i9100_dma_guard.c",
         "i9100_mfc_native.cpp","i9100_camera_mmio.cpp"]),
     ("i9100_camera_capture_test.c", ["i9100_camera_engine_io.c","i9100_csis.c","i9100_fimc.c",
@@ -218,9 +221,11 @@ def main():
                 sources=list(sources)+[name for name in ("i9100_pl330_ring.c","i9100_audio_gated.cpp",
                     "i9100_pl330_ring_native.cpp","i9100_pl330_ring_mmio.cpp") if name not in sources]
             emmc_native=('i9100_emmc_native_test.cpp','i9100_emmc_storage_test.cpp','i9100_emmc_boot_test.cpp',
-              'i9100_emmc_matching_test.cpp','i9100_emmc_sdr_native_test.cpp','i9100_emmc_idmac_native_test.cpp')
+              'i9100_emmc_matching_test.cpp','i9100_emmc_sdr_native_test.cpp','i9100_emmc_idmac_native_test.cpp','i9100_emmc_worker_test.cpp')
             if test in emmc_native:
                 sources=list(sources)+[name for name in ('i9100_emmc_idmac.c','i9100_dma_guard.c','i9100_dma_native.cpp')if name not in sources]
+            if test in ('i9100_emmc_storage_test.cpp','i9100_emmc_boot_test.cpp','i9100_emmc_matching_test.cpp'):
+                sources=list(sources)+[name for name in ('i9100_emmc_worker.cpp',)if name not in sources]
             tested_sources.update(sources)
             folder = e.out / Path(test).stem
             folder.mkdir()
@@ -269,7 +274,7 @@ def main():
                             ("i9100_ring_mmio_read","i9100_ring_mmio_write") if test in
                             ("i9100_pl330_ring_native_test.cpp","i9100_audio_gated_pipeline_test.cpp","i9100_audio_gated_user_test.cpp") else (),
                             extra_sdk=REPO/'port-tests/bt-control-sdk' if test=='i9100_bt_control_test.cpp' else
-                            REPO/'port-tests/emmc-storage-sdk' if test in ('i9100_emmc_storage_test.cpp','i9100_emmc_boot_test.cpp','i9100_emmc_matching_test.cpp','i9100_emmc_clock_native_test.cpp') else
+                            REPO/'port-tests/emmc-storage-sdk' if test in ('i9100_emmc_storage_test.cpp','i9100_emmc_boot_test.cpp','i9100_emmc_matching_test.cpp','i9100_emmc_clock_native_test.cpp','i9100_emmc_worker_test.cpp') else
                             REPO/'port-tests/emmc-native-sdk' if test in ('i9100_emmc_native_test.cpp','i9100_emmc_sdr_native_test.cpp','i9100_emmc_idmac_native_test.cpp') else None,
                             test_override=test_override,extra_defines=host_defines)
                 if test=="i9100_power_shared_test.cpp":
@@ -282,6 +287,9 @@ def main():
                         e.run([str(e.out/'models'),fault],'fault-'+fault+'-tests')
                 if test=='i9100_emmc_idmac_native_test.cpp':
                     for fault in ('timeout','short-counter','owned-descriptor','stop-drop'):
+                        e.run([str(e.out/'models'),fault],'fault-'+fault+'-tests')
+                if test=='i9100_emmc_worker_test.cpp':
+                    for fault in ('hardware-failure','stop-timeout','memory-complete-error','remove-error'):
                         e.run([str(e.out/'models'),fault],'fault-'+fault+'-tests')
                 if test in ("i9100_audio_pdev_test.cpp","i9100_audio_gated_pdev_test.cpp") and any(
                     hashlib.sha256((REPO/"userland/audio"/name).read_bytes()).hexdigest()!=sha for name,sha in captured.items()):

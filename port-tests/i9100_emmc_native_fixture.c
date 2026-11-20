@@ -6,6 +6,7 @@ static uint8_t hfs_system[512],hfs_data[512];
 static struct i9100_emmc_writer_identity expected_identity;
 static struct {unsigned enabled,switches,busy,width,timing,power_class,failure;} sdr_fixture;
 static struct {unsigned enabled,requests,failure;uint32_t desc_pa,data_pa;uint8_t *descriptors,*data;} dma_fixture;
+static struct {uint8_t *bytes;uint64_t lba;unsigned sectors;} memory_media;
 static void make_hfs(uint8_t h[512],uint32_t bytes_blocks,int journaled)
 {memset(h,0,512);h[0]='H';h[1]='X';h[3]=5;big32(h+4,0x100U|(journaled?0x2000U:0));
  big32(h+40,8192);big32(h+44,bytes_blocks);big32(h+48,1U);}
@@ -16,7 +17,13 @@ int fixture_setup(const char *source)
  maps_started=0;memset(&sdr_fixture,0,sizeof(sdr_fixture));memset(&dma_fixture,0,sizeof(dma_fixture));
  make_hfs(hfs_system,196608U,0);make_hfs(hfs_data,786432U,1);return 0;
 }
-void fixture_finish(void){done();}
+void fixture_finish(void){if(memory_media.bytes)free(memory_media.bytes);memset(&memory_media,0,sizeof(memory_media));done();}
+void fixture_memory_media(uint64_t lba,unsigned sectors)
+{assert(!memory_media.bytes&&lba>=3489792ULL&&lba+sectors<=3489792ULL+12582912ULL&&sectors&&sectors<=2048U);
+ memory_media.bytes=calloc(sectors,512U);assert(memory_media.bytes);memory_media.lba=lba;memory_media.sectors=sectors;}
+static uint8_t *memory_sector(uint64_t lba)
+{return memory_media.bytes&&lba>=memory_media.lba&&lba-memory_media.lba<memory_media.sectors?
+ memory_media.bytes+(lba-memory_media.lba)*512U:0;}
 void fixture_identity(struct i9100_emmc_writer_identity *i){*i=expected_identity;}
 static void output_file(const char *folder,const char *name,const void *bytes,unsigned length)
 {char path[1024];int n=snprintf(path,sizeof(path),"%s/%s",folder,name);assert(n>0&&(unsigned)n<sizeof(path));FILE *f=fopen(path,"wb");assert(f&&fwrite(bytes,1,length,f)==length&&!fclose(f));}
@@ -52,10 +59,13 @@ static void fixture_dma_transfer(unsigned cmd,uint32_t lba,uint32_t bytes)
  wm.m.regs[EM_RINTSTS/4]|=1U<<2;response(&wm.m,(4U<<9)|(1U<<8));
  if(cmd==24U||cmd==25U){
   wm.stored_lba=lba;wm.stored_count=bytes/512U;wm.write_commands++;memcpy(wm.stored,dma_fixture.data,bytes);wm.m.state=cmd==25U?5U:4U;
+  for(unsigned n=0;n<bytes/512U;n++){uint8_t *sector=memory_sector((uint64_t)lba+n);if(sector)memcpy(sector,dma_fixture.data+n*512U,512U);}
  }else{
   for(unsigned i=0;i<bytes/512U;i++){
    uint64_t sector=(uint64_t)lba+i;uint8_t *p=dma_fixture.data+i*512U;
-   if(wm.stored_count&&sector>=wm.stored_lba&&sector<wm.stored_lba+wm.stored_count)memcpy(p,wm.stored+(sector-wm.stored_lba)*512U,512U);
+   uint8_t *stored=memory_sector(sector);
+   if(stored)memcpy(p,stored,512);
+   else if(wm.stored_count&&sector>=wm.stored_lba&&sector<wm.stored_lba+wm.stored_count)memcpy(p,wm.stored+(sector-wm.stored_lba)*512U,512U);
    else if(sector==344064ULL+2||sector==344064ULL+3145728ULL-2)memcpy(p,hfs_system,512);
    else if(sector==3489792ULL+2||sector==3489792ULL+12582912ULL-2)memcpy(p,hfs_data,512);
    else if(disk_read(&wm.d,sector,p))memset(p,0,512);
@@ -96,7 +106,10 @@ void fixture_write(unsigned off,uint32_t value)
   sdr_fixture.busy--;maps_started++;wm.m.commands++;wm.m.regs[EM_CMD/4]=value&~(1U<<31);
   wm.m.regs[EM_RINTSTS/4]|=1U<<2;response(&wm.m,7U<<9);return;
  }
- wwrite(&wm,off,value);maps_started++;
+ unsigned write_active=wm.write_active;wwrite(&wm,off,value);maps_started++;
+ if(off==EM_DATA&&write_active&&!wm.write_active){
+  for(unsigned n=0;n<wm.stored_count;n++){uint8_t *sector=memory_sector(wm.stored_lba+n);if(sector)memcpy(sector,wm.stored+n*512U,512U);}
+ }
  if(sdr_fixture.enabled&&off==EM_CMD&&!(value&(1U<<21))&&(value&63U)==8U){
   const unsigned fields[]={183,185,187,196,202,203,248};
   const uint8_t bytes[]={sdr_fixture.width,sdr_fixture.timing,sdr_fixture.power_class,3,0x43,0x21,20};
@@ -111,6 +124,7 @@ void fixture_write(unsigned off,uint32_t value)
   uint64_t lba=wm.m.regs[EM_CMDARG/4];unsigned count=wm.m.regs[EM_BYTCNT/4]/512U;
   for(unsigned i=0;i<count;i++){
    const uint8_t *sector=0;
+   sector=memory_sector(lba+i);
    if(lba+i==344064ULL+2U||lba+i==344064ULL+3145728ULL-2U)sector=hfs_system;
    if(lba+i==3489792ULL+2U||lba+i==3489792ULL+12582912ULL-2U)sector=hfs_data;
    if(sector)for(unsigned k=0;k<128;k++)wm.m.words[i*128U+k]=get32(sector+k*4U);

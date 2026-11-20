@@ -139,6 +139,8 @@ def main():
             raise RuntimeError('Actual IDMAC native clock capture changed')
         if m.get('dma_facade_sha256')and sha(REPO/'port-tests/i9100_emmc_dma_facade.inc')!=m['dma_facade_sha256']:
             raise RuntimeError('Original DMA IOKit/PTE facade changed')
+        if m.get('workloop_facade_sha256')and sha(REPO/'port-tests/i9100_emmc_workloop_facade.inc')!=m['workloop_facade_sha256']:
+            raise RuntimeError('Actual eMMC threaded scheduler facade changed')
         if m.get("host_source_override"):
             override = m["host_source_override"]
             if sha(PLATFORM / "i9100_dma_native.cpp") != override["original_sha256"] or sha(folder / "i9100_dma_native.cpp") != override["copy_sha256"]:
@@ -209,6 +211,9 @@ def main():
         if name in ('i9100_emmc.c','i9100_emmc_native.cpp'):
             dep=Path(ROOT/chosen['object']).with_suffix('.d')
             if not dep.is_file()or 'i9100_emmc_sdr.h'not in dep.read_text():raise RuntimeError('SDR ABI was not consumed by paired ARM compile')
+        if name in ('i9100_emmc_worker.cpp','IOS6I9100EMMCStorage.cpp','IOS6I9100EMMCRaw.cpp'):
+            dep=Path(ROOT/chosen['object']).with_suffix('.d')
+            if not dep.is_file()or 'i9100_emmc_worker.h'not in dep.read_text():raise RuntimeError('Async storage ABI was not consumed by paired ARM compile')
         kind = ".cpo" if name.endswith(".cpp") else ".o"
         matching = [path for path in inputs if object_name(path) in (name + kind, Path(name).stem + kind)]
         if len(matching) != 1 or sha(matching[0]) != sha(ROOT / chosen["object"]):

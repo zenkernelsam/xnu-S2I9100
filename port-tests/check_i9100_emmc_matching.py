@@ -55,6 +55,7 @@ def prepare(e):
     folder=e.out/'matching-fixture';folder.mkdir()
     nested=('i9100_emmc_boot_test.cpp','i9100_emmc_storage_test.cpp','i9100_emmc_native_test.cpp',
             'i9100_emmc_native_fixture.c','i9100_emmc_writer_test.c','i9100_emmc_test.c')
+    nested=nested+('i9100_emmc_workloop_facade.inc',)
     for name in nested:(folder/name).write_bytes((REPO/'port-tests'/name).read_bytes())
     model=folder/'i9100_emmc_matching_test.cpp'
     fixture=(REPO/'port-tests/i9100_emmc_matching_test.cpp').read_bytes()
@@ -107,7 +108,7 @@ def main():
     c=['i9100_emmc.c','i9100_emmc_layout.c','i9100_emmc_writer.c','i9100_emmc_host.c','i9100_emmc_boot_contract.c','i9100_emmc_clock.c',
        'i9100_gpio_broker.c','i9100_clock_gates.c','i9100_irq_registry.c','i9100_peripheral_board.c','i9100_irq_cascade.c',
        'i9100_i2c_samsung.c','i9100_uart_bluetooth.c','i9100_sdio.c','i9100_bluetooth_h4.c','i9100_bcm_f2.c']
-    cpp=['i9100_emmc_native.cpp','i9100_camera_mmio.cpp','IOS6I9100EMMCStorage.cpp','IOS6I9100EMMCRaw.cpp',
+    cpp=['i9100_emmc_native.cpp','i9100_emmc_worker.cpp','i9100_camera_mmio.cpp','IOS6I9100EMMCStorage.cpp','IOS6I9100EMMCRaw.cpp',
          'IOS6I9100EMMCBlockDriver.cpp','i9100_emmc_alias.cpp','i9100_emmc_publication.cpp',
          'i9100_emmc_boot.cpp','i9100_peripheral_native.cpp']
     c += ['i9100_emmc_idmac.c','i9100_dma_guard.c'];cpp += ['i9100_dma_native.cpp']

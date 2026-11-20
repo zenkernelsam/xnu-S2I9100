@@ -10,16 +10,10 @@
 #include <machine/machine_routines.h>
 #include <string.h>
 OSDefineMetaClassAndStructors(IOS6I9100EMMCStorage,IOStorage)
-static IOReturn storage_error(int e)
-{
- return !e?kIOReturnSuccess:e==I9100_EMMC_ARGUMENT?kIOReturnBadArgument:
-  e==I9100_EMMC_PARTITION?kIOReturnNotWritable:e==I9100_EMMC_BUSY?kIOReturnBusy:
-  e==I9100_EMMC_NO_DEVICE?kIOReturnNoMedia:e==I9100_EMMC_UNSUPPORTED?kIOReturnUnsupported:kIOReturnIOError;
-}
 bool IOS6I9100EMMCStorage::init(OSDictionary *p)
 {
  native=0;media[0]=media[1]=0;opened[0]=opened[1]=0;access[0]=access[1]=0;
- mutex=0;bounce=0;held=stopping=published=sealed=false;bzero(&snapshot,sizeof(snapshot));
+ mutex=0;worker=0;generation[0]=generation[1]=0;held=stopping=published=sealed=sealing=false;bzero(&snapshot,sizeof(snapshot));
  return IOStorage::init(p);
 }
 bool IOS6I9100EMMCStorage::bind(int enabled,i9100_emmc_native *n)
@@ -28,10 +22,9 @@ bool IOS6I9100EMMCStorage::bind(int enabled,i9100_emmc_native *n)
  struct i9100_emmc_native_snapshot observed;
  if(i9100_emmc_native_snapshot(n,&observed)||observed.mode!=I9100_EMMC_N_DATA_RW||observed.error||observed.sealed||
     !observed.system_hfs_valid||!observed.data_hfs_valid||!(observed.data_hfs.attributes&0x2000U))return false;
- mutex=IOLockAlloc();bounce=(uint8_t *)IOMalloc(512U*I9100_EMMC_MAX_SECTORS);
- if(!mutex||!bounce)return false;
+ mutex=IOLockAlloc();if(!mutex)return false;
  if(i9100_emmc_native_hold_get(n,(uintptr_t)this))return false;
- native=n;held=true;snapshot=observed;return true;
+ native=n;held=true;snapshot=observed;return i9100_emmc_worker_create(1,n,&worker)==0;
 }
 IOService *IOS6I9100EMMCStorage::probe(IOService *provider,SInt32 *score)
 {
@@ -81,19 +74,38 @@ bool IOS6I9100EMMCStorage::handleOpen(IOService *client,IOOptionBits options,voi
     (index==0&&wanted==kIOStorageAccessReaderWriter))return false;
  /* IOService serializes its open callbacks. Two exact media children are
   * the only upstream clients; their own IOMedia handles reader/writer sets. */
- IOLockLock(mutex);if(stopping||sealed){IOLockUnlock(mutex);return false;}
- opened[index]=client;access[index]=wanted;IOLockUnlock(mutex);return true;
+ IOLockLock(mutex);if(stopping||sealed||sealing||generation[index]==(~(UInt64)0>>1)){IOLockUnlock(mutex);return false;}
+ UInt64 old=(generation[index]<<1)|(unsigned)index;bool revoke=opened[index]&&access[index]!=wanted;
+ if(!opened[index]||revoke)generation[index]++;
+ opened[index]=client;access[index]=wanted;IOLockUnlock(mutex);
+ if(revoke)i9100_emmc_worker_cancel(worker,this,old);return true;
 }
 bool IOS6I9100EMMCStorage::handleIsOpen(const IOService *client) const
 {int index=child(client);if(!mutex)return false;IOLockLock(mutex);
  bool result=client?(index>=0&&opened[index]==client):(opened[0]||opened[1]);IOLockUnlock(mutex);return result;}
 void IOS6I9100EMMCStorage::handleClose(IOService *client,IOOptionBits)
-{int index=child(client);if(index>=0){IOLockLock(mutex);if(opened[index]==client){opened[index]=0;access[index]=0;}IOLockUnlock(mutex);}}
+{int index=child(client);if(index>=0){IOLockLock(mutex);UInt64 token=(generation[index]<<1)|(unsigned)index;
+ bool close=opened[index]==client;if(close){opened[index]=0;access[index]=0;}IOLockUnlock(mutex);
+ if(close)i9100_emmc_worker_cancel(worker,this,token);}}
+IOReturn IOS6I9100EMMCStorage::workValidate(OSObject *owner,UInt64 token,unsigned operation)
+{
+ auto *s=(IOS6I9100EMMCStorage *)owner;unsigned index=(unsigned)(token&1U);IOLockLock(s->mutex);
+ IOReturn e=!s->held||!s->native||s->stopping?kIOReturnNotOpen:kIOReturnSuccess;
+ if(!e&&token!=((s->generation[index]<<1)|index))e=kIOReturnAborted;
+ if(!e&&operation==I9100_EMMC_WORK_SEAL){
+  if(index!=1U||!s->sealing||s->sealed||s->opened[1])e=kIOReturnNotOpen;
+ }else if(!e){
+  if(!s->opened[index]||(index==1U&&(s->sealed||s->sealing)))e=kIOReturnNotOpen;
+  else if((operation==I9100_EMMC_WORK_WRITE||operation==I9100_EMMC_WORK_SYNC)&&
+          (index!=1U||s->access[index]!=kIOStorageAccessReaderWriter))e=kIOReturnNotWritable;
+ }
+ IOLockUnlock(s->mutex);return e;
+}
 void IOS6I9100EMMCStorage::transfer(bool writing,IOService *client,UInt64 start,IOMemoryDescriptor *buffer,
  IOStorageAttributes *attributes,IOStorageCompletion *completion)
 {
  if(!completion||!completion->action)return;
- retain();IOStorageCompletion done=*completion;IOReturn result=kIOReturnSuccess;UInt64 actual=0;
+ retain();IOStorageCompletion done=*completion;IOReturn result=kIOReturnSuccess;UInt64 token=0;
  int index=child(client);
  if(index<0||!buffer||!native||!held||!ml_get_interrupts_enabled()||ml_at_interrupt_context())result=kIOReturnNotPermitted;
  else if(writing&&index!=1)result=kIOReturnNotWritable;
@@ -104,22 +116,13 @@ void IOS6I9100EMMCStorage::transfer(bool writing,IOService *client,UInt64 start,
   if(!size||(size&511U)||(start&511U)||start<base||start-base>=capacity||size>capacity-(start-base)||size>1024U*1024U)
    result=kIOReturnBadArgument;
   else{
-   buffer->retain();IOLockLock(mutex);
-   if(stopping||(sealed&&index==1)||!opened[index]||(writing&&access[index]!=kIOStorageAccessReaderWriter))result=kIOReturnNotOpen;
-   while(actual<size&&result==kIOReturnSuccess){
-    UInt64 n=size-actual;if(n>512U*I9100_EMMC_MAX_SECTORS)n=512U*I9100_EMMC_MAX_SECTORS;
-    int e;
-    if(writing){
-     if(buffer->readBytes(actual,bounce,n)!=n){result=kIOReturnUnderrun;break;}
-     e=i9100_emmc_native_write_data(native,(start+actual)/512U,(uint32_t)(n/512U),bounce);
-    }else e=i9100_emmc_native_read(native,(start+actual)/512U,(uint32_t)(n/512U),bounce);
-    if(e){result=storage_error(e);break;}
-    if(!writing&&buffer->writeBytes(actual,bounce,n)!=n){result=kIOReturnUnderrun;break;}
-    actual+=n;
-   }
-   IOLockUnlock(mutex);buffer->release();
+   IOLockLock(mutex);
+   if(stopping||((sealed||sealing)&&index==1)||!opened[index]||(writing&&access[index]!=kIOStorageAccessReaderWriter))result=kIOReturnNotOpen;
+   token=(generation[index]<<1)|(unsigned)index;IOLockUnlock(mutex);
+   if(!result)result=i9100_emmc_worker_submit(worker,this,token,workValidate,
+       writing?I9100_EMMC_WORK_WRITE:I9100_EMMC_WORK_READ,start/512U,size/512U,buffer,&done);
   }
- }IOStorage::complete(&done,result,actual);release(); /* Caller callback never under card/service lock. */
+ }if(result)IOStorage::complete(&done,result,0);release(); /* Accepted request owns its later exactly-once callback. */
 }
 void IOS6I9100EMMCStorage::read(IOService *client,UInt64 start,IOMemoryDescriptor *buffer,
  IOStorageAttributes *attrs,IOStorageCompletion *completion){transfer(false,client,start,buffer,attrs,completion);}
@@ -130,9 +133,9 @@ IOReturn IOS6I9100EMMCStorage::synchronizeCache(IOService *client)
  int index=child(client);if(index!=1)return kIOReturnNotWritable;
  if(!native||!held||!ml_get_interrupts_enabled()||ml_at_interrupt_context())return kIOReturnNotOpen;
  IOLockLock(mutex);
- if(stopping||sealed||!opened[index]||access[index]!=kIOStorageAccessReaderWriter){IOLockUnlock(mutex);return kIOReturnNotOpen;}
- int e=i9100_emmc_native_synchronize(native);
- IOLockUnlock(mutex);return storage_error(e);
+ if(stopping||sealed||sealing||!opened[index]||access[index]!=kIOStorageAccessReaderWriter){IOLockUnlock(mutex);return kIOReturnNotOpen;}
+ UInt64 token=(generation[index]<<1)|(unsigned)index;IOLockUnlock(mutex);
+ return i9100_emmc_worker_barrier(worker,this,token,workValidate,I9100_EMMC_WORK_SYNC);
 }
 IOReturn IOS6I9100EMMCStorage::discard(IOService *,UInt64,UInt64){return kIOReturnUnsupported;}
 IOMedia *IOS6I9100EMMCStorage::copyMedia(unsigned role)
@@ -161,8 +164,11 @@ int IOS6I9100EMMCStorage::sealData()
  IOLockLock(mutex);
  /* The read-only SYSTEM root may stay open. Only DATAFS writers/readers
   * must be gone; they are the sole clients that could dirty the card. */
- int e=stopping||sealed?I9100_EMMC_DIRTY:opened[1]?I9100_EMMC_BUSY:i9100_emmc_native_seal_data(native);
- if(!e)sealed=true;IOLockUnlock(mutex);return e;
+ int e=stopping||sealed?I9100_EMMC_DIRTY:opened[1]||sealing?I9100_EMMC_BUSY:0;
+ UInt64 token=(generation[1]<<1)|1U;if(!e)sealing=true;IOLockUnlock(mutex);
+ if(e)return e;IOReturn result=i9100_emmc_worker_barrier(worker,this,token,workValidate,I9100_EMMC_WORK_SEAL);
+ IOLockLock(mutex);if(!result)sealed=true;sealing=false;IOLockUnlock(mutex);
+ return !result?0:result==kIOReturnBusy?I9100_EMMC_BUSY:I9100_EMMC_IO;
 }
 bool IOS6I9100EMMCStorage::terminate(IOOptionBits options)
 {
@@ -170,6 +176,7 @@ bool IOS6I9100EMMCStorage::terminate(IOOptionBits options)
   * termination. Readiness must disappear before the standard framework
   * starts stopping BSD clients; a late alias commit must not resurrect it. */
  if(mutex)IOLockLock(mutex);stopping=true;if(mutex)IOLockUnlock(mutex);
+ if(worker)for(unsigned i=0;i<2;i++)i9100_emmc_worker_cancel(worker,this,(generation[i]<<1)|i);
  for(unsigned i=0;i<2;i++)if(media[i])i9100_emmc_alias_invalidate(media[i]);
  return IOStorage::terminate(options);
 }
@@ -178,6 +185,7 @@ void IOS6I9100EMMCStorage::stop(IOService *provider)
  if(mutex)IOLockLock(mutex);
  if(opened[0]||opened[1]){if(mutex)IOLockUnlock(mutex);IOLog("i9100 EMMC storage: open volume prevents orderly stop\n");return;}
  stopping=true;if(mutex)IOLockUnlock(mutex);
+ if(worker){IOReturn e=i9100_emmc_worker_stop(worker);if(e){IOLog("i9100 EMMC storage: retain unfinished queue e=%x\n",e);return;}}
  /* Never take alias gate while storage lock is held. Invalidate readiness
   * before a child can detach or BSD makes its original nodes obsolete. */
  for(unsigned i=0;i<2;i++)if(media[i]&&media[i]->getProvider()==this){
@@ -192,6 +200,7 @@ void IOS6I9100EMMCStorage::stop(IOService *provider)
 }
 void IOS6I9100EMMCStorage::free()
 {
+ if(worker){int e=i9100_emmc_worker_destroy(&worker);if(e)IOLog("i9100 EMMC storage: failed queue retained e=%d\n",e);}
  if(held&&native){
   /* Each child's attachment retains this service. No final free occurs
    * while a child/IO is in flight; the native consumer stays pinned. */
@@ -199,5 +208,5 @@ void IOS6I9100EMMCStorage::free()
   if(e)IOLog("i9100 EMMC storage: preserve failed native consumer e=%d\n",e);else held=false;
  }
  for(unsigned i=0;i<2;i++)if(media[i]){media[i]->release();media[i]=0;}
- if(bounce)IOFree(bounce,512U*I9100_EMMC_MAX_SECTORS);if(mutex)IOLockFree(mutex);native=0;IOStorage::free();
+ if(mutex)IOLockFree(mutex);native=0;IOStorage::free();
 }
