@@ -285,7 +285,16 @@ void IOS7I9100Power::tick(OSObject *owner,IOTimerEventSource *timer)
  if(timer->setTimeoutMS(1000)!=kIOReturnSuccess){
   (void)i9100_power_stop(&s->battery);i9100_power_charging=0;i9100_power_reason=I9100_POWER_IO;
   i9100_power_stop_uncertain=s->battery.stop_uncertain;
-  s->setIsCharging(false);s->updateStatus();IOLog("I9100 POWER timer failed; charging stopped\n");
+  /* A dead timer cannot continue supervising this last valid sample. Keep
+   * its safe-stop request distinct from actual readback and invalidate the
+   * warm-reset epoch before any subsequent halt can inherit it. */
+  s->battery.valid=0;s->battery.reason=I9100_POWER_IO;i9100_power_valid=0;
+  struct I9100ChargeEpoch epoch;
+  i9100_charge_epoch_encode(&epoch,&s->battery,mach_absolute_time(),s->polls,0,0);
+  i9100_charge_epoch_publish(i9100_charge_epoch_live,&epoch);
+  s->setIsCharging(false);s->setProperty("MeasurementsValid",false);s->updateStatus();
+  IOLog("I9100 POWER timer failed; stop_confirmed=%u, charger supervision unavailable\n",
+   s->battery.stop_uncertain?0U:1U);
  }
 }
 void IOS7I9100Power::free(void)
