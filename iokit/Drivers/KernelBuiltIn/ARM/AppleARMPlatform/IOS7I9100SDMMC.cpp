@@ -384,8 +384,10 @@ IOReturn IOS7I9100SDMMC::reportRemovability(bool *v)
 IOReturn IOS7I9100SDMMC::reportMediaState(bool *p, bool *c)
 {
 	if (!p || !c) return kIOReturnBadArgument;
-	*p = initialized;
+	IOLockLock(mutex);
+	*p = initialized && card.ready;
 	*c = false;
+	IOLockUnlock(mutex);
 	return kIOReturnSuccess;
 }
 

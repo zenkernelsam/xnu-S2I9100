@@ -47,6 +47,7 @@ struct i9100_sd_card {
 	int ready;
 	uint32_t read_errors;
 	uint32_t clock_div, calibrating, speed_fallbacks;
+	uint32_t identity_check_pending;
 };
 
 void i9100_sd_init(struct i9100_sd_card *c, const struct i9100_sd_io *io);

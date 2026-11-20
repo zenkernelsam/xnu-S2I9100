@@ -162,8 +162,13 @@ int IOS7LeoHFSFile::readImageBase(void *cookie,uint64_t logical,uint8_t out[512]
 int IOS7LeoHFSFile::readCacheMedia(void *cookie)
 {
  IOS7LeoHFSFile *file=(IOS7LeoHFSFile *)cookie;
- if(!file->cacheDevice)return (int)kIOReturnNotReady;
- bool present=false,changed=false;IOReturn error=file->cacheDevice->reportMediaState(&present,&changed);
+ IOBlockStorageDevice *device=file->cacheDevice;
+ if(!device && file->rawOpened && file->raw){
+  IOBlockStorageDriver *driver=OSDynamicCast(IOBlockStorageDriver,file->raw->getProvider());
+  device=driver?OSDynamicCast(IOBlockStorageDevice,driver->getProvider()):0;
+ }
+ if(!device)return (int)kIOReturnNotReady;
+ bool present=false,changed=false;IOReturn error=device->reportMediaState(&present,&changed);
  if(error!=kIOReturnSuccess)return (int)error;
  return present&&!changed?0:(int)kIOReturnNotReady;
 }
@@ -308,7 +313,12 @@ IOReturn IOS7LeoHFSFile::doAsyncReadWrite(IOMemoryDescriptor *buffer,UInt64 bloc
   }
   if(result==kIOReturnSuccess)completed+=512;
  }
- if(backendFailed)faulted=true;
+ /* Keep the completed error and its historical status, but do not discard
+  * the whole root after one transient transport failure. The retained raw
+  * SD device revalidates its original CID before the next request; an absent
+  * or rejected card remains a permanent fault. No failed request is replayed
+  * here and unpublished COW page fills remain invisible. */
+ if(backendFailed && readCacheMedia(this)!=0)faulted=true;
  cowStatus(result,wrote,false);bool cacheShow=readCacheStatus();bool show=wrote&&(rootStatus.cow_writes<=2U);
  UInt64 cacheHits=readCache?readCache->hits:0,cacheMisses=readCache?readCache->misses:0,cacheBaseReads=readCache?readCache->base_reads:0;
  IOLockUnlock(mutex);

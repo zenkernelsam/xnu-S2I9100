@@ -245,7 +245,24 @@ static int read_block(struct i9100_sd_card *c, uint64_t lba, uint8_t *out)
 			kprintf("i9100 SD: retry at slower divider=%u\n", divider);
 		}
 	}
+	c->identity_check_pending = 1;
 	return rc;
+}
+
+/* A failed request is not replayed by the file mapper. Before a subsequent
+ * request, verify that the retained physical card is still the original CID.
+ * Never probe a replacement or silently select a different root image. */
+static int revalidate_card(struct i9100_sd_card *c)
+{
+ uint32_t r[4],cid[4];int rc=recover(c);
+ if(!rc)rc=command(c,7,0,RESP_NONE,r); /* Deselect: an unaddressed CMD7 has no response. */
+ if(!rc)rc=command(c,10,c->rca<<16,RESP_LONG|CMD_CRC,cid);
+ if(!rc)for(unsigned n=0;n<4;n++)if(cid[n]!=c->cid[n]){rc=I9100_SD_NODEV;break;}
+ if(!rc)rc=command_r1(c,7,c->rca<<16,RESP_BUSY|CMD_CRC|CMD_INDEX,r);
+ if(!rc)rc=command_r1(c,13,c->rca<<16,R1_FLAGS,r);
+ if(!rc && (!(r[0]&R1_READY)||R1_STATE(r[0])!=4))rc=I9100_SD_IOERR;
+ if(rc){c->ready=0;return rc;}
+ c->identity_check_pending=0;return I9100_SD_OK;
 }
 
 int i9100_sd_read_multi(struct i9100_sd_card *c, uint64_t lba, uint8_t *out, uint32_t count)
@@ -256,6 +273,7 @@ int i9100_sd_read_multi(struct i9100_sd_card *c, uint64_t lba, uint8_t *out, uin
 	if (lba >= c->sectors || count > c->sectors - lba ||
 	    lba > 0xffffffffULL || count - 1ULL > 0xffffffffULL - lba ||
 	    (!c->sdhc && lba + count > 0x800000ULL)) return I9100_SD_ARG;
+	if(c->identity_check_pending){int rc=revalidate_card(c);if(rc)return rc;}
 	/* CMD17 isolates every sector; no inherited Auto CMD12/streaming state. */
 	for (i = 0; i < count; i++) {
 		int rc = read_block(c, lba + i, out + (uint64_t)i * 512U);
