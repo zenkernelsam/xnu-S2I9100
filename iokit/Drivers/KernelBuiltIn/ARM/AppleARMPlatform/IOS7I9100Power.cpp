@@ -109,6 +109,7 @@ class IOS7I9100Power : public IOPMPowerSource {
  i9100_power_hw hw;i9100_power_state battery;
  unsigned polls;int lastReason;unsigned lastConnected,lastCharging;
  unsigned chargeProbe,chargeTest,chargeTestDone;
+ bool supervisionStopped;
  static void probeSleep(unsigned ms){IOSleep(ms);}
  static uint32_t read32(void *,unsigned,unsigned);
  static void write32(void *,unsigned,unsigned,uint32_t);
@@ -117,6 +118,7 @@ class IOS7I9100Power : public IOPMPowerSource {
  static uint64_t now(void *);
  static void tick(OSObject *,IOTimerEventSource *);
  void sample(void);
+ void stopSupervision(const char *,bool);
 public:
  virtual bool init(void);
  virtual bool start(IOService *);
@@ -130,6 +132,7 @@ bool IOS7I9100Power::init(void)
  bzero(&battery,sizeof(battery));loop=0;timer=0;polls=0;
  lastReason=999;lastConnected=lastCharging=0xffffffffU;
  chargeProbe=chargeTest=chargeTestDone=0;
+ supervisionStopped=false;
  hw.cookie=this;hw.read32=read32;hw.write32=write32;hw.delay_us=delay;
  hw.enter=enter;hw.leave=leave;return true;
 }
@@ -213,7 +216,9 @@ bool IOS7I9100Power::start(IOService *provider)
  setProperty("FuelGauge","MAX17042");setProperty("ChargingPolicy","USB rate; 4.2V; thermistor and voltage checks");
  setMaxCapacity(100);setTimeRemaining(-1);
  sample();
- if(timer->setTimeoutMS(1000)!=kIOReturnSuccess)return false;
+ if(timer->setTimeoutMS(1000)!=kIOReturnSuccess){
+  stopSupervision("initial timer arm failed",true);return false;
+ }
  int lpm_supported=0;
  if(PE_parse_boot_argn("i9100lpmloader",&lpm_supported,4) && lpm_supported==1){
   if(!i9100_lpm_poweroff_call)
@@ -278,29 +283,37 @@ void IOS7I9100Power::sample(void)
   * progress every second. Connection/fault transitions remain immediate. */
  i9100_power_cdc_report();
 }
+void IOS7I9100Power::stopSupervision(const char *cause,bool notify)
+{
+ /* Failed start, timer and departing source revoke the same live evidence.
+  * Preserve the first hardware stop result, including uncertain readback,
+  * so immediate teardown cannot silently turn it into success. */
+ if(supervisionStopped)return;
+ supervisionStopped=true;
+ (void)i9100_power_stop(&battery);
+ battery.valid=0;battery.reason=I9100_POWER_IO;
+ i9100_power_valid=0;i9100_power_charging=0;i9100_power_reason=I9100_POWER_IO;
+ i9100_power_stop_uncertain=battery.stop_uncertain;i9100_lpm_poweroff_ready=0;
+ struct I9100ChargeEpoch epoch;
+ i9100_charge_epoch_encode(&epoch,&battery,mach_absolute_time(),polls,0,0);
+ i9100_charge_epoch_publish(i9100_charge_epoch_live,&epoch);
+ if(notify){setIsCharging(false);setProperty("MeasurementsValid",false);updateStatus();}
+ IOLog("I9100 POWER supervision ended (%s); stop_confirmed=%u, charger supervision unavailable\n",
+  cause,battery.stop_uncertain?0U:1U);
+}
 void IOS7I9100Power::tick(OSObject *owner,IOTimerEventSource *timer)
 {
- IOS7I9100Power *s=OSDynamicCast(IOS7I9100Power,owner);if(!s)return;
+ IOS7I9100Power *s=OSDynamicCast(IOS7I9100Power,owner);
+ if(!s || s->supervisionStopped)return;
  s->sample();
  if(timer->setTimeoutMS(1000)!=kIOReturnSuccess){
-  (void)i9100_power_stop(&s->battery);i9100_power_charging=0;i9100_power_reason=I9100_POWER_IO;
-  i9100_power_stop_uncertain=s->battery.stop_uncertain;
-  /* A dead timer cannot continue supervising this last valid sample. Keep
-   * its safe-stop request distinct from actual readback and invalidate the
-   * warm-reset epoch before any subsequent halt can inherit it. */
-  s->battery.valid=0;s->battery.reason=I9100_POWER_IO;i9100_power_valid=0;
-  struct I9100ChargeEpoch epoch;
-  i9100_charge_epoch_encode(&epoch,&s->battery,mach_absolute_time(),s->polls,0,0);
-  i9100_charge_epoch_publish(i9100_charge_epoch_live,&epoch);
-  s->setIsCharging(false);s->setProperty("MeasurementsValid",false);s->updateStatus();
-  IOLog("I9100 POWER timer failed; stop_confirmed=%u, charger supervision unavailable\n",
-   s->battery.stop_uncertain?0U:1U);
+  s->stopSupervision("timer rearm failed",true);
  }
 }
 void IOS7I9100Power::free(void)
 {
  if(timer)timer->cancelTimeout();if(loop && timer)loop->removeEventSource(timer);
- if(battery.ready)(void)i9100_power_stop(&battery);
+ if(battery.ready)stopSupervision("power source removed",false);
  if(timer)timer->release();if(loop)loop->release();
  for(unsigned n=0;n<4;n++){if(mapping[n])mapping[n]->release();if(device[n])device[n]->release();}
  IOPMPowerSource::free();
