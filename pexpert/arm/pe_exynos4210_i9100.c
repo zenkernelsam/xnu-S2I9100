@@ -715,8 +715,12 @@ static void i9100_gpu_text(void)
 
 /* Use the same three rows after every present and from the IRQ observer.
  * Otherwise a new UI frame erases LIVE IRQ until the next timer update. */
-static void i9100_status_text(void)
+static unsigned i9100_status_text(void)
 {
+ /* The IRQ diagnostic must not write or trigger the panel while an owned
+  * sleep/blank transition is active. RAM liveness continues independently. */
+ if(!i9100_perf_strip || !i9100_pixels || i9100_fatal_active ||
+    i9100_display_power_guard || ios7i9100_display_refresh_blocked())return 0;
  char line[64];
  i9100_gpu_text();
  if(i9100_power_valid)
@@ -733,6 +737,7 @@ static void i9100_status_text(void)
   live[21+n]="0123456789abcdef"[(pc>>((7U-n)*4))&15U];
  }
  i9100_perf_text(784,live);
+ return 1;
 }
 extern volatile int i9100_panel_console_enabled;
 /* IRQ progress display: no allocation, I2C, IOKit calls or locks. A UI
@@ -742,11 +747,12 @@ void ios7i9100_timer_observe(unsigned t,unsigned count,unsigned pc,unsigned cpsr
 {
  (void)t;
  if(count%37U==0)i9100_pc_sample_record(&i9100_irq_pc_sample,pc,cpsr);
- if(!i9100_perf_strip || count%100U)return;
+ if(count%100U)return;
  i9100_live_irq_pc=pc;i9100_live_irq_count=count;
+ if(!i9100_perf_strip)return;
  if(!i9100_irq_frame_seen ||
     i9100_panel_console_enabled || !i9100_pixels || i9100_fatal_active)return;
- i9100_status_text();
+ if(!i9100_status_text())return;
  __asm__ volatile("dsb sy" ::: "memory");
  if(i9100_fimd_map)*(volatile unsigned int *)(i9100_fimd_map+0x1a4)=3;
 }
