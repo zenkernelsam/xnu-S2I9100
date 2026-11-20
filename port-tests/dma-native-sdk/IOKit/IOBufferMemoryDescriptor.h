@@ -5,7 +5,10 @@
 typedef size_t IOByteCount;
 typedef uint64_t addr64_t;
 typedef int IOReturn;
-enum {kIOMemoryPhysicallyContiguous=0x10,kIOReturnSuccess=0};
+enum {kIOMemoryPhysicallyContiguous=0x10};
+#if !defined(I9100_EMMC_STORAGE_COMMON_H)
+enum {kIOReturnSuccess=0};
+#endif
 class IOBufferMemoryDescriptor: public IOMemoryDescriptor {
 public:
  void *data;uint64_t pa;unsigned prepared;

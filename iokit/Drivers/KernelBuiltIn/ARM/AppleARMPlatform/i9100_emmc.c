@@ -5,6 +5,7 @@
  * Explicit writer policy permits only two current-table user-area slices. */
 #include "i9100_emmc.h"
 #include "i9100_emmc_sdr.h"
+#include "i9100_emmc_idmac.h"
 #include <string.h>
 #define C_START (1U<<31)
 #define C_RESP (1U<<6)
@@ -36,6 +37,12 @@ static int sdr_session_valid(struct i9100_emmc_card *c)
  return s&&s->self==(uintptr_t)s&&s->card==(uintptr_t)c&&s->generation==c->generation&&s->attempted==1U&&
   (s->width==4U||s->width==8U)&&s->high_speed<=1U&&s->ciu_hz==c->io.input_clock_hz&&!memcmp(s->cid,c->cid,sizeof(s->cid));
 }
+static int dma_binding_valid(struct i9100_emmc_card *c)
+{
+ struct i9100_emmc_idmac_binding *d=c->dma;
+ return d&&d->self==(uintptr_t)d&&d->card==(uintptr_t)c&&d->generation==c->generation&&
+  !memcmp(d->cid,c->cid,16)&&d->enabled==1U&&!d->poisoned&&d->begin&&d->finish&&d->fail;
+}
 int i9100_emmc_transport_check(struct i9100_emmc_card *c)
 {
  if(!c||c->self!=(uintptr_t)c)return I9100_EMMC_OWNER;
@@ -55,7 +62,10 @@ int i9100_emmc_transport_check(struct i9100_emmc_card *c)
   return I9100_EMMC_CLOCK;
  uint32_t ctrl=rd(c,EM_CTRL),bmod=rd(c,EM_BMOD);
  if(ctrl==UINT32_MAX||bmod==UINT32_MAX)return I9100_EMMC_IO;
- if((ctrl&CTRL_DMA)||(bmod&(1U<<7)))return I9100_EMMC_UNSUPPORTED;
+ if(c->dma&&!dma_binding_valid(c))return I9100_EMMC_OWNER;
+ if(c->dma&&c->dma->active){
+  if((ctrl&CTRL_DMA)!=CTRL_DMA||!(bmod&(1U<<7)))return I9100_EMMC_OWNER;
+ }else if((ctrl&CTRL_DMA)||(bmod&(1U<<7)))return I9100_EMMC_UNSUPPORTED;
  if(rd(c,EM_IDINTEN)||rd(c,EM_INTMASK))return I9100_EMMC_OWNER;
  return 0;
 }
@@ -130,6 +140,11 @@ static int clock_set(struct i9100_emmc_card *c,uint32_t target)
 }
 static int command(struct i9100_emmc_card *c,unsigned cmd,uint32_t arg,uint32_t flags)
 {
+ if(c->dma&&c->dma->active){
+  const struct i9100_emmc_idmac_binding *d=c->dma;
+  if(!dma_binding_valid(c)||d->command!=cmd||d->argument!=arg||rd(c,EM_BYTCNT)!=d->sectors*512U||
+     flags!=(C_RESP|C_CRC|C_DATA|C_WAIT|(d->writing?C_WRITE:0)))return I9100_EMMC_OWNER;
+ }
  /* No general/raw-command export. Writer commands have a separately
   * current-bound capability; erase/trim/boot/RPMB remain impossible. */
  if(cmd==24U||cmd==25U){
@@ -161,6 +176,7 @@ static int command(struct i9100_emmc_card *c,unsigned cmd,uint32_t arg,uint32_t 
  int e=wait_clear(c,EM_CMD,C_START,100000000ULL);if(e)return e;
  c->last_command=cmd;wr(c,EM_RINTSTS,0xffffffffU);wr(c,EM_CMDARG,arg);
  if(rd(c,EM_CMDARG)!=arg)return I9100_EMMC_IO;
+ if(c->dma&&c->dma->active)c->dma->command_submitted=1;
  wr(c,EM_CMD,C_START|flags|cmd);
  uint64_t start=c->io.now_ns(c->io.cookie);
  for(uint32_t i=0;i<c->io.poll_bound;i++){
@@ -192,6 +208,12 @@ static int ready_transfer(struct i9100_emmc_card *c)
 }
 static int data_read(struct i9100_emmc_card *c,unsigned cmd,uint32_t arg,uint32_t blocks,uint8_t *out)
 {
+ if(c->dma&&(cmd==17U||cmd==18U)){
+  if(!dma_binding_valid(c))return I9100_EMMC_OWNER;struct i9100_emmc_idmac_binding *d=c->dma;
+  int e=d->begin(d->cookie,c,cmd,arg,blocks,0,0);if(e)return e;
+  e=command(c,cmd,arg,C_RESP|C_CRC|C_DATA|C_WAIT);if(!e)e=r1(c);
+  if(e)return d->fail(d->cookie,c,e);return d->finish(d->cookie,c,out);
+ }
  int e=wait_clear(c,EM_STATUS,DATA_BUSY,500000000ULL);if(e)return e;
  wr(c,EM_CTRL,rd(c,EM_CTRL)|(1U<<1));
  e=wait_clear(c,EM_CTRL,1U<<1,50000000ULL);if(e)return e;
@@ -248,7 +270,7 @@ int i9100_emmc_probe(struct i9100_emmc_card *c)
  if(!c||!c->io.read32||!c->io.write32||!c->io.now_ns||!c->io.delay_us||
     !c->io.poll_bound||c->io.poll_bound>1000000U)return I9100_EMMC_ARGUMENT;
  if(c->self!=(uintptr_t)c)return I9100_EMMC_OWNER;
- if(c->write_grant||c->sdr)return I9100_EMMC_BUSY;
+ if(c->write_grant||c->sdr||c->dma)return I9100_EMMC_BUSY;
  if(c->generation==UINT32_MAX)return I9100_EMMC_OWNER;
  c->generation++;
  c->ready=0;c->stage=1;
@@ -365,7 +387,7 @@ int i9100_emmc_sdr_apply(int enabled,struct i9100_emmc_card *c,struct i9100_emmc
     p->board_reviewed!=1U||(p->width!=4U&&p->width!=8U)||p->high_speed>1U||p->vcc_mv!=3300U||
     !p->target_hz||p->target_hz>52000000U||p->ciu_hz!=c->io.input_clock_hz||memcmp(p->cid,c->cid,sizeof(p->cid)))
   return I9100_EMMC_ARGUMENT;
- if(c->sdr||c->write_grant)return I9100_EMMC_BUSY;
+ if(c->sdr||c->write_grant||c->dma)return I9100_EMMC_BUSY;
  int e=i9100_emmc_transport_check(c);if(e)return e;
  if(c->sectors!=30777344ULL||c->ext_csd[192]<2U||c->ext_csd[192]>8U||c->ext_csd[187]>15U)return I9100_EMMC_UNSUPPORTED;
  uint32_t maximum=c->legacy_max_hz;
@@ -405,7 +427,7 @@ int i9100_emmc_sdr_apply(int enabled,struct i9100_emmc_card *c,struct i9100_emmc
 int i9100_emmc_sdr_restore(struct i9100_emmc_card *c,struct i9100_emmc_sdr_session *s)
 {
  if(!c||!s||c->sdr!=s||!sdr_session_valid(c))return I9100_EMMC_OWNER;
- if(c->write_grant)return I9100_EMMC_BUSY;
+ if(c->write_grant||c->dma)return I9100_EMMC_BUSY;
  if(s->poisoned||s->error)return s->error?s->error:I9100_EMMC_NO_DEVICE;
  int e=i9100_emmc_transport_check(c);if(e)return sdr_failed(c,s,e);
  uint32_t status=rd(c,EM_STATUS),cmd=rd(c,EM_CMD);
@@ -455,6 +477,14 @@ static int writer_failed(struct i9100_emmc_card *c,struct i9100_emmc_write_grant
 }
 static int data_write(struct i9100_emmc_card *c,struct i9100_emmc_write_grant *g,uint64_t lba,uint32_t blocks,const uint8_t *bytes)
 {
+ if(c->dma){
+  if(!dma_binding_valid(c))return I9100_EMMC_OWNER;struct i9100_emmc_idmac_binding *d=c->dma;
+  unsigned cmd=blocks==1U?24U:25U;int e=d->begin(d->cookie,c,cmd,(uint32_t)lba,blocks,1,bytes);if(e)return e;
+  g->words_submitted=g->ciu_bytes=g->host_bytes=0;g->dirty=g->mutation_possible=1;
+  e=command(c,cmd,(uint32_t)lba,C_RESP|C_CRC|C_DATA|C_WRITE|C_WAIT);if(!e)e=r1(c);
+  if(e)return d->fail(d->cookie,c,e);e=d->finish(d->cookie,c,0);
+  if(!e){g->ciu_bytes=d->ciu_bytes;g->host_bytes=d->host_bytes;}return e;
+ }
  uint32_t ctrl=rd(c,EM_CTRL),bmod=rd(c,EM_BMOD);
  if(ctrl==UINT32_MAX||bmod==UINT32_MAX||(ctrl&CTRL_DMA)||(bmod&(1U<<7))||rd(c,EM_IDINTEN))return I9100_EMMC_UNSUPPORTED;
  int e=wait_clear(c,EM_STATUS,DATA_BUSY,500000000ULL);if(e)return e;

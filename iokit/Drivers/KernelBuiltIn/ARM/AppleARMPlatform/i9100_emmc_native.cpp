@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "i9100_emmc_native.h"
 #include "i9100_emmc_clock.h"
+#include "i9100_dma_native.h"
 #include <IOKit/IOLib.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOMemoryDescriptor.h>
@@ -26,6 +27,7 @@ struct i9100_emmc_native {
  uint8_t clock_capture[I9100_EMMC_CLOCK_BYTES];
  i9100_emmc_sdr_session sdr;
  uint32_t pad_owned,pad_restoring,saved_gpk0[3],saved_gpk1[3];
+ i9100_dma_native *dma_allocation[2];i9100_emmc_idmac idmac;
 };
 static int take(IOLock *l){return l&&ml_get_interrupts_enabled()&&!ml_at_interrupt_context()&&IOLockTryLock(l)?0:-1;}
 static int serialize(IOLock *l)
@@ -66,7 +68,7 @@ static int actual_idle(i9100_emmc_native *n)
  uint32_t cmd=rd(n,EN_HOST,EM_CMD),status=rd(n,EN_HOST,EM_STATUS),ctrl=rd(n,EN_HOST,EM_CTRL),bmod=rd(n,EN_HOST,EM_BMOD);
  if(cmd==0xffffffffU||status==0xffffffffU||ctrl==0xffffffffU||bmod==0xffffffffU)return I9100_EMMC_IO;
  if(cmd&(1U<<31)||status&((15U<<4)|(1U<<9)|(1U<<10)|(0x1fffU<<17)|(1U<<30)|(1U<<31))||ctrl&7U||
-    ctrl&((1U<<5)|(1U<<25))||bmod&(1U<<7)||rd(n,EN_HOST,EM_IDINTEN)||rd(n,EN_HOST,EM_INTMASK))return I9100_EMMC_BUSY;
+    ctrl&((1U<<5)|(1U<<25))||bmod&(1U<<7)||rd(n,EN_HOST,EM_IDSTS)&(15U<<13)||rd(n,EN_HOST,EM_IDINTEN)||rd(n,EN_HOST,EM_INTMASK))return I9100_EMMC_BUSY;
  return 0;
 }
 static int inherited_idle(i9100_emmc_native *n)
@@ -120,6 +122,34 @@ static int sdr_restore_pads(i9100_emmc_native *n)
  if(n->sdr.width==8U)for(unsigned i=0;i<3;i++){int e=pad_write(n,0x60+offsets[i],masks[i],n->saved_gpk1[i]);if(e)return e;}
  n->pad_owned=n->pad_restoring=0;return resources(n);
 }
+static int dma_board_check(void *p){return resources((i9100_emmc_native *)p);}
+static void dma_barrier(void *){OSSynchronizeIO();}
+static int dma_idle(void *p)
+{
+ auto *n=(i9100_emmc_native *)p;
+ /* This callback only governs the DMA buffers. Core still owns the card
+  * until CMD12/TRAN drain; a DAT programming phase cannot free the native
+  * host, but can already have relinquished all descriptor/buffer access. */
+ i9100_emmc_idmac_io io={n,dma_board_check,dma_barrier,1};
+ if(!n->idmac.io.board_check)n->idmac.io=io;
+ return i9100_emmc_idmac_buffer_idle(&n->idmac,&n->card);
+}
+static int dma_cleanup(i9100_emmc_native *n)
+{
+ if(n->idmac.binding.poisoned)return n->idmac.error?n->idmac.error:I9100_EMMC_NO_DEVICE;
+ if(n->idmac.binding.enabled){int e=i9100_emmc_idmac_unbind(&n->idmac,&n->card);if(e)return e;}
+ for(unsigned i=0;i<2;i++)if(n->dma_allocation[i]){int e=i9100_dma_native_destroy(&n->dma_allocation[i]);if(e)return e;}
+ return 0;
+}
+static int dma_setup(i9100_emmc_native *n)
+{
+ int e=actual_idle(n);if(e)return e;
+ i9100_emmc_idmac_io io={n,dma_board_check,dma_barrier,1};n->idmac.io=io;
+ e=i9100_dma_native_allocate(1,I9100_IDMAC_DESC_BYTES,n,dma_idle,&n->dma_allocation[0]);
+ if(!e)e=i9100_dma_native_allocate(1,I9100_IDMAC_DATA_BYTES,n,dma_idle,&n->dma_allocation[1]);
+ if(!e)e=i9100_emmc_idmac_bind(1,&n->idmac,&n->card,&io,i9100_dma_native_buffer(n->dma_allocation[0]),i9100_dma_native_buffer(n->dma_allocation[1]));
+ if(e)n->cleanup_error=dma_cleanup(n);return e;
+}
 static int claim(void *p){return take(((i9100_emmc_native *)p)->transaction);}
 static void release_claim(void *p){IOLockUnlock(((i9100_emmc_native *)p)->transaction);}
 static int exclusive(void *p,const i9100_emmc_card *c)
@@ -167,7 +197,9 @@ static int cleanup(i9100_emmc_native *n)
  for(unsigned i=0;i<4U;i++)if(n->consumers[i])return I9100_EMMC_BUSY;
  if(n->pad_restoring)return n->cleanup_error?n->cleanup_error:I9100_EMMC_READBACK;
  if(n->sdr.attempted&&n->sdr.poisoned)return n->sdr.error?n->sdr.error:I9100_EMMC_NO_DEVICE;
+ if(n->idmac.binding.poisoned)return n->idmac.error?n->idmac.error:I9100_EMMC_NO_DEVICE;
  if(n->writer&&n->writer->opened){int e=i9100_emmc_writer_close(n->writer);if(e)return e;}
+ if(n->dma_allocation[0]||n->dma_allocation[1]){int e=actual_idle(n);if(e)return e;e=dma_cleanup(n);if(e)return e;}
  if(n->sdr.attempted&&n->sdr.phase==I9100_SDR_ACTIVE){
   int e=actual_idle(n);if(e)return e;e=i9100_emmc_sdr_restore(&n->card,&n->sdr);if(e)return e;
  }
@@ -185,7 +217,7 @@ static int cleanup(i9100_emmc_native *n)
 static void dispose(i9100_emmc_native *n)
 {if(n->writer)IOFree(n->writer,sizeof(*n->writer));if(n->lifecycle)IOLockFree(n->lifecycle);if(n->transaction)IOLockFree(n->transaction);IOFree(n,sizeof(*n));}
 static int native_open(int enabled,i9100_peripheral_native *parent,const i9100_emmc_inherited_profile *p,
- enum i9100_emmc_native_mode mode,const i9100_emmc_writer_identity *approved,const i9100_emmc_sdr_plan *sdr,i9100_emmc_native **out)
+ enum i9100_emmc_native_mode mode,const i9100_emmc_writer_identity *approved,const i9100_emmc_sdr_plan *sdr,int idmac_reviewed,i9100_emmc_native **out)
 {
  if(!out||*out||(enabled!=0&&enabled!=1))return I9100_EMMC_ARGUMENT;if(!enabled)return I9100_EMMC_UNSUPPORTED;
  if(!parent||!p||p->board_data_reviewed!=1U||p->ciu_clock_hz<400000U||p->ciu_clock_hz>200000000U||
@@ -194,6 +226,7 @@ static int native_open(int enabled,i9100_peripheral_native *parent,const i9100_e
     p->xxti_hz!=24000000U||p->xusbxti_hz!=24000000U||
     (mode!=I9100_EMMC_N_INSPECT&&mode!=I9100_EMMC_N_DATA_RW)||(mode==I9100_EMMC_N_DATA_RW&&!approved)||
     !ml_get_interrupts_enabled()||ml_at_interrupt_context())return I9100_EMMC_ARGUMENT;
+ if(idmac_reviewed!=0&&idmac_reviewed!=1)return I9100_EMMC_ARGUMENT;
  if(sdr&&(sdr->board_reviewed!=1U||(sdr->width!=4U&&sdr->width!=8U)||sdr->high_speed>1U||sdr->vcc_mv!=3300U||
     !sdr->target_hz||sdr->target_hz>52000000U||sdr->ciu_hz!=p->ciu_clock_hz||
     (approved&&memcmp(sdr->cid,approved->cid,16))))return I9100_EMMC_ARGUMENT;
@@ -233,6 +266,14 @@ static int native_open(int enabled,i9100_peripheral_native *parent,const i9100_e
      (initial.system_hfs_valid&&memcmp(&initial.system_hfs,&n->snapshot.system_hfs,sizeof(initial.system_hfs)))||
      (initial.data_hfs_valid&&memcmp(&initial.data_hfs,&n->snapshot.data_hfs,sizeof(initial.data_hfs)))){e=I9100_EMMC_OWNER;goto fail;}
  }
+ if(idmac_reviewed){
+  struct i9100_emmc_native_snapshot initial=n->snapshot;e=dma_setup(n);if(e)goto fail;
+  e=read_layout(n);if(e)goto fail;
+  if(!same_identity(&initial.identity,&n->snapshot.identity)||initial.system_hfs_valid!=n->snapshot.system_hfs_valid||
+     initial.data_hfs_valid!=n->snapshot.data_hfs_valid||
+     (initial.system_hfs_valid&&memcmp(&initial.system_hfs,&n->snapshot.system_hfs,sizeof(initial.system_hfs)))||
+     (initial.data_hfs_valid&&memcmp(&initial.data_hfs,&n->snapshot.data_hfs,sizeof(initial.data_hfs)))){e=I9100_EMMC_OWNER;goto fail;}
+ }
  if(mode==I9100_EMMC_N_DATA_RW){
   if(!n->snapshot.system_hfs_valid||!n->snapshot.data_hfs_valid||n->snapshot.system_hfs.bytes!=n->snapshot.system.sectors*512ULL||
      n->snapshot.data_hfs.bytes!=n->snapshot.data.sectors*512ULL||!(n->snapshot.data_hfs.attributes&0x2000U))
@@ -250,13 +291,33 @@ fail:n->error=e;n->phase=EN_CLOSING;
 }
 int i9100_emmc_native_open(int enabled,i9100_peripheral_native *parent,const i9100_emmc_inherited_profile *p,
  enum i9100_emmc_native_mode mode,const i9100_emmc_writer_identity *approved,i9100_emmc_native **out)
-{return native_open(enabled,parent,p,mode,approved,0,out);}
+{return native_open(enabled,parent,p,mode,approved,0,0,out);}
 int i9100_emmc_native_open_sdr(int enabled,i9100_peripheral_native *parent,const i9100_emmc_inherited_profile *p,
  enum i9100_emmc_native_mode mode,const i9100_emmc_writer_identity *approved,const i9100_emmc_sdr_plan *sdr,i9100_emmc_native **out)
-{if(enabled&&!sdr)return I9100_EMMC_ARGUMENT;return native_open(enabled,parent,p,mode,approved,sdr,out);}
+{if(enabled&&!sdr)return I9100_EMMC_ARGUMENT;return native_open(enabled,parent,p,mode,approved,sdr,0,out);}
+int i9100_emmc_native_open_configured(int enabled,i9100_peripheral_native *parent,const i9100_emmc_inherited_profile *p,
+ enum i9100_emmc_native_mode mode,const i9100_emmc_writer_identity *approved,const i9100_emmc_sdr_plan *sdr,int idmac_reviewed,i9100_emmc_native **out)
+{return native_open(enabled,parent,p,mode,approved,sdr,idmac_reviewed,out);}
 int i9100_emmc_native_sdr_snapshot(i9100_emmc_native *n,i9100_emmc_sdr_session *out)
 {if(!n||!out)return I9100_EMMC_ARGUMENT;if(serialize(n->lifecycle))return I9100_EMMC_BUSY;
  memcpy(out,&n->sdr,sizeof(*out));IOLockUnlock(n->lifecycle);return 0;}
+int i9100_emmc_native_enable_idmac(i9100_emmc_native *n,int enabled,int reviewed)
+{
+ if(!enabled)return I9100_EMMC_UNSUPPORTED;
+ if(enabled!=1||reviewed!=1||!n)return I9100_EMMC_ARGUMENT;
+ if(serialize(n->lifecycle))return I9100_EMMC_BUSY;
+ int e=n->phase!=EN_READY||n->error?I9100_EMMC_NO_DEVICE:actual_idle(n);
+ if(!e&&(n->writer||n->sealed||n->dma_allocation[0]||n->dma_allocation[1]))e=I9100_EMMC_BUSY;
+ for(unsigned i=0;i<4;i++)if(n->consumers[i])e=I9100_EMMC_BUSY;
+ if(!e)e=i9100_emmc_transport_check(&n->card);
+ if(!e){
+  e=dma_setup(n);if(e)n->error=e;
+ }
+ save(n);IOLockUnlock(n->lifecycle);return e;
+}
+int i9100_emmc_native_idmac_snapshot(i9100_emmc_native *n,i9100_emmc_idmac *out)
+{if(!n||!out)return I9100_EMMC_ARGUMENT;if(serialize(n->lifecycle))return I9100_EMMC_BUSY;
+ memcpy(out,&n->idmac,sizeof(*out));IOLockUnlock(n->lifecycle);return 0;}
 int i9100_emmc_native_snapshot(i9100_emmc_native *n,struct i9100_emmc_native_snapshot *out)
 {if(!n||!out)return I9100_EMMC_ARGUMENT;if(serialize(n->lifecycle))return I9100_EMMC_BUSY;save(n);*out=n->snapshot;IOLockUnlock(n->lifecycle);return 0;}
 int i9100_emmc_native_clock_snapshot(i9100_emmc_native *n,uint8_t *out)

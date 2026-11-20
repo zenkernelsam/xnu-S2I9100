@@ -13,8 +13,11 @@ if hashlib.sha256(source.read_bytes()).hexdigest()!='879334a928bbffffc67d57b5849
 os.environ['I9100_EMMC_HISTORICAL_SOURCE']=str(source)
 c=['i9100_emmc_clock.c','i9100_emmc_host.c','i9100_emmc.c','i9100_emmc_layout.c','i9100_emmc_writer.c']
 cpp=['i9100_emmc_clock_native.cpp','i9100_camera_mmio.cpp']
+c+=['i9100_dma_guard.c'];cpp+=['i9100_dma_native.cpp']
+from i9100_emmc_dma_model import prepare as prepare_dma
+dma_copies=prepare_dma(e)
 e.model_cpp('i9100_emmc_clock_native_test.cpp',c+['i9100_emmc_native_fixture.c'],cpp,
- source_overrides={'i9100_emmc_native_fixture.c':e.out/'i9100_emmc_native_fixture.c'},
+ source_overrides={'i9100_emmc_native_fixture.c':e.out/'i9100_emmc_native_fixture.c',**dma_copies},
  extra_sdk=REPO/'port-tests/emmc-storage-sdk',wrapped_functions=('i9100_camera_mmio_read','i9100_camera_mmio_write'),libraries=('pthread',))
 hook_scenarios=('conflict-data','conflict-legacy','conflict-root','conflict-rootdev','bad-root-clock','busy-hook')
 for scenario in hook_scenarios:e.run([str(e.out/'models'),scenario],'hook-'+scenario+'-tests')

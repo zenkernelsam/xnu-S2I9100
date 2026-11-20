@@ -3,7 +3,7 @@
 #define I9100_EMMC_REAL_PARENT_MODEL 1
 #define I9100_EMMC_STORAGE_MAIN storage_fixture_test_main
 class IOService;static void i9100_boot_model_registered(IOService *);
-#if defined(I9100_EMMC_SDR_BOOT_MODEL)
+#if defined(I9100_EMMC_SDR_BOOT_MODEL) || defined(I9100_EMMC_IDMAC_BOOT_MODEL)
 static unsigned sdr_gpio_drop_offset=~0U,sdr_gpio_writes;
 #define I9100_EMMC_SDR_NATIVE_MODEL 1
 #endif
@@ -15,7 +15,7 @@ extern "C" void fixture_volume_ids(uint32_t,uint32_t,const uint8_t[8],const uint
 extern "C" void fixture_export_table_evidence(const char *);
 static IOCatalogue catalogue;IOCatalogue *gIOCatalogue=&catalogue;
 static unsigned parser_calls,catalogue_calls,parser_fail,catalogue_fail,raw_registered;
-#if defined(I9100_EMMC_SDR_BOOT_MODEL)
+#if defined(I9100_EMMC_SDR_BOOT_MODEL) || defined(I9100_EMMC_IDMAC_SDR_BOOT_MODEL)
 extern "C" void fixture_enable_sdr(unsigned);
 static void boot_setup(const char *,i9100_emmc_boot_contract *);
 static void boot_sdr(const char *path,i9100_emmc_boot_contract *c)
@@ -23,6 +23,9 @@ static void boot_sdr(const char *path,i9100_emmc_boot_contract *c)
  boot_setup(path,c);fixture_enable_sdr(0);c->sdr.board_reviewed=1;c->sdr.width=8;
  c->sdr.high_speed=1;c->sdr.target_hz=50000000;c->sdr.ciu_hz=100000000;c->sdr.vcc_mv=3300;memcpy(c->sdr.cid,c->card.cid,16);
 }
+#endif
+#if defined(I9100_EMMC_IDMAC_BOOT_MODEL)
+extern "C" void fixture_dma_buffers(uint8_t *,uint32_t,uint8_t *,uint32_t,unsigned);
 #endif
 IOSimpleLock *IOSimpleLockAlloc(){auto *l=(IOSimpleLock *)IOMalloc(sizeof(IOSimpleLock));return l;}
 void IOSimpleLockFree(IOSimpleLock *l){assert(!l->held);IOFree(l,sizeof(*l));}
@@ -111,7 +114,25 @@ int I9100_EMMC_BOOT_MAIN()
  assert(i9100_emmc_boot_open(1,&platform,wire,256,&owner)==I9100_EMMC_IO&&!owner&&!raw_registered);boot_quiet();
  /* Actual native/card/table and actual publication reach RAW only after
   * exact HFS IDs. Ordinary block-driver matching remains a registry facade. */
-#if defined(I9100_EMMC_SDR_BOOT_MODEL)
+#if defined(I9100_EMMC_IDMAC_BOOT_MODEL)
+ #if defined(I9100_EMMC_IDMAC_SDR_BOOT_MODEL)
+ boot_sdr(source,&c);
+ #else
+ boot_setup(source,&c);
+ #endif
+ dma_model_next=0;fixture_dma_buffers(dma_model_memory,0x46000000,dma_model_memory+4096,0x46001000,0);
+ c.idmac_enabled=c.idmac_reviewed=1;assert(!i9100_emmc_boot_encode(&c,wire)&&wire[4]==4U);
+ assert(!i9100_emmc_boot_decode(wire,256,&decoded)&&decoded.idmac_enabled==1U&&decoded.idmac_reviewed==1U);
+ uint8_t bad_idmac[256];memcpy(bad_idmac,wire,256);bad_idmac[240]=0;
+ uint32_t bad_crc=legacy_record_crc(bad_idmac,252);for(unsigned k=0;k<4;k++)bad_idmac[252+k]=(uint8_t)(bad_crc>>(8U*k));
+ auto idmac_unchanged=decoded;assert(i9100_emmc_boot_decode(bad_idmac,256,&decoded)==I9100_EMMC_ARGUMENT&&!memcmp(&decoded,&idmac_unchanged,sizeof(decoded)));
+ memcpy(bad_idmac,wire,256);bad_idmac[244]=1;bad_crc=legacy_record_crc(bad_idmac,252);
+ for(unsigned k=0;k<4;k++)bad_idmac[252+k]=(uint8_t)(bad_crc>>(8U*k));
+ assert(i9100_emmc_boot_decode(bad_idmac,256,&decoded)==I9100_EMMC_ARGUMENT&&!memcmp(&decoded,&idmac_unchanged,sizeof(decoded)));
+ if(const char *at=getenv("I9100_EMMC_BOOT_MODEL_IDMAC_RECORD")){
+  FILE *file=fopen(at,"wb");assert(file&&fwrite(wire,1,256,file)==256&&!fclose(file));
+ }
+#elif defined(I9100_EMMC_SDR_BOOT_MODEL)
  boot_sdr(source,&c);assert(!i9100_emmc_boot_encode(&c,wire)&&wire[4]==3U);
  assert(!i9100_emmc_boot_decode(wire,256,&decoded)&&decoded.sdr.width==8&&decoded.sdr.high_speed==1);
  if(const char *at=getenv("I9100_EMMC_BOOT_MODEL_SDR_RECORD")){
@@ -123,7 +144,10 @@ int I9100_EMMC_BOOT_MAIN()
  assert(!i9100_emmc_boot_open(1,&platform,wire,256,&owner)&&owner&&raw_registered==1&&catalogue_calls==1);
  struct i9100_emmc_native_snapshot state;assert(!i9100_emmc_boot_snapshot(owner,&state)&&!i9100_emmc_boot_match(&c,&state));
  assert(i9100_emmc_boot_close(&owner)==I9100_EMMC_BUSY&&owner&&m.maps==15);
-#if defined(I9100_EMMC_SDR_BOOT_MODEL)
+#if defined(I9100_EMMC_IDMAC_BOOT_MODEL)
+ assert(dma_model_descriptors==2&&dma_model_prepared==2);
+#endif
+#if defined(I9100_EMMC_SDR_BOOT_MODEL) || defined(I9100_EMMC_IDMAC_SDR_BOOT_MODEL)
  assert(sdr_gpio_writes==6U&&regs[GPIO][0x44/4]==4U);
 #endif
  /* Preserve the boot-lifetime owner just as production. Never invent a

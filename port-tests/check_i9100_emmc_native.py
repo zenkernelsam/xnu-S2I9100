@@ -12,12 +12,15 @@ fixture=e.out/"i9100_emmc_native_fixture.c";fixture.write_bytes((REPO/"port-test
 # code remains compiled unchanged, with wrapping only at MMIO boundary.
 c=["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c","i9100_emmc_clock.c"]
 cpp=["i9100_emmc_native.cpp","i9100_camera_mmio.cpp"]
+c += ['i9100_emmc_idmac.c','i9100_dma_guard.c'];cpp += ['i9100_dma_native.cpp']
+from i9100_emmc_dma_model import prepare as prepare_dma
+dma_copies=prepare_dma(e)
 # Evidence model API normally runs argv-less; make the fixture path an
 # explicit model environment input instead of replacing controller state.
 import os
 os.environ["I9100_EMMC_HISTORICAL_SOURCE"]=str(source)
 e.model_cpp("i9100_emmc_native_test.cpp",c+["i9100_emmc_native_fixture.c"],cpp,
- source_overrides={"i9100_emmc_native_fixture.c":fixture},wrapped_functions=("i9100_camera_mmio_read","i9100_camera_mmio_write"),
+ source_overrides={"i9100_emmc_native_fixture.c":fixture,**dma_copies},wrapped_functions=("i9100_camera_mmio_read","i9100_camera_mmio_write"),
  extra_sdk=REPO/"port-tests/emmc-native-sdk",libraries=("pthread",))
 e.result["nested_fixtures"]={n:hashlib.sha256((REPO/"port-tests"/n).read_bytes()).hexdigest() for n in
  ("i9100_emmc_native_fixture.c","i9100_emmc_writer_test.c","i9100_emmc_test.c")}

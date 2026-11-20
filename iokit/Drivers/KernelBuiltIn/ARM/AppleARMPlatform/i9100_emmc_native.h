@@ -5,6 +5,7 @@
 #include "i9100_emmc_host.h"
 #include "i9100_peripheral_native.h"
 #include "i9100_emmc_sdr.h"
+#include "i9100_emmc_idmac.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -30,6 +31,11 @@ int i9100_emmc_native_open_sdr(int enabled,struct i9100_peripheral_native *,
  const struct i9100_emmc_inherited_profile *,enum i9100_emmc_native_mode,
  const struct i9100_emmc_writer_identity *approved_identity,const struct i9100_emmc_sdr_plan *,struct i9100_emmc_native **);
 int i9100_emmc_native_sdr_snapshot(struct i9100_emmc_native *,struct i9100_emmc_sdr_session *);
+int i9100_emmc_native_enable_idmac(struct i9100_emmc_native *,int enabled,int board_reviewed);
+int i9100_emmc_native_idmac_snapshot(struct i9100_emmc_native *,struct i9100_emmc_idmac *);
+int i9100_emmc_native_open_configured(int enabled,struct i9100_peripheral_native *,
+ const struct i9100_emmc_inherited_profile *,enum i9100_emmc_native_mode,
+ const struct i9100_emmc_writer_identity *,const struct i9100_emmc_sdr_plan *,int idmac_reviewed,struct i9100_emmc_native **);
 int i9100_emmc_native_snapshot(struct i9100_emmc_native *,struct i9100_emmc_native_snapshot *);
 int i9100_emmc_native_clock_snapshot(struct i9100_emmc_native *,uint8_t out[512]);
 int i9100_emmc_native_validate(struct i9100_emmc_native *);
@@ -53,8 +59,11 @@ int i9100_emmc_native_close(struct i9100_emmc_native **);
  * Consumer holds pin the maps/card until the storage service stops. One
  * exact set of at most four consumers; close requires no consumer, clean writer and actual
  * CMD/FIFO/data-idle. Errors retain context/lease, never re-probe or retry.
- * Owner serializes entry/hold-get against final close. No production PE
- * registration is added by this module; hardware use requires acceptance. */
+ * Owner serializes entry/hold-get against final close.
+ * Optional IDMAC uses two actual contiguous Normal-NC buffers under the
+ * same lease before writer/publication; enable is explicit and defaultoff.
+ * No IRQ ownership/alternate host/raw sector-write interface or production
+ * PE registration is added by this module; hardware use requires acceptance. */
 #ifdef __cplusplus
 }
 #endif

@@ -22,9 +22,14 @@ int i9100_dma_enable(struct i9100_dma_buffer *,int);
 int i9100_dma_prepare(struct i9100_dma_buffer *,enum i9100_dma_direction);
 int i9100_dma_complete(struct i9100_dma_buffer *);
 int i9100_dma_abort(struct i9100_dma_buffer *);
+int i9100_dma_quarantine(struct i9100_dma_buffer *); /* Retain memory after failed engine/verification. */
 int i9100_dma_release(struct i9100_dma_buffer *);
 int i9100_dma_hold(struct i9100_dma_buffer *); /* pin allocation while an IOMMU maps it */
 int i9100_dma_unhold(struct i9100_dma_buffer *);
+int i9100_dma_hold_pair(struct i9100_dma_buffer *,struct i9100_dma_buffer *);
+int i9100_dma_unhold_pair(struct i9100_dma_buffer *,struct i9100_dma_buffer *);
+/* An exclusive two-buffer engine publishes/relinquishes both CPU-owned
+ * holds together. A busy second lock leaves both holds unchanged. */
 /* This owned-buffer/cache lifecycle does NOT submit PL330/IDMAC jobs. The
  * future engine adapter proves idle and provides range-only cache operations.
  * CPU/physical allocation owns whole64B lines; no arbitrary user addresses. */

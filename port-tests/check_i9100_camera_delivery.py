@@ -104,10 +104,10 @@ def main():
             if sha(ROOT/original['source'])!=original['sha256']or sha(folder/'original-pll-model')!=original['model_sha256']:
                 raise RuntimeError('Original Samsung PLL arithmetic model changed')
             if sha(folder/'models')!=m['model_artifact_sha256']:raise RuntimeError('Clock model executable changed')
-        for name,item in m.get('sdr_reference_sources',{}).items():
+        for name,item in dict(m.get('sdr_reference_sources',{}),**m.get('idmac_reference_sources',{})).items():
             reference=(ROOT/name).resolve()
             if not reference.is_relative_to(ROOT/'research')or sha(reference)!=item['sha256']:
-                raise RuntimeError('SDR original board/controller source changed')
+                raise RuntimeError('SDR/IDMAC original board/controller source changed')
             raw=reference.read_bytes()
             if hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()!=item['git_blob']:
                 raise RuntimeError('SDR original reference Gitblob changed')
@@ -131,6 +131,14 @@ def main():
         if m.get('sdr_boot_path'):
             if sha(folder/'actual-contract-sdr.bin')!=m['actual_sdr_contract_sha256']or sha(PLATFORM/'i9100_emmc_sdr.h')!=m['sdr_companion_header_sha256']:
                 raise RuntimeError('Actual SDR boot wire or consumed ABI changed')
+        if m.get('idmac_boot_path')and sha(folder/'actual-contract-idmac.bin')!=m['actual_idmac_contract_sha256']:
+            raise RuntimeError('Actual IDMAC boot wire changed')
+        if m.get('idmac_sdr_boot_path')and sha(folder/'actual-contract-idmac-sdr.bin')!=m['actual_idmac_sdr_contract_sha256']:
+            raise RuntimeError('Actual SDR+IDMAC boot wire changed')
+        if m.get('actual_preprobe_clock_sha256')and sha(folder/'actual-preprobe-clock.bin')!=m['actual_preprobe_clock_sha256']:
+            raise RuntimeError('Actual IDMAC native clock capture changed')
+        if m.get('dma_facade_sha256')and sha(REPO/'port-tests/i9100_emmc_dma_facade.inc')!=m['dma_facade_sha256']:
+            raise RuntimeError('Original DMA IOKit/PTE facade changed')
         if m.get("host_source_override"):
             override = m["host_source_override"]
             if sha(PLATFORM / "i9100_dma_native.cpp") != override["original_sha256"] or sha(folder / "i9100_dma_native.cpp") != override["copy_sha256"]:
@@ -165,7 +173,7 @@ def main():
     if "i9100_mfc_native.cpp" in names:
         needed.add("i9100_dma_native.cpp")
     if a.include_emmc:
-        needed.update(("i9100_emmc.c", "i9100_emmc_writer.c", "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp"))
+        needed.update(("i9100_emmc.c", "i9100_emmc_writer.c", "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_dma_guard.c"))
         needed.update(name for name in names if name.startswith(("i9100_emmc_","IOS6I9100EMMC")))
         if (PLATFORM/'i9100_emmc_sdr.h').is_file():needed.add('IOS7I9100GPT.cpp')
     if any(json.loads((ROOT/name/'manifest.json').read_text()).get('shared_power_rtc_model') for name in models):

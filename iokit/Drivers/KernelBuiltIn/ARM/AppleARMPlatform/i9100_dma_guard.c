@@ -59,6 +59,14 @@ int i9100_dma_abort(struct i9100_dma_buffer *b)
  if(b->state!=I9100_DMA_DEVICE&&b->state!=I9100_DMA_QUARANTINED){leave(b);return I9100_DMA_OWNER;}
  e=take_back(b);leave(b);return e;
 }
+int i9100_dma_quarantine(struct i9100_dma_buffer *b)
+{
+ if(!b||!b->state)return I9100_DMA_ARGUMENT;if(b->self!=(uintptr_t)b)return I9100_DMA_OWNER;
+ int e=enter(b);if(e)return e;
+ if(b->state!=I9100_DMA_DEVICE&&b->state!=I9100_DMA_CPU&&b->state!=I9100_DMA_QUARANTINED)e=I9100_DMA_OWNER;
+ else b->state=I9100_DMA_QUARANTINED;
+ leave(b);return e;
+}
 int i9100_dma_release(struct i9100_dma_buffer *b)
 {
  if(!b||!b->state)return I9100_DMA_ARGUMENT;
@@ -89,3 +97,20 @@ int i9100_dma_unhold(struct i9100_dma_buffer *b)
  else b->holds--;
  leave(b);return e;
 }
+static int pair_hold(struct i9100_dma_buffer *a,struct i9100_dma_buffer *b,int acquire)
+{
+ if(!a||!b||a==b||!a->state||!b->state)return I9100_DMA_ARGUMENT;
+ if(a->self!=(uintptr_t)a||b->self!=(uintptr_t)b)return I9100_DMA_OWNER;
+ struct i9100_dma_buffer *first=(uintptr_t)a<(uintptr_t)b?a:b,*second=first==a?b:a;
+ int shared=first->io.cookie==second->io.cookie&&first->io.lock==second->io.lock&&first->io.unlock==second->io.unlock;
+ int e=enter(first);if(e)return e;
+ if(!shared){e=enter(second);if(e){leave(first);return e;}}
+ if(a->self!=(uintptr_t)a||b->self!=(uintptr_t)b||a->state!=I9100_DMA_CPU||b->state!=I9100_DMA_CPU||
+    a->handed_to_device||b->handed_to_device||a->holds!=(acquire?0U:1U)||b->holds!=(acquire?0U:1U))e=I9100_DMA_OWNER;
+ else a->holds=b->holds=acquire?1U:0U;
+ if(!shared)leave(second);leave(first);return e;
+}
+int i9100_dma_hold_pair(struct i9100_dma_buffer *a,struct i9100_dma_buffer *b)
+{return pair_hold(a,b,1);}
+int i9100_dma_unhold_pair(struct i9100_dma_buffer *a,struct i9100_dma_buffer *b)
+{return pair_hold(a,b,0);}

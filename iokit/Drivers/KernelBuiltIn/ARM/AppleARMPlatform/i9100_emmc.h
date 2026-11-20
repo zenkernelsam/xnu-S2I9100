@@ -26,7 +26,7 @@ enum i9100_emmc_register {
  EM_RINTSTS=0x44,EM_STATUS=0x48,EM_FIFOTH=0x4c,EM_VERID=0x6c,
  EM_TCBCNT=0x5c,EM_TBBCNT=0x60,
  EM_HCON=0x70,EM_UHS=0x74,EM_BMOD=0x80,EM_IDSTS=0x8c,
- EM_IDINTEN=0x90,EM_DATA=0x100
+ EM_IDINTEN=0x90,EM_DBADDR=0x88,EM_PLDMND=0x84,EM_DSCADDR=0x94,EM_BUFADDR=0x98,EM_DATA=0x100
 };
 struct i9100_emmc_io {
  void *cookie;
@@ -49,6 +49,7 @@ struct i9100_emmc_card {
  uint32_t generation;
  struct i9100_emmc_write_grant *write_grant;
  struct i9100_emmc_sdr_session *sdr;
+ struct i9100_emmc_idmac_binding *dma;
 };
 struct i9100_emmc_write_grant {
  uintptr_t self,card;

@@ -35,7 +35,10 @@ int i9100_emmc_boot_open(int enabled,IOService *platform,const uint8_t *wire,uns
  memset(o,0,sizeof(*o));o->self=(uintptr_t)o;o->contract=c;o->phase=BOOT_NEW;o->platform=platform;
  platform->retain();*out=o;
  e=i9100_peripheral_native_create(1,&o->parent);if(e)goto fail;
- if(o->contract.sdr.width)
+ if(o->contract.idmac_enabled)
+  e=i9100_emmc_native_open_configured(1,o->parent,&o->contract.host,I9100_EMMC_N_DATA_RW,&o->contract.card,
+      o->contract.sdr.width?&o->contract.sdr:0,o->contract.idmac_reviewed,&o->native);
+ else if(o->contract.sdr.width)
   e=i9100_emmc_native_open_sdr(1,o->parent,&o->contract.host,I9100_EMMC_N_DATA_RW,&o->contract.card,&o->contract.sdr,&o->native);
  else e=i9100_emmc_native_open(1,o->parent,&o->contract.host,I9100_EMMC_N_DATA_RW,&o->contract.card,&o->native);
  if(e)goto fail;o->phase=BOOT_HOST;

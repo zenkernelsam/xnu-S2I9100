@@ -110,8 +110,12 @@ def main():
     cpp=['i9100_emmc_native.cpp','i9100_camera_mmio.cpp','IOS6I9100EMMCStorage.cpp','IOS6I9100EMMCRaw.cpp',
          'IOS6I9100EMMCBlockDriver.cpp','i9100_emmc_alias.cpp','i9100_emmc_publication.cpp',
          'i9100_emmc_boot.cpp','i9100_peripheral_native.cpp']
+    c += ['i9100_emmc_idmac.c','i9100_dma_guard.c'];cpp += ['i9100_dma_native.cpp']
+    from i9100_emmc_dma_model import prepare as prepare_dma
+    dma_copies=prepare_dma(e)
+    (model.parent/'i9100_emmc_dma_facade.inc').write_bytes((REPO/'port-tests/i9100_emmc_dma_facade.inc').read_bytes())
     e.model_cpp('i9100_emmc_matching_test.cpp',c+['i9100_emmc_native_fixture.c'],cpp,
-       source_overrides={'i9100_emmc_native_fixture.c':model.parent/'i9100_emmc_native_fixture.c'},
+       source_overrides={'i9100_emmc_native_fixture.c':model.parent/'i9100_emmc_native_fixture.c',**dma_copies},
        wrapped_functions=('i9100_camera_mmio_read','i9100_camera_mmio_write'),
        extra_sdk=REPO/'port-tests/emmc-storage-sdk',libraries=('pthread',),
        test_override=model,extra_defines=('I9100_EMMC_MATCH_ENGINE=1',))

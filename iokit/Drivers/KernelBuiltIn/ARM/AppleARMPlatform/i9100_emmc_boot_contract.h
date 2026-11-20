@@ -20,6 +20,7 @@ struct i9100_emmc_boot_contract {
  struct i9100_emmc_volume_identity system,data;
  uint8_t pair_manifest_sha256[32];
  struct i9100_emmc_sdr_plan sdr; /* Allzero=v2 legacy; reviewed explicit SDR=v3. */
+ uint32_t idmac_enabled,idmac_reviewed; /* Optional v4, off in older wires. */
 };
 int i9100_emmc_boot_decode(const uint8_t *,unsigned bytes,struct i9100_emmc_boot_contract *);
 int i9100_emmc_boot_encode(const struct i9100_emmc_boot_contract *,uint8_t out[I9100_EMMC_BOOT_BYTES]);

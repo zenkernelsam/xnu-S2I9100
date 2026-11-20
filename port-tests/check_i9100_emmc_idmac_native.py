@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Exercise actual native IDMAC with real DMA allocator and explicit IOKit/PTE/MMIO boundaries."""
+import argparse
+import hashlib
+import os
+from i9100_offline_build import Evidence,REPO,ROOT
+from i9100_emmc_dma_model import prepare as prepare_dma
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('--cross-compile',action='store_true');a=p.parse_args()
+e=Evidence('emmc-idmac-native-offline');e.wait_idle_seconds=60
+source=ROOT/'assets/i9100-backup/mmcblk0-head1mb.img'
+if hashlib.sha256(source.read_bytes()).hexdigest()!='879334a928bbffffc67d57b584906c03bee10f1310a88a0f1362fc6dfb3724ef':raise RuntimeError('Historical table changed')
+os.environ['I9100_EMMC_HISTORICAL_SOURCE']=str(source)
+os.environ['I9100_EMMC_IDMAC_CLOCK_RECORD']=str(e.out/'actual-preprobe-clock.bin')
+for n in ('i9100_emmc_native_fixture.c','i9100_emmc_writer_test.c','i9100_emmc_test.c'):(e.out/n).write_bytes((REPO/'port-tests'/n).read_bytes())
+c=['i9100_emmc.c','i9100_emmc_idmac.c','i9100_dma_guard.c','i9100_emmc_layout.c','i9100_emmc_writer.c','i9100_emmc_host.c','i9100_emmc_clock.c']
+cpp=['i9100_emmc_native.cpp','i9100_camera_mmio.cpp','i9100_dma_native.cpp'];copies=prepare_dma(e)
+e.model_cpp('i9100_emmc_idmac_native_test.cpp',c+['i9100_emmc_native_fixture.c'],cpp,
+ source_overrides={'i9100_emmc_native_fixture.c':e.out/'i9100_emmc_native_fixture.c',**copies},wrapped_functions=('i9100_camera_mmio_read','i9100_camera_mmio_write'),
+ extra_sdk=REPO/'port-tests/emmc-native-sdk',libraries=('pthread',))
+for fault in ('timeout','short-counter','owned-descriptor','stop-drop'):e.run([str(e.out/'models'),fault],'fault-'+fault+'-tests')
+e.result['actual_preprobe_clock_sha256']=hashlib.sha256((e.out/'actual-preprobe-clock.bin').read_bytes()).hexdigest()
+e.result['nested_fixtures']={n:hashlib.sha256((REPO/'port-tests'/n).read_bytes()).hexdigest()for n in
+ ('i9100_emmc_native_test.cpp','i9100_emmc_native_fixture.c','i9100_emmc_writer_test.c','i9100_emmc_test.c')}
+if a.cross_compile:e.cross_compile(c+cpp+['IOS7I9100EMMC.cpp','IOS6I9100EMMCRaw.cpp','IOS6I9100EMMCStorage.cpp','IOS6I9100EMMCBlockDriver.cpp','i9100_emmc_alias.cpp','i9100_emmc_publication.cpp'])
+e.finish(c+cpp,'Actualnative IDMAC/real allocator/MMC/writer and NormalNC evidence control flow; PTE/IOKit/card/MMIO/time facade, no physical DMA/storage/cache/interrupt proof')

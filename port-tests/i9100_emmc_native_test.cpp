@@ -24,11 +24,23 @@ struct i9100_peripheral_native {unsigned holds;};static i9100_peripheral_native 
 #endif
 static bool fail(){return ++m.count==m.fail_at;}
 static std::map<IOLock *,std::mutex *> host_locks;
+#ifdef I9100_EMMC_IDMAC_NATIVE_MODEL
+static IOLock *idmac_buffer_locks[2];
+static unsigned idmac_try_calls,idmac_fail_lock_call;
+#endif
 void *IOMalloc(size_t bytes){if(fail())return nullptr;m.contexts++;return calloc(1,bytes);}
 void IOFree(void *p,size_t){assert(m.contexts);m.contexts--;free(p);}
-IOLock *IOLockAlloc(){if(fail())return nullptr;m.locks++;auto *l=new IOLock{false};host_locks[l]=new std::mutex;return l;}
+IOLock *IOLockAlloc(){if(fail())return nullptr;m.locks++;auto *l=new IOLock{false};host_locks[l]=new std::mutex;
+#ifdef I9100_EMMC_IDMAC_NATIVE_MODEL
+ if(m.locks>=3U&&m.locks<=4U)idmac_buffer_locks[m.locks-3U]=l;
+#endif
+ return l;}
 void IOLockFree(IOLock *l){assert(l&&!l->held&&m.locks);m.locks--;delete host_locks.at(l);host_locks.erase(l);delete l;}
-bool IOLockTryLock(IOLock *l){if(!host_locks.at(l)->try_lock())return false;l->held=true;return true;}
+bool IOLockTryLock(IOLock *l){
+#ifdef I9100_EMMC_IDMAC_NATIVE_MODEL
+ if((l==idmac_buffer_locks[0]||l==idmac_buffer_locks[1])&&++idmac_try_calls==idmac_fail_lock_call)return false;
+#endif
+ if(!host_locks.at(l)->try_lock())return false;l->held=true;return true;}
 void IOLockUnlock(IOLock *l){assert(l->held);l->held=false;host_locks.at(l)->unlock();}
 #ifndef I9100_EMMC_STORAGE_MODEL
 void IOLockLock(IOLock *l){host_locks.at(l)->lock();assert(!l->held);l->held=true;}
@@ -86,6 +98,7 @@ extern "C" void __wrap_i9100_camera_mmio_write(volatile uint8_t *base,unsigned o
 #endif
  assert(base==(volatile uint8_t *)regs[HOST]);fixture_write(off,value);
 }
+#include "i9100_emmc_dma_facade.inc"
 #ifndef I9100_EMMC_REAL_PARENT_MODEL
 int i9100_peripheral_native_hold_get(i9100_peripheral_native *p,i9100_native_parent_hold *h)
 {assert(!h->owned);p->holds++;h->context=p;h->self=(uintptr_t)h;h->owned=1;return 0;}
