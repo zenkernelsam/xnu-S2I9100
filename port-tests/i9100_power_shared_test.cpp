@@ -51,9 +51,26 @@ static void parallel_cookies()
 static void tickets()
 {
  i9100_power_bus_ticket t={};assert(i9100_power_bus_enter(0,&t));i9100_power_bus_ticket copy=t;
+ uint8_t rtc[7]={};assert(i9100_power_bus_filter(&t,0x06,3,rtc,1,0));
+ assert(i9100_power_bus_filter(&t,0x06,0x10,rtc,7,0));
+ assert(!i9100_power_bus_filter(&t,0x06,3,rtc,1,1));
+ assert(!i9100_power_bus_filter(&t,0x06,0x04,rtc,1,0));
+ assert(!i9100_power_bus_filter(&t,0x06,0x10,rtc,6,0));
+ assert(!i9100_power_bus_filter(&t,0x06,0x11,rtc,7,0));
+ assert(!i9100_power_bus_filter(&copy,0x06,3,rtc,1,0));
  assert(!i9100_power_bus_leave(&copy));std::thread other([&]{assert(!i9100_power_bus_leave(&t));});other.join();
  i9100_power_bus_ticket nested={};assert(!i9100_power_bus_enter(0,&nested));assert(i9100_power_bus_leave(&t)&&!i9100_power_bus_leave(&t));
  in_irq=true;assert(!i9100_power_bus_enter(0,&t));in_irq=false;irq_enabled=false;assert(!i9100_power_bus_enter(0,&t));irq_enabled=true;
+ assert(i9100_power_bus_enter(1,&t));assert(!i9100_power_bus_filter(&t,0x06,3,rtc,1,0));assert(i9100_power_bus_leave(&t));
+}
+static void rtc_enabled_wire()
+{
+ PowerGPIO rtc(false,false,true);auto hw=rtc.io();uint8_t when[7]={29,1,13,2,11,26,20};
+ rtc.rtcMemory[3]=2;memcpy(rtc.rtcMemory+0x10,when,7);uint64_t actual=0,expected=0;
+ assert(i9100_rtc_decode(when,2,&expected)&&i9100_power_rtc_seconds(&hw,&actual)&&actual==expected);
+ assert(rtc.received==std::vector<uint8_t>({0x0c,3,0x0d,0x0c,0x10,0x0d,0x0c,0x10,0x0d,0x0c,3,0x0d}));
+ assert(!memcmp(rtc.rtcMemory+0x10,when,7)&&rtc.enters==rtc.leaves&&!rtc.guard);
+ uint64_t unchanged=0xaabb;rtc.nack=true;assert(!i9100_power_rtc_seconds(&hw,&unchanged)&&unchanged==0xaabb);
 }
 static void reader_lifetime()
 {
@@ -92,7 +109,7 @@ int main(int argc,char **argv)
  assert(i9100_power_shared_prepare(0)==I9100_SHARED_DISABLED&&!allocations);
  assert(!i9100_original_power_tests_main());i9100_power_bus_ticket legacy={};assert(i9100_power_bus_enter(0,&legacy));
  assert(i9100_power_shared_prepare(1)==I9100_SHARED_BUSY&&i9100_power_bus_leave(&legacy));
- assert(!i9100_power_shared_prepare(1)&&i9100_power_shared_enabled());parallel_cookies();tickets();reader_lifetime();client_limits_and_replacement();
+ assert(!i9100_power_shared_prepare(1)&&i9100_power_shared_enabled());parallel_cookies();tickets();rtc_enabled_wire();reader_lifetime();client_limits_and_replacement();
  assert(live==3U); /* intentional boot-lifetime mutexes, no owner/context leaks */
  puts("PASS shared common raw gate across Power/Mali cookies/real GPIO wire/legacy policy/late-enable fence/thread tickets/IRQ reject/bounded contention/safe-register filtering/client-copy/IO faults/unpublish during read/owner lifetime/32 clients/replacement and revoked results; host hardware model only");return 0;
 }

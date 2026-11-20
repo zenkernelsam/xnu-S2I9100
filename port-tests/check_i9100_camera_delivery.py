@@ -71,6 +71,11 @@ def main():
             if sha(REPO/'port-tests/i9100_hfs_boot_integration.patch')!=proof['patch_sha256']:raise RuntimeError('Model HFS patch drift')
             for name,expected in dict(proof['live_sources'],**proof['companion_sources'],**proof['copied_sources']).items():
                 if sha(REPO/name)!=expected:raise RuntimeError('Model original/copy HFS source drift')
+        if m.get('shared_power_rtc_model'):
+            found=True
+            for name,expected in m['fixture_sources'].items():
+                if sha(REPO/name)!=expected:raise RuntimeError('RTC/shared-power fixture drift')
+            if sha(folder/'models')!=m['model_artifact_sha256']:raise RuntimeError('RTC/shared-power model changed')
         if not found:
             raise RuntimeError("Not a model proof")
         for name, expected in m.get("facade_headers", {}).items():
@@ -118,6 +123,8 @@ def main():
     if a.include_emmc:
         needed.update(("i9100_emmc.c", "i9100_emmc_writer.c", "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp"))
         needed.update(name for name in names if name.startswith(("i9100_emmc_","IOS6I9100EMMC")))
+    if any(json.loads((ROOT/name/'manifest.json').read_text()).get('shared_power_rtc_model') for name in models):
+        needed.add('i9100_power_shared.cpp')
     if kernel.get('hfs_boot_copy'):
         needed.update(Path(n).name for n in kernel['hfs_boot_copy']['copied_sources'])
     for _ in range(32):

@@ -67,7 +67,11 @@ int i9100_power_haptic_hold_put(struct i9100_power_haptic_hold *);
  * read results, while client references keep maps live through completion.
  * Read clients cannot write or consume IRQ/read-clear registers. Current
  * safe set: ID/VER, CONTROL1/2, LDO1..18/21 CTRL. All other addresses fail
- * before IO. Reads are individual transactions, not a multi-register atomic
+ * before IO. Existing Power RTC sampling alone uses fixed BUS0/slave06
+ * CONTROL03/1B and TIME10/7B read-only transfers. No external RTC client,
+ * RTC write/alarm/UPDATE or extended arbitrary burst is added. All use the
+ * original shared gate; epoch decoding remains in the Power policy.
+ * Reads are individual transactions, not a multi-register atomic
  * electrical snapshot. No rail/LPO guarantee, GPIO/ADC redesign or change
  * to charging thresholds/current is implied. Main integration remains opt-in. */
 #ifdef __cplusplus

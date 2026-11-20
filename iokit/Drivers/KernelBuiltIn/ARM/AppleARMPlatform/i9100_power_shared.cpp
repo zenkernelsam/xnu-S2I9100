@@ -133,6 +133,12 @@ int i9100_power_read_close(i9100_power_read_client *client)
 int i9100_power_bus_filter(i9100_power_bus_ticket *ticket,unsigned slave,unsigned reg,const uint8_t *data,unsigned count,int writing)
 {
  if(!ticket||!ticket->owned||ticket->self!=(uintptr_t)ticket||ticket->thread!=(uintptr_t)current_thread()||ticket->bus>1U)return 0;
+ /* New charge-epoch RTC sampling is a fixed read-only raw wire contract,
+  * NOT a general external register reader. Keep exact CONTROL/7-byte time
+  * reads through BUS0 while denying RTC writes/alarms/UPDATE and malformed
+  * bursts before the legacy or enabled paths can touch physical GPIO. */
+ if(slave==0x06U&&(!data||writing||ticket->bus!=0U||
+    !((reg==0x03U&&count==1U)||(reg==0x10U&&count==7U))))return 0;
  if(ticket->mode==1U)return !haptic_owner;
  if(ticket->mode!=2U||bus_owner[ticket->bus]!=ticket)return 0;
  if(!writing||ticket->bus!=0U||!haptic_owner||!((slave==0x48U&&reg==2U)||(slave==0x66U&&reg==0x48U)))return 1;
