@@ -67,6 +67,7 @@ struct IOS7I9100Power:IOPMPowerSource {
  bool isCharging=true,validProperty=true,supervisionStopped=false;
  IOTimerEventSource *timer=nullptr;Workloop *loop=nullptr;Resource *mapping[4]={},*device[4]={};
  void sample(){samples++;polls++;}
+ void observeLowBattery(){assert(!supervisionStopped);}
  void setIsCharging(bool value){isCharging=value;}
  void setProperty(const char *key,bool value){assert(!strcmp(key,"MeasurementsValid"));validProperty=value;}
  void updateStatus(){notifications++;}

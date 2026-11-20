@@ -10,6 +10,7 @@
 /* Private shared header; object-only rebuilds do not export new headers. */
 #include "../../../../../pexpert/arm/i9100_usb_stats.h"
 #include "i9100_power.h"
+#include "i9100_low_battery.h"
 #include "i9100_charge_adopt.h"
 #include "i9100_charge_epoch.h"
 #include "i9100_charge_diag.h"
@@ -45,6 +46,7 @@ volatile uint32_t i9100_power_policy[10];
 volatile uint32_t i9100_charge_adopt_diag[16]={2};
 volatile uint32_t i9100_charge_epoch_live[I9100_CHARGE_EPOCH_WORDS];
 volatile uint32_t i9100_cdc_liveness_diag[I9100_CDC_LOG_DIAG_WORDS]={1,0,I9100_USB_STATS_WORDS};
+volatile uint32_t i9100_low_battery_retreat_diag[18]={1};
 extern processor_t master_processor;
 extern uint32_t processor_avail_count;
 extern uint32_t hz_tick_interval;
@@ -110,6 +112,8 @@ class IOS7I9100Power : public IOPMPowerSource {
  unsigned polls;int lastReason;unsigned lastConnected,lastCharging;
  unsigned chargeProbe,chargeTest,chargeTestDone;
  bool supervisionStopped;
+ struct i9100_low_battery_state lowBattery;
+ uint64_t lastPowerSample;
  static void probeSleep(unsigned ms){IOSleep(ms);}
  static uint32_t read32(void *,unsigned,unsigned);
  static void write32(void *,unsigned,unsigned,uint32_t);
@@ -119,6 +123,7 @@ class IOS7I9100Power : public IOPMPowerSource {
  static void tick(OSObject *,IOTimerEventSource *);
  void sample(void);
  void stopSupervision(const char *,bool);
+ void observeLowBattery(void);
 public:
  virtual bool init(void);
  virtual bool start(IOService *);
@@ -133,6 +138,8 @@ bool IOS7I9100Power::init(void)
  lastReason=999;lastConnected=lastCharging=0xffffffffU;
  chargeProbe=chargeTest=chargeTestDone=0;
  supervisionStopped=false;
+ lowBattery=(struct i9100_low_battery_state){0};
+ lastPowerSample=0;
  hw.cookie=this;hw.read32=read32;hw.write32=write32;hw.delay_us=delay;
  hw.enter=enter;hw.leave=leave;return true;
 }
@@ -224,14 +231,39 @@ bool IOS7I9100Power::start(IOService *provider)
   if(!i9100_lpm_poweroff_call)
    i9100_lpm_poweroff_call=thread_call_allocate(i9100_lpm_poweroff_worker,0);
   __sync_synchronize();i9100_lpm_poweroff_ready=i9100_lpm_poweroff_call!=0;
+  lowBattery.enabled=1;
  }
+ observeLowBattery();
  return true;
+}
+void IOS7I9100Power::observeLowBattery(void)
+{
+ uint64_t measured=mach_absolute_time();
+ const struct i9100_power_state *fresh=lastPowerSample && measured>=lastPowerSample &&
+  measured-lastPowerSample<=2500000000ULL?&battery:0;
+ i9100_low_battery_update(&lowBattery,fresh,lastPowerSample);
+ if(lowBattery.admitted && !lowBattery.submitted && i9100_lpm_poweroff_ready &&
+    OSCompareAndSwap(0,2,&i9100_lpm_poweroff_request)){
+  lowBattery.submitted=1;lowBattery.submitted_ns=measured;
+  lowBattery.trigger_percent=battery.percent;lowBattery.trigger_mv=battery.millivolts;
+  /* Revoke new maintenance halts during this already queued shutdown.
+   * An older USB ACK may still finish, but cannot schedule a second worker. */
+  i9100_lpm_poweroff_ready=0;
+  IOLog("I9100 POWER low battery reserve: soc=%u mv=%u route=NORMAL_HALT\n",
+   battery.percent,battery.millivolts);
+  /* Use the successful maintenance poweroff path. BSD sync/unmount remains
+   * ordinary; connected USB routes its final halt to standalone charging. */
+  thread_call_enter(i9100_lpm_poweroff_call);
+ }
+ i9100_low_battery_publish(i9100_low_battery_retreat_diag,&lowBattery,&battery,
+  i9100_lpm_poweroff_request);
 }
 void IOS7I9100Power::sample(void)
 {
  if(i9100_lpm_poweroff_ready && OSCompareAndSwap(1,2,&i9100_lpm_poweroff_request))
   thread_call_enter(i9100_lpm_poweroff_call);
  (void)i9100_power_poll(&battery);polls++;
+ lastPowerSample=mach_absolute_time();
  /* Preserve exact policy clocks for a normal halt into the same cable's
   * charger. The final PE hook seals this stable publication without IO. */
  struct I9100ChargeEpoch epoch;
@@ -308,7 +340,7 @@ void IOS7I9100Power::tick(OSObject *owner,IOTimerEventSource *timer)
  s->sample();
  if(timer->setTimeoutMS(1000)!=kIOReturnSuccess){
   s->stopSupervision("timer rearm failed",true);
- }
+ }else s->observeLowBattery();
 }
 void IOS7I9100Power::free(void)
 {
