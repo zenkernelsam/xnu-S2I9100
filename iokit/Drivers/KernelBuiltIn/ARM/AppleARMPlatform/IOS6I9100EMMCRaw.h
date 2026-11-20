@@ -10,6 +10,7 @@ class IOS6I9100EMMCRaw : public IOBlockStorageDevice {
 public:
  bool init(OSDictionary *p=0) override;
  bool bind(int enabled,i9100_emmc_native *);
+ bool matchPropertyTable(OSDictionary *,SInt32 *) override;
  bool start(IOService *) override;
  void free() override;
  i9100_emmc_native *nativeContext() const{return held?native:0;}
@@ -31,7 +32,9 @@ public:
  IOReturn reportPollRequirements(bool *,bool *) override;
  IOReturn reportWriteProtection(bool *) override;
 };
-/* The ordinary IOBlockStorageDriver creates a true RO whole IOMedia.
+/* IOS6I9100EMMCBlockDriver uses the ordinary block driver mechanics to
+ * create a true RO whole IOS6I9100EMMCMedia. Generic driver personalities
+ * cannot attach to this native raw device.
  * The partition service attaches to it; DATAFS writes then use the exact
  * native consumer path with lower scope checks. Every raw write/format/
  * cache-write/eject/erase is rejected; this wrapper never probes again.

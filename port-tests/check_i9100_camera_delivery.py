@@ -78,6 +78,19 @@ def main():
             if sha(folder/'models')!=m['model_artifact_sha256']:raise RuntimeError('RTC/shared-power model changed')
         if not found:
             raise RuntimeError("Not a model proof")
+        if m.get('native_model_source_override'):
+            override=m['native_model_source_override']
+            if sha(ROOT/override['path'])!=override['sha256']:raise RuntimeError('Retained model source override changed')
+        if m.get('native_model_artifact_sha256') and sha(ROOT/m['native_model_artifact'])!=m['native_model_artifact_sha256']:
+            raise RuntimeError('Retained native model binary changed')
+        if m.get('actual_matching'):
+            proof=m['actual_matching']
+            for name,expected in proof['source_files'].items():
+                if sha(REPO/name)!=expected:raise RuntimeError('Actual XNU matching source drift')
+            if sha(ROOT/proof['model_source'])!=proof['model_source_sha256'] or sha(REPO/'port-tests/i9100_emmc_matching_test.cpp')!=proof['fixture_sha256']:
+                raise RuntimeError('Actual matching fixture drift')
+            if sha(PLATFORM/'i9100_emmc_publication.cpp')!=proof['personality_source_sha256'] or sha((ROOT/proof['model_source']).parent/'actual-personalities.inc')!=proof['personality_fixture_sha256']:
+                raise RuntimeError('Actual matching personality source/fixture drift')
         for name, expected in m.get("facade_headers", {}).items():
             if sha(REPO / "port-tests/offline-native-sdk" / name) != expected:
                 raise RuntimeError("Host facade changed")

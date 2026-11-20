@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "IOS6I9100EMMCStorage.h"
 #include "IOS6I9100EMMCRaw.h"
+#include "IOS6I9100EMMCBlockDriver.h"
 #include "i9100_emmc_alias.h"
 #include <IOKit/storage/IOBlockStorageDriver.h>
 #include <IOKit/IOLib.h>
@@ -34,8 +35,8 @@ bool IOS6I9100EMMCStorage::bind(int enabled,i9100_emmc_native *n)
 }
 IOService *IOS6I9100EMMCStorage::probe(IOService *provider,SInt32 *score)
 {
- IOMedia *whole=OSDynamicCast(IOMedia,provider);
- IOBlockStorageDriver *driver=whole?OSDynamicCast(IOBlockStorageDriver,whole->getProvider()):0;
+ IOMedia *whole=OSDynamicCast(IOS6I9100EMMCMedia,provider);
+ IOBlockStorageDriver *driver=whole?OSDynamicCast(IOS6I9100EMMCBlockDriver,whole->getProvider()):0;
  IOS6I9100EMMCRaw *raw=driver?OSDynamicCast(IOS6I9100EMMCRaw,driver->getProvider()):0;
  if(!whole||!whole->isWhole()||whole->isWritable()||whole->getSize()!=30777344ULL*512U||!raw||
     !raw->nativeContext()||!IOStorage::probe(provider,score))return 0;
@@ -47,7 +48,7 @@ int IOS6I9100EMMCStorage::child(const IOService *client) const
 bool IOS6I9100EMMCStorage::attachMedia(unsigned role)
 {
  const i9100_emmc_partition *p=role?&snapshot.data:&snapshot.system;
- IOMedia *m=new IOMedia;if(!m)return false;
+ IOMedia *m=new IOS6I9100EMMCMedia;if(!m)return false;
  if(!m->init(p->start_lba*512ULL,p->sectors*512ULL,512,(IOMediaAttributeMask)0,false,role!=0,"Apple_HFS")){m->release();return false;}
  m->setName(role?"DATAFS":"FACTORYFS");m->setLocation(role?"10":"9");
  if(!m->setProperty("I9100EMMCVolumeRole",role?"data":"system")||
@@ -62,10 +63,10 @@ bool IOS6I9100EMMCStorage::attachMedia(unsigned role)
 }
 bool IOS6I9100EMMCStorage::start(IOService *provider)
 {
- IOMedia *whole=OSDynamicCast(IOMedia,provider);
- IOBlockStorageDriver *driver=whole?OSDynamicCast(IOBlockStorageDriver,whole->getProvider()):0;
+ IOMedia *whole=OSDynamicCast(IOS6I9100EMMCMedia,provider);
+ IOBlockStorageDriver *driver=whole?OSDynamicCast(IOS6I9100EMMCBlockDriver,whole->getProvider()):0;
  IOS6I9100EMMCRaw *raw=driver?OSDynamicCast(IOS6I9100EMMCRaw,driver->getProvider()):0;
- if(!whole||!whole->isWhole()||whole->isWritable()||!raw||raw->nativeContext()!=native)return false;
+ if(!whole||!whole->isWhole()||whole->isWritable()||whole->getSize()!=30777344ULL*512U||!raw||raw->nativeContext()!=native)return false;
  if(!native||!held||stopping||published||!i9100_emmc_alias_prepare()||!IOStorage::start(provider))return false;
  if(!attachMedia(0)||!attachMedia(1)){
   for(unsigned i=0;i<2;i++)if(media[i]){media[i]->detach(this);media[i]->release();media[i]=0;}
@@ -163,6 +164,15 @@ int IOS6I9100EMMCStorage::sealData()
  int e=stopping||sealed?I9100_EMMC_DIRTY:opened[1]?I9100_EMMC_BUSY:i9100_emmc_native_seal_data(native);
  if(!e)sealed=true;IOLockUnlock(mutex);return e;
 }
+bool IOS6I9100EMMCStorage::terminate(IOOptionBits options)
+{
+ /* An attached child retains the native card regardless of a failed
+  * termination. Readiness must disappear before the standard framework
+  * starts stopping BSD clients; a late alias commit must not resurrect it. */
+ if(mutex)IOLockLock(mutex);stopping=true;if(mutex)IOLockUnlock(mutex);
+ for(unsigned i=0;i<2;i++)if(media[i])i9100_emmc_alias_invalidate(media[i]);
+ return IOStorage::terminate(options);
+}
 void IOS6I9100EMMCStorage::stop(IOService *provider)
 {
  if(mutex)IOLockLock(mutex);
@@ -171,7 +181,12 @@ void IOS6I9100EMMCStorage::stop(IOService *provider)
  /* Never take alias gate while storage lock is held. Invalidate readiness
   * before a child can detach or BSD makes its original nodes obsolete. */
  for(unsigned i=0;i<2;i++)if(media[i]&&media[i]->getProvider()==this){
-  i9100_emmc_alias_invalidate(media[i]);media[i]->terminate(kIOServiceRequired);media[i]->detach(this);
+  i9100_emmc_alias_invalidate(media[i]);
+  /* terminate() returning true only starts the framework's asynchronous
+   * teardown. Never detach a live BSD subtree ourselves. Its existing
+   * attachment pins this service/card until normal stop/finalize completes.
+   * If termination was already requested, let that request finish. */
+  if(!media[i]->isInactive())(void)media[i]->terminate(kIOServiceRequired);
  }
  IOStorage::stop(provider);
 }

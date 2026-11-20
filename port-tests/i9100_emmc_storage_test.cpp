@@ -5,6 +5,7 @@
 #undef main
 #include "IOS6I9100EMMCStorage.h"
 #include "IOS6I9100EMMCRaw.h"
+#include "IOS6I9100EMMCBlockDriver.h"
 #include <IOKit/storage/IOBlockStorageDriver.h>
 #include "i9100_emmc_alias.h"
 #include <condition_variable>
@@ -81,7 +82,7 @@ int I9100_EMMC_STORAGE_MAIN()
  assert(!i9100_emmc_native_open(1,&parent,&profile,I9100_EMMC_N_DATA_RW,&approved,&native));
  auto *s=new IOS6I9100EMMCStorage;assert(s&&s->init());assert(s->bind(1,native));
  IOService platform;auto *raw=new IOS6I9100EMMCRaw;assert(raw&&raw->init()&&raw->bind(1,native)&&raw->attach(&platform)&&raw->start(&platform));
- IOBlockStorageDriver driver;assert(driver.attach(raw));auto *whole=new IOMedia;
+ IOS6I9100EMMCBlockDriver driver;assert(driver.attach(raw));auto *whole=new IOS6I9100EMMCMedia;
  assert(whole&&whole->init(0,30777344ULL*512U,512,0,true,false,"GUID_partition_scheme")&&whole->attach(&driver));
  assert(s->attach(whole)&&s->probe(whole,nullptr)==s&&s->start(whole));
  IOMedia *system=s->copyMedia(1),*data=s->copyMedia(2);assert(system&&data&&!system->whole&&!system->writable&&data->writable);
@@ -185,6 +186,9 @@ int I9100_EMMC_STORAGE_MAIN()
  s->close(system);s->stop(whole);assert(system->terminated&&data->terminated&&!s->copyMedia(1));
  unpublish_alias(system);unpublish_alias(data);assert(actual_tickets.empty());
  assert(resource_service.getProperty("i9100-system-media")==nullptr&&resource_service.getProperty("i9100-data-media")==nullptr);
+ /* Facade finalize completes only here; production lets IOService run
+  * stop/detach after BSD closes, rather than detaching on terminate's ACK. */
+ system->detach(s);data->detach(s);
  system->release();data->release();s->detach(whole);s->release();whole->detach(&driver);whole->release();driver.detach(raw);raw->detach(&platform);raw->release();assert(!objects);
  finish(&native);
  // Read-only native cannot publish a writable data service.

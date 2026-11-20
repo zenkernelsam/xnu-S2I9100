@@ -14,7 +14,7 @@ fixture=e.out/"i9100_emmc_native_fixture.c";fixture.write_bytes((REPO/"port-test
 (e.out/"i9100_emmc_writer_test.c").write_bytes((REPO/"port-tests/i9100_emmc_writer_test.c").read_bytes())
 (e.out/"i9100_emmc_test.c").write_bytes((REPO/"port-tests/i9100_emmc_test.c").read_bytes())
 c=["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c"]
-cpp=["i9100_emmc_native.cpp","i9100_camera_mmio.cpp","IOS6I9100EMMCStorage.cpp","IOS6I9100EMMCRaw.cpp","i9100_emmc_alias.cpp"]
+cpp=["i9100_emmc_native.cpp","i9100_camera_mmio.cpp","IOS6I9100EMMCStorage.cpp","IOS6I9100EMMCRaw.cpp","IOS6I9100EMMCBlockDriver.cpp","i9100_emmc_alias.cpp"]
 e.model_cpp("i9100_emmc_storage_test.cpp",c+["i9100_emmc_native_fixture.c"],cpp,
  source_overrides={"i9100_emmc_native_fixture.c":fixture},wrapped_functions=("i9100_camera_mmio_read","i9100_camera_mmio_write"),
  extra_sdk=REPO/"port-tests/emmc-storage-sdk",libraries=("pthread",))

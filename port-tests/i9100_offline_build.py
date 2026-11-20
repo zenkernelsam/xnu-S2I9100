@@ -139,7 +139,7 @@ class Evidence:
         self.result["cross_compiled"] = True
 
     def model_cpp(self, test_file, c_sources, cpp_sources, libraries=(), source_overrides=None,
-                  wrapped_functions=(),extra_sdk=None):
+                  wrapped_functions=(),extra_sdk=None,test_override=None,extra_defines=()):
         """Run native bridge logic with a host-only IOKit facade, not an ARM SDK."""
         sdk = REPO / "port-tests/offline-native-sdk"
         extra=[]
@@ -149,11 +149,18 @@ class Evidence:
                 raise ValueError('Additional host SDK must remain in project port-tests')
             extra=['-I'+str(extra_sdk)]
         source_overrides = source_overrides or {}
+        actual_test=REPO/'port-tests'/test_file
+        if test_override:
+            actual_test=Path(test_override).resolve()
+            if not actual_test.is_relative_to(REPO/'out') or actual_test.name!=test_file:
+                raise ValueError('Model test override must be a matching retained out copy')
+        if any(not value.endswith('=1') or not value[:-2].isascii() or not value[:-2].isidentifier() for value in extra_defines):
+            raise ValueError('Only explicit identifier=1 host model flags are supported')
         if any(not name.isascii() or not name.isidentifier() for name in wrapped_functions):
             raise ValueError("Linker wrapping requires plain C symbol names")
         common = ["-O1", "-Wall", "-Wextra", "-Werror", "-fno-pie",
                   "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
-                  *extra,"-I" + str(sdk), "-I" + str(PLATFORM)]
+                  *extra,*['-D'+value for value in extra_defines],"-I" + str(sdk), "-I" + str(PLATFORM)]
         objects = []
         for source in c_sources + cpp_sources:
             cpp = source.endswith(".cpp")
@@ -165,16 +172,21 @@ class Evidence:
                       *common, "-c", str(actual), "-o", str(destination)], "host-" + source)
             objects.append(str(destination))
         self.run(["clang++", "-std=c++11", *common, "-no-pie",
-                  str(REPO / "port-tests" / test_file), *objects, "-o", str(self.out / "models"),
+                  str(actual_test), *objects, "-o", str(self.out / "models"),
                   *["-Wl,--wrap=" + name for name in wrapped_functions],
                   *["-l" + name for name in libraries]], "compile-native-models")
         self.run([str(self.out / "models")], "native-model-tests")
         self.result.update(native_model=test_file, native_iokit_facade=True,
                            native_model_sha256=hashlib.sha256((REPO / "port-tests" / test_file).read_bytes()).hexdigest(),
+                           native_model_artifact=str((self.out/'models').relative_to(ROOT)),
+                           native_model_artifact_sha256=hashlib.sha256((self.out/'models').read_bytes()).hexdigest(),
                            facade_headers={str(path.relative_to(sdk)): hashlib.sha256(path.read_bytes()).hexdigest()
                                            for path in sorted(sdk.rglob("*.h"))})
         if wrapped_functions:
             self.result.setdefault("native_wrapped_functions", {})[test_file] = list(wrapped_functions)
+        if test_override:
+            self.result['native_model_source_override']=dict(path=str(actual_test.relative_to(ROOT)),
+              sha256=hashlib.sha256(actual_test.read_bytes()).hexdigest(),host_defines=list(extra_defines))
         if extra_sdk:
             self.result['extra_facade_headers']={str(path.relative_to(REPO)):hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in sorted(extra_sdk.rglob('*.h'))}

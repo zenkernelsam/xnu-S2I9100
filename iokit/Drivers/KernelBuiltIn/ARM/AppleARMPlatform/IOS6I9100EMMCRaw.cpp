@@ -3,6 +3,7 @@
 #include <IOKit/storage/IOStorage.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOLocks.h>
+#include <libkern/c++/OSString.h>
 #include <machine/machine_routines.h>
 OSDefineMetaClassAndStructors(IOS6I9100EMMCRaw,IOBlockStorageDevice)
 bool IOS6I9100EMMCRaw::init(OSDictionary *p)
@@ -18,6 +19,13 @@ bool IOS6I9100EMMCRaw::bind(int enabled,i9100_emmc_native *n)
 }
 bool IOS6I9100EMMCRaw::start(IOService *p)
 {return held&&native&&IOBlockStorageDevice::start(p)&&setProperty("device-type","Generic")&&setProperty("I9100NativeEMMCWholeReadOnly",true);}
+bool IOS6I9100EMMCRaw::matchPropertyTable(OSDictionary *table,SInt32 *score)
+{
+ if(!table||!IOBlockStorageDevice::matchPropertyTable(table,score))return false;
+ OSObject *requested=table->getObject("IOClass");if(!requested)return true;
+ OSString *driver=OSDynamicCast(OSString,requested);
+ return driver&&driver->isEqualTo("IOS6I9100EMMCBlockDriver");
+}
 void IOS6I9100EMMCRaw::free()
 {
  if(held&&native){int e=i9100_emmc_native_hold_put(native,(uintptr_t)this);if(e)IOLog("i9100 native raw: retain failed consumer e=%d\n",e);}

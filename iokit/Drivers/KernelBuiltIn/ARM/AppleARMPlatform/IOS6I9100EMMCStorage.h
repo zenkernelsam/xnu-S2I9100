@@ -24,6 +24,7 @@ public:
  IOService *probe(IOService *,SInt32 *) override;
  bool bind(int enabled,i9100_emmc_native *);
  bool start(IOService *) override;
+ bool terminate(IOOptionBits) override;
  void stop(IOService *) override;
  void free() override;
  void read(IOService *,UInt64,IOMemoryDescriptor *,IOStorageAttributes *,IOStorageCompletion *) override;
@@ -34,9 +35,11 @@ public:
  bool validateMedia(IOMedia *,unsigned role) const;
  int sealData(); /* both exact media closed; final native sync + seal */
 };
-/* Explicit platform binding only; no personality or boot flag starts it.
+/* Explicit native binding, or the scoped internal-root personality only.
  * Native card must be DATA_RW with actual approved HFS roles. Publish two
- * IOMedia: systemRO, DATAFSRW. Whole raw medium is not writable/published.
+ * IOS6I9100EMMCMedia: systemRO, DATAFSRW. The separately published raw
+ * whole stays read-only and its native family rejects generic partition
+ * driver personalities.
  * Only the two exact child addresses may open/read/write; request offsets
  * are already translated by IOMedia. Runtime system writes/TRIM forbidden.
  * Stop refuses while users still hold media; consumers keep native/maps

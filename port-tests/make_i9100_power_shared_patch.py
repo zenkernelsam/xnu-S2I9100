@@ -30,7 +30,9 @@ if legacy in edited[power]:
 else:
     # The current charger also provisions the LPM shutdown worker after its
     # timer is armed. Keep that block and publish only at start's final return.
-    if edited[power].count(" if(timer->setTimeoutMS(1000)!=kIOReturnSuccess)return false;")!=1:
+    legacy_timer=" if(timer->setTimeoutMS(1000)!=kIOReturnSuccess)return false;"
+    supervised_timer=' if(timer->setTimeoutMS(1000)!=kIOReturnSuccess){\n  stopSupervision("initial timer arm failed",true);return false;\n }'
+    if edited[power].count(legacy_timer)!=1 and edited[power].count(supervised_timer)!=1:
         raise RuntimeError("Charger start timer/cleanup changed; inspect before integrating")
     replace(power," return true;\n}\nvoid IOS7I9100Power::sample(void)",publisher+"\n}\nvoid IOS7I9100Power::sample(void)")
 stop='''IOReturn IOS7I9100Power::stopShared(OSObject *owner,void *,void *,void *,void *)
@@ -48,6 +50,9 @@ void IOS7I9100Power::stop(IOService *provider)
  IOPMPowerSource::stop(provider);
 }
 '''
+if 'void IOS7I9100Power::stopSupervision(' in edited[power]:
+    stop=stop.replace(' if(s->battery.ready)(void)i9100_power_stop(&s->battery);',
+                      ' if(s->battery.ready)s->stopSupervision("shared provider stopped",true);')
 replace(power,"void IOS7I9100Power::free(void)\n",stop+"void IOS7I9100Power::free(void)\n")
 replace(power,"void IOS7I9100Power::free(void)\n{","void IOS7I9100Power::free(void)\n{\n (void)i9100_power_shared_unpublish(this);")
 pe=base+names[2]

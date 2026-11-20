@@ -23,11 +23,12 @@ extern "C" int PE_parse_boot_argn(const char *key,void *out,int length)
 IOService *IOService::fromPath(const char *path,const void *){assert(!strcmp(path,"/chosen"));chosen.retain();return &chosen;}
 OSObject *OSUnserializeXML(const char *xml)
 {if(++parser_calls==parser_fail)return nullptr;assert(xml&&strstr(xml,"<array>"));auto *a=new OSArray;if(a)a->xml=xml;return a;}
-bool IOCatalogue::addDrivers(OSArray *a)
+bool IOCatalogue::addDrivers(OSArray *a,bool matching)
 {assert(a&&a->xml.find("IOFDiskPartitionScheme")==std::string::npos);
+ assert(!matching);
  catalogue_calls++;return catalogue_calls!=catalogue_fail;}
 static void i9100_boot_model_registered(IOService *service)
-{if(dynamic_cast<IOS6I9100EMMCRaw *>(service)){raw_registered++;assert(catalogue_calls==2);}}
+{if(dynamic_cast<IOS6I9100EMMCRaw *>(service)){raw_registered++;assert(catalogue_calls==1);}}
 static void boot_setup(const char *path,i9100_emmc_boot_contract *c)
 {
  setup(path);parser_calls=catalogue_calls=parser_fail=catalogue_fail=raw_registered=0;memset(c,0,sizeof(*c));
@@ -40,7 +41,10 @@ static void boot_setup(const char *path,i9100_emmc_boot_contract *c)
 }
 static void boot_quiet()
 {assert(!m.contexts&&!m.locks&&!m.maps&&!m.descriptors&&!objects);fixture_finish();}
-int main()
+#ifndef I9100_EMMC_BOOT_MAIN
+#define I9100_EMMC_BOOT_MAIN main
+#endif
+int I9100_EMMC_BOOT_MAIN()
 {
  alarm(20);m.interrupts=true;assert(i9100_emmc_alias_prepare());
  static std::mutex *retained_gate=host_locks.begin()->second;assert(retained_gate);m.locks=0;m.count=0;
@@ -71,16 +75,16 @@ int main()
  // Default selected-root query is read-only and allocates no native maps.
  strcpy(root_arg,"disk0s1");assert(!i9100_emmc_root_selected());
  strcpy(root_arg,"*i9100-system");assert(i9100_emmc_root_selected());strcpy(root_arg,"disk0s1");
- for(unsigned fault=1;fault<=2;fault++){
+ for(unsigned fault=1;fault<=1;fault++){
   boot_setup(source,&c);parser_fail=fault;assert(!i9100_emmc_boot_encode(&c,wire));
   assert(i9100_emmc_boot_open(1,&platform,wire,256,&owner)==I9100_EMMC_IO&&!owner&&!raw_registered);boot_quiet();
  }
- boot_setup(source,&c);catalogue_fail=2;assert(!i9100_emmc_boot_encode(&c,wire));
+ boot_setup(source,&c);catalogue_fail=1;assert(!i9100_emmc_boot_encode(&c,wire));
  assert(i9100_emmc_boot_open(1,&platform,wire,256,&owner)==I9100_EMMC_IO&&!owner&&!raw_registered);boot_quiet();
  /* Actual native/card/table and actual publication reach RAW only after
   * exact HFS IDs. Ordinary block-driver matching remains a registry facade. */
  boot_setup(source,&c);assert(!i9100_emmc_boot_encode(&c,wire));
- assert(!i9100_emmc_boot_open(1,&platform,wire,256,&owner)&&owner&&raw_registered==1&&catalogue_calls==2);
+ assert(!i9100_emmc_boot_open(1,&platform,wire,256,&owner)&&owner&&raw_registered==1&&catalogue_calls==1);
  struct i9100_emmc_native_snapshot state;assert(!i9100_emmc_boot_snapshot(owner,&state)&&!i9100_emmc_boot_match(&c,&state));
  assert(i9100_emmc_boot_close(&owner)==I9100_EMMC_BUSY&&owner&&m.maps==15);
  /* Preserve the boot-lifetime owner just as production. Never invent a

@@ -15,12 +15,13 @@ IOLock *IOLockAlloc();void IOLockFree(IOLock *);bool IOLockTryLock(IOLock *);voi
 void OSSynchronizeIO();void IODelay(unsigned);
 void *i9100_model_event_allocate(size_t);void i9100_model_event_free(void *);
 class OSObject {
- std::atomic<unsigned> refs{1};
+ mutable std::atomic<unsigned> refs{1};
 public:
  static void *operator new(size_t n) noexcept{return i9100_model_event_allocate(n);}
  static void operator delete(void *p){i9100_model_event_free(p);}
  virtual ~OSObject()=default;virtual bool init(){return true;}virtual void free(){}
- void retain(){assert(refs.fetch_add(1)>0);}void release(){unsigned old=refs.fetch_sub(1);assert(old);if(old==1){free();delete this;}}
+ virtual bool isEqualTo(const OSObject *other)const{return this==other;}
+ void retain()const{assert(refs.fetch_add(1)>0);}void release()const{unsigned old=refs.fetch_sub(1);assert(old);if(old==1){auto *self=const_cast<OSObject *>(this);self->free();delete self;}}
  unsigned getRetainCount()const{return refs.load();}
 };
 #define OSDeclareDefaultStructors(name) public: name();virtual ~name();private:
