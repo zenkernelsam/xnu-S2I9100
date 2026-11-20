@@ -17,7 +17,7 @@ struct i9100_emmc_native_snapshot {
  struct i9100_emmc_partition system,data;
  struct i9100_hfs_volume system_hfs,data_hfs;
  uint32_t system_hfs_valid,data_hfs_valid,mode,phase,host_generation;
- uint32_t command,rint,status,cid[4],cache_control,writer_dirty,writer_poisoned;
+ uint32_t command,rint,status,cid[4],cache_control,writer_dirty,writer_poisoned,sealed;
  int error,cleanup_error;
 };
 enum i9100_emmc_native_mode {I9100_EMMC_N_INSPECT=0,I9100_EMMC_N_DATA_RW=1};
@@ -29,6 +29,7 @@ int i9100_emmc_native_validate(struct i9100_emmc_native *);
 int i9100_emmc_native_read(struct i9100_emmc_native *,uint64_t absolute_lba,uint32_t sectors,uint8_t *);
 int i9100_emmc_native_write_data(struct i9100_emmc_native *,uint64_t absolute_lba,uint32_t sectors,const uint8_t *);
 int i9100_emmc_native_synchronize(struct i9100_emmc_native *);
+int i9100_emmc_native_seal_data(struct i9100_emmc_native *); /* final sync + deny any later data write */
 int i9100_emmc_native_hold_get(struct i9100_emmc_native *,uintptr_t consumer);
 int i9100_emmc_native_hold_put(struct i9100_emmc_native *,uintptr_t consumer);
 int i9100_emmc_native_close(struct i9100_emmc_native **);

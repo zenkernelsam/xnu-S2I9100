@@ -1,0 +1,281 @@
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -116,6 +116,15 @@
+ 
+ #include <libkern/OSAtomic.h>
+ #include <pexpert/pexpert.h>
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++#include <machine/machine_routines.h>
++#include <hfs/hfs_mount.h>
++#include <hfs/hfs.h>
++#include "../hfs/i9100_hfs_kernel_args.h"
++#include "../../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_emmc_alias.h"
++#include "../../pexpert/arm/i9100_root_wait.h"
++extern void IOSleep(unsigned int);
++#endif
+ 
+ #if CONFIG_MACF
+ #include <security/mac.h>
+@@ -189,6 +198,9 @@
+  * mount structure utilized by cache_lookup_path
+  */
+ uint32_t mount_generation = 0;
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++#include "i9100_hfs_mount_common.inc"
++#endif
+ 
+ /* counts number of mount and unmount operations */
+ unsigned int vfs_nummntops=0;
+@@ -443,6 +455,9 @@
+ 	boolean_t is_rwlock_locked = FALSE;
+ 	boolean_t did_rele = FALSE;
+ 	boolean_t have_usecount = FALSE;
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    const struct i9100_hfs_kernel_request *i9100Request = NULL;
++#endif
+ 
+ 	/*
+ 	 * Process an update for an existing mount
+@@ -554,9 +569,18 @@
+ 	 * VFC_VFSLOCALARGS is not currently supported for kernel mounts
+ 	 */
+ 	if (kernelmount && (vfsp->vfc_vfsflags & VFC_VFSLOCALARGS)) {
+-		error = EINVAL;  /* unsupported request */
+-		goto out1;
+-	}
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++        i9100Request = CAST_DOWN(struct i9100_hfs_kernel_request *,fsmountargs);
++        if (ctx != vfs_context_kernel() || i9100Request != i9100_hfs_active_request ||
++            strcmp(fstypename,"hfs") || strcmp(cnp->cn_pnbuf,"/private/var") ||
++            flags != (MNT_NOSUID|MNT_NODEV) || internal_flags ||
++            (error=i9100_hfs_kernel_request_validate(i9100Request))) {
++            error=EPERM;goto out1;
++        }
++#else
++        error=EINVAL;goto out1;
++#endif
++    }
+ 
+ 	error = prepare_coveredvp(vp, ctx, cnp, fstypename, ((internal_flags & KERNEL_MOUNT_NOAUTH) != 0));
+ 	if (error != 0) {
+@@ -650,6 +674,12 @@
+ 	 * Process device path for local file systems if requested
+ 	 */
+ 	if (vfsp->vfc_vfsflags & VFC_VFSLOCALARGS) {
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++        if (i9100Request) {
++            devpath=CAST_USER_ADDR_T(i9100Request->device);
++            fsmountargs=CAST_USER_ADDR_T(&i9100Request->args);
++        } else
++#endif
+ 		if (vfs_context_is64bit(ctx)) {
+ 			if ( (error = copyin(fsmountargs, (caddr_t)&devpath, sizeof(devpath))) )
+ 				goto out1;	
+@@ -667,7 +697,11 @@
+ 		if ((devpath)) {
+ 			struct nameidata nd;
+ 
+-			NDINIT(&nd, LOOKUP, OP_MOUNT, FOLLOW, UIO_USERSPACE, devpath, ctx);
++            int deviceSpace=UIO_USERSPACE;
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++            if (i9100Request) deviceSpace=UIO_SYSSPACE;
++#endif
++            NDINIT(&nd,LOOKUP,OP_MOUNT,FOLLOW,deviceSpace,devpath,ctx);
+ 			if ( (error = namei(&nd)) )
+ 				goto out1;
+ 
+@@ -676,6 +710,10 @@
+ 
+ 			nameidone(&nd);
+ 
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++            if (i9100Request && (devvp->v_rdev != makedev(i9100Request->data_major,i9100Request->data_minor) ||
++                i9100_hfs_kernel_request_validate(i9100Request))) {error=EXDEV;goto out2;}
++#endif
+ 			if (devvp->v_type != VBLK) {
+ 				error = ENOTBLK;
+ 				goto out2;
+@@ -785,7 +823,19 @@
+ 	/*
+ 	 * Mount the filesystem.
+ 	 */
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    if (i9100Request) {
++        mp->mnt_kern_flag |= MNTK_KERNEL_MOUNT;
++        i9100_hfs_active_args=&i9100Request->args;i9100_hfs_active_mount=mp;
++    }
++#endif
+ 	error = VFS_MOUNT(mp, device_vnode, fsmountargs, ctx);
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    if (i9100Request) {
++        mp->mnt_kern_flag &= ~MNTK_KERNEL_MOUNT;
++        i9100_hfs_active_args=NULL;i9100_hfs_active_mount=NULL;
++    }
++#endif
+ 
+ 	if (flags & MNT_UPDATE) {
+ 		if (mp->mnt_kern_flag & MNTK_WANTRDWR)
+@@ -1025,6 +1075,10 @@
+ 
+ 	return(error);
+ }
++
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++#include "i9100_hfs_data_boot.inc"
++#endif
+ 
+ /* 
+  * Flush in-core data, check for competing mount attempts,
+--- a/bsd/hfs/hfs_vfsops.c
++++ b/bsd/hfs/hfs_vfsops.c
+@@ -79,6 +79,9 @@
+ #include <sys/ubc_internal.h>
+ #include <sys/vnode_internal.h>
+ #include <sys/mount_internal.h>
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++#include "i9100_hfs_kernel_args.h"
++#endif
+ #include <sys/sysctl.h>
+ #include <sys/malloc.h>
+ #include <sys/stat.h>
+@@ -226,12 +229,16 @@
+ 	int retval = E_NONE;
+ 	u_int32_t cmdflags;
+ 
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++#include "i9100_hfs_kernel_copy.inc"
++#else
+ 	if ((retval = copyin(data, (caddr_t)&args, sizeof(args)))) {
+ 		if (HFS_MOUNT_DEBUG) {
+ 			printf("hfs_mount: copyin returned %d for fs\n", retval);
+ 		}
+ 		return (retval);
+ 	}
++#endif
+ 	cmdflags = (u_int32_t)vfs_flags(mp) & MNT_CMDFLAGS;
+ 	if (cmdflags & MNT_UPDATE) {
+ 		hfsmp = VFSTOHFS(mp);
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -995,6 +995,11 @@
+ 	}
+ #endif /* DEVFS */
+ 	
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    extern void i9100_hfs_data_bootstrap(void);
++    i9100_hfs_data_bootstrap();
++#endif
++
+ 	/* Initialize signal state for process 0. */
+ 	bsd_init_kprintf("calling siginit\n");
+ 	siginit(kernproc);
+--- a/bsd/kern/kern_shutdown.c
++++ b/bsd/kern/kern_shutdown.c
+@@ -68,6 +68,11 @@
+ #include <mach/task.h>			/* for task_suspend() */
+ #include <sys/sysproto.h>		/* abused for sync() */
+ #include <kern/clock.h>			/* for delay_for_interval() */
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++#include <kern/thread_call.h>
++#include "../hfs/i9100_hfs_kernel_args.h"
++#endif
++
+ #include <libkern/OSAtomic.h>
+ 
+ #include <sys/kdebug.h>
+@@ -84,6 +89,9 @@
+ static int  sd_closelog(vfs_context_t);
+ static void sd_log(vfs_context_t, const char *, ...);
+ static void proc_shutdown(void);
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++#include "i9100_hfs_shutdown.inc"
++#endif
+ 
+ extern void IOSystemShutdownNotification(void);
+ 
+@@ -116,6 +124,9 @@
+ 	struct proc *p = current_proc();	/* XXX */
+ 	int hostboot_option=0;
+ 
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++    if (i9100_hfs_root_required() && (howto & (RB_QUICK|RB_NOSYNC)))return EPERM;
++#endif
+ 	if (!OSCompareAndSwap(0, 1, &system_inshutdown)) {
+ 		if ( (howto&RB_QUICK) == RB_QUICK)
+ 			goto force_reboot;
+@@ -170,6 +181,15 @@
+ 		/*
+ 		 * Unmount filesystems
+ 		 */
++#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
++        if (i9100_hfs_root_required()) {
++            int data_error=i9100_hfs_data_shutdown();
++            if (data_error) {
++                printf("i9100 DATAFS boot shutdown errno=%d; reset blocked\n",data_error);
++                return data_error;
++            }
++        }
++#endif
+ 		vfs_unmountall();
+ 
+ 		/* Wait for the buffer cache to clean remaining dirty buffers */
+--- a/pexpert/arm/i9100_usbcdc.c
++++ b/pexpert/arm/i9100_usbcdc.c
+@@ -183,9 +183,21 @@
+ #endif
+ static int uctl_reset_action;
+ #ifdef I9100_USB_SIM
++static volatile unsigned i9100_storage_reboot_gate,i9100_storage_reboot_ready,i9100_storage_reboot_request;
++#else
++extern volatile unsigned i9100_storage_reboot_gate,i9100_storage_reboot_ready,i9100_storage_reboot_request;
++#endif
++#ifdef I9100_USB_SIM
++static volatile unsigned i9100_lpm_poweroff_ready,i9100_lpm_poweroff_request;
++#else
++#ifdef I9100_HFS_FROZEN_REFERENCE
++/* Historical 11/16 link intentionally has no LPM Power worker. Keep it
++ * disabled for this offline link, without importing the live charger's
++ * different structures or masking a missing provider in production. */
+ static volatile unsigned i9100_lpm_poweroff_ready,i9100_lpm_poweroff_request;
+ #else
+ extern volatile unsigned i9100_lpm_poweroff_ready,i9100_lpm_poweroff_request;
++#endif
+ #endif
+ static uint64_t uctl_reset_at;
+ static unsigned int i9100_usb_bulk_mps = 512;
+@@ -338,14 +350,18 @@
+ 		else if (!strcmp(verb, "root-status"))
+ 			answer = uctl_root_status();
+ 		else if (!strcmp(verb,"poweroff-charge")) {
+-            if(!uctl_enabled || !i9100_lpm_poweroff_ready)answer="ERR disabled";
++            if(!uctl_enabled || !i9100_lpm_poweroff_ready || i9100_storage_reboot_gate)answer="ERR disabled";
+             else {uctl_action=4;answer="OK poweroff-charge";}
+         }
+ 		else if (!strcmp(verb, "reboot") || !strcmp(verb, "reboot-download")) {
+ 			if (!uctl_enabled || !i9100_pmu_map) answer = "ERR disabled";
+ 			else {
+-				uctl_action = !strcmp(verb, "reboot-download") ? 2 : 1;
++	            if (i9100_storage_reboot_gate && i9100_storage_reboot_gate != 2 && !i9100_usb_panic_mode) {
++                answer="ERR storage-not-ready";
++            } else {
++			uctl_action = !strcmp(verb, "reboot-download") ? 2 : 1;
+ 				answer = uctl_action == 2 ? "OK reboot-download" : "OK reboot";
++            }
+ 			}
+ 		} else if (!strncmp(verb, "hid-home ", 9) || !strncmp(verb,"hid-power ",10)) {
+             unsigned power=!strncmp(verb,"hid-power ",10);
+@@ -587,6 +603,14 @@
+ 		}
+ 	}
+     if (!action || UCTL_NOW() < uctl_reset_at) return;
++    if ((action==1 || action==2 || action==4) && i9100_storage_reboot_gate && !i9100_usb_panic_mode) {
++        if (i9100_storage_reboot_gate != 2) {uctl_reset_action=0;return;}
++        if (!i9100_storage_reboot_request)i9100_storage_reboot_request=(unsigned)action;
++        if (i9100_storage_reboot_request != (unsigned)action || i9100_storage_reboot_ready==3) {
++            uctl_reset_action=0;return;
++        }
++        if (i9100_storage_reboot_ready!=2)return;
++    }
+ 	uctl_reset_action = 0;
+     if (action == 4) {
+         i9100_lpm_poweroff_request=1;

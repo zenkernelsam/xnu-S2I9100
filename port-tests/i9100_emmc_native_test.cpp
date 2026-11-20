@@ -95,7 +95,12 @@ int main()
  const uint64_t high=3489792ULL+8388608ULL;
  assert(!i9100_emmc_native_write_data(n,high,32U,bytes));assert(!i9100_emmc_native_read(n,high,32U,readback));assert(!memcmp(bytes,readback,sizeof(bytes)));
  assert(i9100_emmc_native_write_data(n,344064ULL,1U,bytes)==I9100_EMMC_PARTITION);
- assert(!i9100_emmc_native_synchronize(n)&&fixture_flushes()==1U);finish(&n);
+ assert(!i9100_emmc_native_synchronize(n)&&fixture_flushes()==1U);
+ assert(!i9100_emmc_native_seal_data(n)&&fixture_flushes()==2U);
+ unsigned sealed_writes=fixture_sector_writes();assert(i9100_emmc_native_write_data(n,high,1U,bytes)==I9100_EMMC_DIRTY);
+ assert(fixture_sector_writes()==sealed_writes&&!i9100_emmc_native_read(n,high,1U,readback));
+ assert(i9100_emmc_native_seal_data(n)==I9100_EMMC_DIRTY);
+ assert(!i9100_emmc_native_snapshot(n,&snap)&&snap.sealed&&!snap.error&&!snap.writer_dirty);finish(&n);
  for(unsigned k=1;k<=14;k++){
   setup(source);m.fail_at=k;int e=i9100_emmc_native_open(1,&parent,&profile,I9100_EMMC_N_DATA_RW,&approved,&n);
   if(e){assert(!n&&!m.contexts&&!m.locks&&!m.maps&&!m.descriptors&&!parent.holds);fixture_finish();}else finish(&n);

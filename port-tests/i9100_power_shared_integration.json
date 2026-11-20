@@ -1,10 +1,10 @@
 {
   "source_sha256": {
-    "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_power_bus.c": "7aa03807ab6e31b73281921c67688875b9ac6ee09f6cbc6b822ef73cf05f26b5",
-    "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100Power.cpp": "d84c1bd6ad0f3b83e9ddc365119fcba6557eb69ea9373135f1c891edd48e8371",
+    "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_power_bus.c": "3b1a04ded2d811131dd9b194f1c9118d713ccc6204c5ddd775753b84baf463ab",
+    "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100Power.cpp": "fa05447bdfce77228ba1bb68c29c0a81c2cf8bd3f10eb71ed3913be7dea6ee56",
     "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp": "2fd2b6e75c723a59e66660279835881ae3cbdab21a5481f5d3ab4ff70ed344ac"
   },
-  "patch_sha256": "0d8c133c6bd1e26d0e4caea194c2dc916c59d9e389269f08795d8a82f0b7de02",
+  "patch_sha256": "cb0767145d1e7d7e9d8870d3d04b8f9f7028e9d9fde8bfad90e363ba4f0ac5ca",
   "applied": false,
   "default_enabled": false,
   "objects": [

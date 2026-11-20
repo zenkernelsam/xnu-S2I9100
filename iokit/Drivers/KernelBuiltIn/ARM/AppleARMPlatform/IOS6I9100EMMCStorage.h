@@ -11,7 +11,7 @@ class IOS6I9100EMMCStorage : public IOStorage {
  IOMedia *media[2];IOService *opened[2];uint32_t access[2];
  IOLock *mutex;uint8_t *bounce;
  struct i9100_emmc_native_snapshot snapshot;
- bool held,stopping,published;
+ bool held,stopping,published,sealed;
  int child(const IOService *) const;
  bool attachMedia(unsigned);
  void transfer(bool,IOService *,UInt64,IOMemoryDescriptor *,IOStorageAttributes *,IOStorageCompletion *);
@@ -32,6 +32,7 @@ public:
  IOReturn discard(IOService *,UInt64,UInt64) override;
  IOMedia *copyMedia(unsigned role); /* retained IOMedia1=system,2=data */
  bool validateMedia(IOMedia *,unsigned role) const;
+ int sealData(); /* both exact media closed; final native sync + seal */
 };
 /* Explicit platform binding only; no personality or boot flag starts it.
  * Native card must be DATA_RW with actual approved HFS roles. Publish two

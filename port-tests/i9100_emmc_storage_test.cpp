@@ -93,6 +93,11 @@ int main()
  i9100_emmc_alias_commit(system,system_ticket);i9100_emmc_alias_commit(data,data_ticket);
  assert(resource_service.getProperty("i9100-system-media")==system&&resource_service.getProperty("i9100-data-media")==data);
  IOMedia *pinned=i9100_emmc_alias_copy_root();assert(pinned==system);pinned->release();
+ uint32_t actual_devices[4]={91,92,93,94};uint64_t creation_tickets[2]={95,96};
+ assert(i9100_emmc_alias_devices(actual_devices,creation_tickets)&&actual_devices[0]==91&&creation_tickets[0]==95);
+ data->setProperty("BSD Major",14U,32);data->setProperty("BSD Minor",10U,32);
+ assert(!i9100_emmc_alias_devices(actual_devices,creation_tickets)&&actual_devices[0]==14&&actual_devices[1]==9&&
+  actual_devices[2]==14&&actual_devices[3]==10&&creation_tickets[0]==system_ticket&&creation_tickets[1]==data_ticket);
  unsigned pinned_refs=system->getRetainCount();
  /* commit has finished publication but matching is deliberately paused.
   * Concurrent removal must complete, keep its retained local media valid,
@@ -103,6 +108,7 @@ int main()
   assert(notification_cv.wait_for(l,std::chrono::seconds(3),[]{return notification_entered;}));}
  i9100_emmc_alias_invalidate(data);unpublish_alias(data);
  assert(!i9100_emmc_alias_copy_root()&&!resource_service.getProperty("i9100-system-media")&&!resource_service.getProperty("i9100-data-media"));
+ assert(i9100_emmc_alias_devices(actual_devices,creation_tickets));
  {std::lock_guard<std::mutex> l(notification_mutex);notification_continue=true;notification_cv.notify_all();}
  late.join();{std::lock_guard<std::mutex> l(notification_mutex);pause_notification=false;}
  assert(system->getRetainCount()+1U==pinned_refs); /* Removed resource retain, local pin dropped. */
@@ -155,7 +161,17 @@ int main()
  bool protectedMedia=false;assert(!raw->reportWriteProtection(&protectedMedia)&&protectedMedia);
  s->stop(whole); // Open media blocks stop without changing service state.
  IOMedia *extra=s->copyMedia(1);assert(extra);extra->release();
- s->close(system);s->close(data);s->stop(whole);assert(system->terminated&&data->terminated&&!s->copyMedia(1));
+ uint32_t seal_numbers[4];uint64_t seal_tickets[2];assert(!i9100_emmc_alias_devices(seal_numbers,seal_tickets));
+ assert(i9100_emmc_alias_seal_data(seal_numbers,seal_tickets)==I9100_EMMC_BUSY); // Live DATAFS cannot seal.
+ s->close(data);
+ assert(!i9100_emmc_alias_seal_data(seal_numbers,seal_tickets)); // SYSTEM read-only root may remain open.
+ assert(!i9100_emmc_alias_copy_root()&&!resource_service.getProperty("i9100-system-media"));
+ assert(!s->open(data,0,kIOStorageAccessReaderWriter));unsigned postseal=fixture_sector_writes();
+ auto *sealed_provider=new IOS6I9100EMMCStorage;assert(sealed_provider->init()&&!sealed_provider->bind(1,native));sealed_provider->release();
+ submit(s,true,data,lba*512U,&buffer);assert(completion_error==kIOReturnNotOpen&&!completion_bytes&&fixture_sector_writes()==postseal);
+ assert(i9100_emmc_native_write_data(native,lba,1U,buffer.payload.data())==I9100_EMMC_DIRTY&&fixture_sector_writes()==postseal);
+ submit(s,false,system,system->base,&buffer);assert(!completion_error&&completion_bytes==512U); // RO root reads remain legal.
+ s->close(system);s->stop(whole);assert(system->terminated&&data->terminated&&!s->copyMedia(1));
  unpublish_alias(system);unpublish_alias(data);assert(actual_tickets.empty());
  assert(resource_service.getProperty("i9100-system-media")==nullptr&&resource_service.getProperty("i9100-data-media")==nullptr);
  system->release();data->release();s->detach(whole);s->release();whole->detach(&driver);whole->release();driver.detach(raw);raw->detach(&platform);raw->release();assert(!objects);

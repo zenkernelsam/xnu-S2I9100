@@ -14,6 +14,11 @@ enum {kIOReturnNotWritable=-2,kIOReturnBusy=-3,kIOReturnNoMedia=-4,kIOReturnUnsu
  kIOReturnIOError=-6,kIOReturnNotPermitted=-7,kIOReturnNotOpen=-8,kIOReturnUnderrun=-9};
 enum {kIOStorageAccessReader=1,kIOStorageAccessReaderWriter=3,kIOServiceRequired=1};
 class OSDictionary {};
+class OSNumber : public OSObject {
+public:
+ uint32_t value=0;bool present=false;
+ uint32_t unsigned32BitValue()const{return value;}
+};
 class OSData : public OSObject {
 public:
  using OSObject::init;
@@ -22,6 +27,7 @@ public:
 };
 class IOService : public OSObject {
  IOService *provider=nullptr;
+ OSNumber bsd_major,bsd_minor;
 public:
  using OSObject::init;
  std::map<std::string,std::string> strings;
@@ -40,13 +46,18 @@ public:
  virtual bool terminate(unsigned){terminated=true;registered=false;return true;}
  bool setProperty(const char *k,const char *v){strings[k]=v;return true;}
  bool setProperty(const char *k,bool v){numbers[k]=v;return true;}
- bool setProperty(const char *k,uint64_t v,unsigned){numbers[k]=v;return true;}
+ bool setProperty(const char *k,uint64_t v,unsigned){numbers[k]=v;
+  if(!strcmp(k,"BSD Major")){bsd_major.value=v;bsd_major.present=true;}
+  if(!strcmp(k,"BSD Minor")){bsd_minor.value=v;bsd_minor.present=true;}return true;}
  bool setProperty(const char *k,OSData *v){data[k]=v->bytes;return true;}
  bool setProperty(const char *k,OSObject *v){removeProperty(k);v->retain();object_properties[k]=v;return true;}
  void setName(const char *v){strings["name"]=v;}void setLocation(const char *v){strings["location"]=v;}
  void registerService();
  static IOService *getResourceService();static void publishResource(const char *,OSObject *);
- OSObject *getProperty(const char *k){auto found=object_properties.find(k);return found==object_properties.end()?nullptr:found->second;}
+ OSObject *getProperty(const char *k){if(!strcmp(k,"BSD Major"))return bsd_major.present?&bsd_major:nullptr;
+  if(!strcmp(k,"BSD Minor"))return bsd_minor.present?&bsd_minor:nullptr;
+  auto found=object_properties.find(k);return found==object_properties.end()?nullptr:found->second;}
+ OSObject *copyProperty(const char *k){OSObject *o=getProperty(k);if(o)o->retain();return o;}
  void removeProperty(const char *k){auto found=object_properties.find(k);if(found!=object_properties.end()){found->second->release();object_properties.erase(found);}}
 };
 typedef IOService IORegistryEntry;

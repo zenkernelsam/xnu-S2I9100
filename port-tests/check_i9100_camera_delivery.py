@@ -60,6 +60,17 @@ def main():
                 found = True
                 if sha(REPO / "port-tests" / m[key]) != m[hash_key]:
                     raise RuntimeError("Model code changed")
+        if m.get('extracted_production') or m.get('storage_shutdown_protocol_model'):
+            found=True
+            for name,expected in m['fixture_sources'].items():
+                if sha(REPO/name)!=expected:raise RuntimeError('Actual VFS/USB fixture drift')
+            if sha(folder/'models')!=m['model_artifact_sha256']:raise RuntimeError('VFS/USB model binary changed')
+            if m.get('extracted_production') and sha(folder/'actual-vfs-model.c')!=m['extracted_production']['source_sha256']:
+                raise RuntimeError('Actual extracted VFS model changed')
+            proof=m['hfs_boot_copy']
+            if sha(REPO/'port-tests/i9100_hfs_boot_integration.patch')!=proof['patch_sha256']:raise RuntimeError('Model HFS patch drift')
+            for name,expected in dict(proof['live_sources'],**proof['companion_sources'],**proof['copied_sources']).items():
+                if sha(REPO/name)!=expected:raise RuntimeError('Model original/copy HFS source drift')
         if not found:
             raise RuntimeError("Not a model proof")
         for name, expected in m.get("facade_headers", {}).items():
@@ -107,6 +118,8 @@ def main():
     if a.include_emmc:
         needed.update(("i9100_emmc.c", "i9100_emmc_writer.c", "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp"))
         needed.update(name for name in names if name.startswith(("i9100_emmc_","IOS6I9100EMMC")))
+    if kernel.get('hfs_boot_copy'):
+        needed.update(Path(n).name for n in kernel['hfs_boot_copy']['copied_sources'])
     for _ in range(32):
         if cursor in seen:
             raise RuntimeError("Cyclic complete reference")
@@ -127,7 +140,8 @@ def main():
         if not candidates:
             raise RuntimeError("Camera compile proof missing")
         chosen = candidates[0]
-        if sha(PLATFORM / name) != chosen["source_sha256"]:
+        actual_source=ROOT/chosen['source_file'] if name in {'vfs_syscalls.c','hfs_vfsops.c','bsd_init.c','kern_shutdown.c','i9100_usbcdc.c'} else PLATFORM/name
+        if sha(actual_source) != chosen["source_sha256"]:
             raise RuntimeError("Current camera code was not linked: " + name)
         if chosen["module_header"] and sha(ROOT / chosen["module_header"]) != chosen["module_header_sha256"]:
             raise RuntimeError("Current camera header was not compiled")
@@ -135,20 +149,24 @@ def main():
         matching = [path for path in inputs if object_name(path) in (name + kind, Path(name).stem + kind)]
         if len(matching) != 1 or sha(matching[0]) != sha(ROOT / chosen["object"]):
             raise RuntimeError("Frozen camera input differs from actual compiled object")
-    if kernel.get("emmc_service_copy"):
-        service=kernel["emmc_service_copy"]
+    for key,patch_name in (('emmc_service_copy','i9100_emmc_storage_integration.patch'),('hfs_boot_copy','i9100_hfs_boot_integration.patch')):
+        if not kernel.get(key):continue
+        service=kernel[key]
         for name,expected in service["live_sources"].items():
             if sha(REPO/name)!=expected:raise RuntimeError("Current BSD alias/root integration source changed")
-        patch=REPO/"port-tests/i9100_emmc_storage_integration.patch"
+        patch=REPO/'port-tests'/patch_name
         if sha(patch)!=service["patch_sha256"]:raise RuntimeError("BSD alias/root patch changed")
         for name,expected in service["copied_sources"].items():
             if sha(REPO/name)!=expected:raise RuntimeError("Compiled alias/root source copy changed")
             source_name=Path(name).name
             matches=[item for item in compile_items if item["source"]==source_name]
             if not matches or matches[0]["source_sha256"]!=expected:raise RuntimeError("Patched BSD source was not actually compiled")
-            suffixes=(source_name+".cpo",Path(source_name).stem+".cpo")
+            kind='.cpo' if source_name.endswith('.cpp') else '.o'
+            suffixes=(source_name+kind,Path(source_name).stem+kind)
             matching=[path for path in inputs if object_name(path) in suffixes]
             if len(matching)!=1 or sha(matching[0])!=sha(ROOT/matches[0]["object"]):raise RuntimeError("Patched BSD object missing from actual final freeze")
+        for name,expected in service.get('companion_sources',{}).items():
+            if sha(REPO/name)!=expected:raise RuntimeError('HFS boot companion changed')
     refs = a.references.resolve()
     if not refs.is_relative_to(ROOT / "research"):
         raise RuntimeError("Reference evidence escaped research")

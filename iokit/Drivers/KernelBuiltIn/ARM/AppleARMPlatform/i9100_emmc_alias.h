@@ -3,6 +3,15 @@
 #define I9100_EMMC_ALIAS_H
 #include <stdint.h>
 #ifdef __cplusplus
+extern "C" {
+#endif
+/* Actual committed MinorTable identities, copied under the alias gate.
+ * Layout: system major/minor, data major/minor; two creation tickets.
+ * They are numbers from original BSD nodes, never fabricated dev_t values. */
+int i9100_emmc_alias_devices(uint32_t actual_numbers[4],uint64_t creation_tickets[2]);
+int i9100_emmc_alias_seal_data(const uint32_t actual_numbers[4],const uint64_t creation_tickets[2]);
+#ifdef __cplusplus
+}
 class IOMedia;
 bool i9100_emmc_alias_prepare();
 bool i9100_emmc_alias_required(IOMedia *);

@@ -12,7 +12,7 @@ bool ios6i9100_publish_emmc_storage(int enabled,IOService *platform,i9100_emmc_n
 {
  if(enabled!=1||!platform||!native||!out||*out||ml_at_interrupt_context()||!ml_get_interrupts_enabled())return false;
  struct i9100_emmc_native_snapshot current;
- if(i9100_emmc_native_validate(native)||i9100_emmc_native_snapshot(native,&current)||current.mode!=I9100_EMMC_N_DATA_RW||current.error||!i9100_emmc_alias_prepare())return false;
+ if(i9100_emmc_native_validate(native)||i9100_emmc_native_snapshot(native,&current)||current.mode!=I9100_EMMC_N_DATA_RW||current.error||current.sealed||!i9100_emmc_alias_prepare())return false;
  IOS6I9100EMMCRaw *raw=new IOS6I9100EMMCRaw;if(!raw)return false;
  bool attached=false,ok=raw->init()&&raw->bind(1,native);
  if(ok)attached=raw->attach(platform);

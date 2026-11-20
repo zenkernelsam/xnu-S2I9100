@@ -4,6 +4,8 @@
 #include <IOKit/storage/IOMedia.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOLocks.h>
+#include <IOKit/IOBSD.h>
+#include <libkern/c++/OSNumber.h>
 #include <machine/machine_routines.h>
 #include <string.h>
 extern "C" int devfs_make_link(void *,char *,...);
@@ -111,6 +113,27 @@ IOMedia *i9100_emmc_alias_copy_root()
     resources->getProperty("i9100-data-media")==slots[1].media){root=slots[0].media;root->retain();}
  IOLockUnlock(lock);return root;
 }
+int i9100_emmc_alias_devices(uint32_t numbers[4],uint64_t tickets[2])
+{
+ IOLock *lock=gate();if(!numbers||!tickets||!lock||ml_at_interrupt_context()||!ml_get_interrupts_enabled())return -1;
+ uint32_t observed[4]={0};uint64_t generations[2]={0};int result=-1;IOLockLock(lock);
+ IOService *resources=IOService::getResourceService();
+ if(valid_pair()&&resources&&resources->getProperty("i9100-system-media")==slots[0].media&&
+    resources->getProperty("i9100-data-media")==slots[1].media){
+  result=0;
+  for(unsigned i=0;i<2;i++){
+   OSObject *a=slots[i].media->copyProperty(kIOBSDMajorKey),*b=slots[i].media->copyProperty(kIOBSDMinorKey);
+   OSNumber *major=OSDynamicCast(OSNumber,a),*minor=OSDynamicCast(OSNumber,b);
+   if(!major||!minor||!major->unsigned32BitValue())result=-1;
+   else {observed[2*i]=major->unsigned32BitValue();observed[2*i+1]=minor->unsigned32BitValue();generations[i]=slots[i].ticket;}
+   if(a)a->release();if(b)b->release();if(result)break;
+  }
+  if(observed[0]!=observed[2]||observed[1]==observed[3])result=-1;
+ }
+ IOLockUnlock(lock);
+ if(!result){memcpy(numbers,observed,sizeof(observed));memcpy(tickets,generations,sizeof(generations));}
+ return result;
+}
 void i9100_emmc_alias_invalidate(IOMedia *m)
 {
  IOLock *lock=gate();if(!m||!lock)return;IOLockLock(lock);
@@ -119,6 +142,19 @@ void i9100_emmc_alias_invalidate(IOMedia *m)
   m->setProperty("I9100EMMCAliasReady",false);
  }
  IOLockUnlock(lock);
+}
+int i9100_emmc_alias_seal_data(const uint32_t numbers[4],const uint64_t tickets[2])
+{
+ uint32_t actual[4];uint64_t generation[2];
+ if(!numbers||!tickets||i9100_emmc_alias_devices(actual,generation)||memcmp(actual,numbers,sizeof(actual))||
+    memcmp(generation,tickets,sizeof(generation)))return I9100_EMMC_OWNER;
+ IOLock *lock=gate();IOLockLock(lock);int e=I9100_EMMC_OWNER;
+ if(valid_pair()&&slots[0].ticket==tickets[0]&&slots[1].ticket==tickets[1]){
+  e=slots[1].provider->sealData();
+  if(!e){withdraw_pair();slots[0].eligible=slots[1].eligible=false;slots[0].committed=slots[1].committed=false;
+   slots[0].media->setProperty("I9100EMMCAliasReady",false);slots[1].media->setProperty("I9100EMMCAliasReady",false);}
+ }
+ IOLockUnlock(lock);return e;
 }
 void i9100_emmc_alias_unpublish(IOMedia *m,uint64_t ticket)
 {

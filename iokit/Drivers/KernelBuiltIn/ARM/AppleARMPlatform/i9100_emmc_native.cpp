@@ -21,7 +21,7 @@ struct i9100_emmc_native {
  IOMemoryDescriptor *memory[EN_MAPS];IOMemoryMap *mapping[EN_MAPS];volatile uint8_t *regs[EN_MAPS];
  i9100_emmc_card card;i9100_emmc_writer *writer;i9100_emmc_layout layout;
  struct i9100_emmc_native_snapshot snapshot;
- uintptr_t consumers[4];uint32_t phase,mode,probe_attempted;int error,cleanup_error;
+ uintptr_t consumers[4];uint32_t phase,mode,probe_attempted,sealed;int error,cleanup_error;
 };
 static int take(IOLock *l){return l&&ml_get_interrupts_enabled()&&!ml_at_interrupt_context()&&IOLockTryLock(l)?0:-1;}
 static int serialize(IOLock *l)
@@ -75,6 +75,7 @@ static void save(i9100_emmc_native *n)
  memcpy(n->snapshot.cid,n->card.cid,sizeof(n->card.cid));n->snapshot.cache_control=n->card.ext_csd[33];
  n->snapshot.writer_dirty=n->writer?n->writer->grant.dirty:0;n->snapshot.writer_poisoned=n->writer?n->writer->grant.poisoned:0;
  n->snapshot.error=n->error;n->snapshot.cleanup_error=n->cleanup_error;
+ n->snapshot.sealed=n->sealed;
 }
 static int read_layout(i9100_emmc_native *n)
 {
@@ -178,9 +179,10 @@ int i9100_emmc_native_write_data(i9100_emmc_native *n,uint64_t lba,uint32_t sect
  if(!n||!bytes)return I9100_EMMC_ARGUMENT;if(serialize(n->lifecycle))return I9100_EMMC_BUSY;
  int e=n->phase!=EN_READY?I9100_EMMC_NO_DEVICE:n->error?n->error:resources(n);
  if(!e&&(!n->writer||n->mode!=I9100_EMMC_N_DATA_RW))e=I9100_EMMC_PARTITION;
+ if(!e&&n->sealed)e=I9100_EMMC_DIRTY;
  if(!e&&(lba<n->snapshot.data.start_lba||lba>=n->snapshot.data.start_lba+n->snapshot.data.sectors))e=I9100_EMMC_PARTITION;
  if(!e)e=i9100_emmc_writer_write(n->writer,lba-n->snapshot.data.start_lba,sectors,bytes);
- if(e&&e!=I9100_EMMC_PARTITION&&e!=I9100_EMMC_ARGUMENT&&e!=I9100_EMMC_BUSY&&!n->error)n->error=e;
+ if(e&&e!=I9100_EMMC_PARTITION&&e!=I9100_EMMC_ARGUMENT&&e!=I9100_EMMC_BUSY&&!(n->sealed&&e==I9100_EMMC_DIRTY)&&!n->error)n->error=e;
  save(n);IOLockUnlock(n->lifecycle);return e;
 }
 int i9100_emmc_native_synchronize(i9100_emmc_native *n)
@@ -189,6 +191,17 @@ int i9100_emmc_native_synchronize(i9100_emmc_native *n)
  int e=n->phase!=EN_READY?I9100_EMMC_NO_DEVICE:n->error?n->error:resources(n);
  if(!e)e=n->writer?i9100_emmc_writer_synchronize(n->writer):I9100_EMMC_UNSUPPORTED;
  if(e&&e!=I9100_EMMC_UNSUPPORTED&&e!=I9100_EMMC_BUSY&&!n->error)n->error=e;
+ save(n);IOLockUnlock(n->lifecycle);return e;
+}
+int i9100_emmc_native_seal_data(i9100_emmc_native *n)
+{
+ if(!n)return I9100_EMMC_ARGUMENT;if(serialize(n->lifecycle))return I9100_EMMC_BUSY;
+ int e=n->phase!=EN_READY?I9100_EMMC_NO_DEVICE:n->error?n->error:resources(n);
+ if(!e&&(!n->writer||n->mode!=I9100_EMMC_N_DATA_RW))e=I9100_EMMC_UNSUPPORTED;
+ if(!e&&n->sealed)e=I9100_EMMC_DIRTY;
+ if(!e)e=i9100_emmc_writer_synchronize(n->writer);
+ if(!e){e=actual_idle(n);if(!e)n->sealed=1;}
+ if(e&&e!=I9100_EMMC_UNSUPPORTED&&e!=I9100_EMMC_BUSY&&!(n->sealed&&e==I9100_EMMC_DIRTY)&&!n->error)n->error=e;
  save(n);IOLockUnlock(n->lifecycle);return e;
 }
 int i9100_emmc_native_hold_get(i9100_emmc_native *n,uintptr_t consumer)

@@ -53,6 +53,7 @@ def main():
     p.add_argument("--wait-idle", type=int, default=60, choices=range(61))
     p.add_argument("--sensor-hid-service", action="store_true", help="Compile the explicit sensor HID extension only on a source copy")
     p.add_argument("--emmc-storage",action="store_true",help="Compile exact BSD media/root alias integration only on source copies")
+    p.add_argument("--hfs-boot",action="store_true",help="Compile exact VFS/HFS/prelaunchd and storage-safe USB shutdown source copies")
     args = p.parse_args()
     changed=tuple(args.replace) if args.replace else () if args.append else CHANGED
     added=tuple(args.append)
@@ -60,9 +61,13 @@ def main():
         p.error("--sensor-hid-service requires --replace IOS7LeoHIDTouch.cpp")
     if args.emmc_storage and not {"IOMediaBSDClient.cpp","IOKitBSDInit.cpp"}.issubset(changed):
         p.error("--emmc-storage requires paired IOMediaBSDClient.cpp and IOKitBSDInit.cpp replacements")
+    hfs_names={"vfs_syscalls.c","hfs_vfsops.c","bsd_init.c","kern_shutdown.c","i9100_usbcdc.c"}
+    if args.hfs_boot and not hfs_names.issubset(changed):
+        p.error("--hfs-boot requires all five actual BSD/USB source replacements")
     if len(set(changed+added))!=len(changed+added) or any(
             not re.fullmatch(r"[A-Za-z0-9_]+\.(c|cpp)", name) or not ((REPO/"iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform"/name).is_file()
-            or args.emmc_storage and name in ("IOMediaBSDClient.cpp","IOKitBSDInit.cpp"))
+            or args.emmc_storage and name in ("IOMediaBSDClient.cpp","IOKitBSDInit.cpp")
+            or args.hfs_boot and name in hfs_names)
             for name in changed+added):
         raise RuntimeError("Use unique, existing platform source names")
     base = args.base.resolve()
@@ -139,7 +144,12 @@ def main():
         from i9100_emmc_storage_copy import prepare as prepare_emmc_service,verify as verify_emmc_service
         copies=prepare_emmc_service(e)
         overrides=dict(overrides or {},**copies)
-    e.cross_compile(list(changed+added),overrides)
+    hfs_copies={}
+    if args.hfs_boot:
+        from i9100_hfs_boot_copy import prepare as prepare_hfs,verify as verify_hfs,compile_bsd
+        hfs_copies=prepare_hfs(e)
+        compile_bsd(e,hfs_copies)
+    e.cross_compile([name for name in changed+added if name not in hfs_copies],overrides)
     replaced = {}
     def object_name(path):return re.sub(r"^(?:[0-9]{4}-)+","",Path(path).name)
     for name in changed:
@@ -176,6 +186,8 @@ def main():
         e.result["sensor_service_copy"] = manifest["sensor_service_copy"]
     if args.emmc_storage:verify_emmc_service(e)
     elif manifest.get("emmc_service_copy"):e.result["emmc_service_copy"]=manifest["emmc_service_copy"]
+    if args.hfs_boot:verify_hfs(e)
+    elif manifest.get("hfs_boot_copy"):e.result["hfs_boot_copy"]=manifest["hfs_boot_copy"]
     prior_peripherals=manifest.get("peripheral_objects")
     if prior_peripherals is None:
         prior_peripherals=manifest.get("retained_peripheral_objects")
