@@ -23,6 +23,7 @@
 #include "i9100_panic_context.h"
 #include "i9100_previous_boot.h"
 #include "i9100_boot_source.h"
+#include "../../iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_charge_epoch.h"
 #include <kern/debug.h>
 #include <kern/clock.h>
 #include <mach/vm_param.h>
@@ -269,6 +270,7 @@ static int i9100_os_reboot_download;
 static int i9100_lpm_loader_supported;
 static vm_offset_t i9100_lpm_gpio;
 extern volatile uint32_t i9100_power_connected;
+extern volatile uint32_t i9100_charge_epoch_live[I9100_CHARGE_EPOCH_WORDS];
 static int i9100_halt_restart(unsigned int action)
 {
     /* Called by halt_all_cpus after the ordinary BSD shutdown/sync path.
@@ -280,6 +282,14 @@ static int i9100_halt_restart(unsigned int action)
             unsigned cable=i9100_lpm_gpio?
                 !(*(volatile uint32_t*)(i9100_lpm_gpio+0x104)&(1U<<5)):i9100_power_connected;
             if(cable){
+                if(i9100_trace_cell){
+                    uint32_t checksum=i9100_charge_epoch_seal(
+                        (volatile uint32_t *)(i9100_trace_cell+I9100_CHARGE_EPOCH_OFFSET),
+                        i9100_charge_epoch_live,mach_absolute_time());
+                    *(volatile uint32_t*)(i9100_trace_pmu+0x818)=I9100_CHARGE_EPOCH_MARKER;
+                    *(volatile uint32_t*)(i9100_trace_pmu+0x81c)=checksum;
+                    __asm__ volatile("dsb sy" ::: "memory");
+                }
                 *(volatile uint32_t*)(i9100_trace_pmu+0x808)=0;
                 *(volatile uint32_t*)(i9100_trace_pmu+0x80c)=0;
                 __asm__ volatile("dsb sy" ::: "memory");

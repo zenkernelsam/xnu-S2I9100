@@ -6,6 +6,8 @@
 #include "i9100_power.h"
 #include "i9100_charge_diag.h"
 #include "i9100_charge_adopt.h"
+#include "i9100_charge_epoch.h"
+#include "i9100_rtc_time.h"
 
 struct BatteryModel {
  uint8_t pmic[256];uint16_t fuel[256];unsigned adc6=937,adc7=989;
@@ -104,7 +106,7 @@ static void handoff_checks()
   if(bad==0)r.magic=0;if(bad==1)r.revision=7;if(bad==2)r.sub_charger=0;
   if(bad==3)r.enabled_after=1;if(bad==4)r.qualified_samples=10;
   if(bad==5)r.recovery_seconds=9;if(bad==6)r.timeout=1;if(bad==7)r.valid=0;
-  if(bad==8)r.elapsed_seconds=101;if(bad==9)r.temperature_deci_c=UINT32_MAX;
+  if(bad==8)r.elapsed_seconds=86401;if(bad==9)r.temperature_deci_c=UINT32_MAX;
   if(bad==10)r.published_high=1;if(bad==11)m.time=99ULL*1000000000ULL;
   if(bad==12)bytes=124;if(bad==13)r.fault=1;
   r.checksum=i9100_charge_handoff_checksum(&r);
@@ -117,6 +119,7 @@ static void handoff_checks()
   auto r=handoff_record(14,20,19);m.time=22000000000ULL;
   assert(i9100_charge_adopt(&s,&r,sizeof(r),m.time)==I9100_CHARGE_ADOPT_APPLIED);
   assert(s.charge_start==1U); // First partial second must not restart its period.
+  assert(s.charge_elapsed_base==1U);
   m.adcOK=false;assert(i9100_power_poll(&s)<0 && !s.enabled);
  }
  {
@@ -213,19 +216,88 @@ static void policy_checks()
  printf("Charging policy: 16 revisions, full-stop recharge, 90min maintenance bound, refresh preserving deadline, timeout latch, voltage/thermal guards and %u injected I/O failures passed\n",faultChecks);
 }
 
+static void epoch_checks()
+{
+ for(unsigned rev: {7U,8U,14U}){
+  for(unsigned recharge: {0U,1U}){
+   BatteryModel source;auto io=source.io();i9100_power_state before;
+   assert(!i9100_power_init(&before,&io,rev) && !i9100_power_poll(&before));
+   before.recharging=recharge;source.time=300000000000ULL;
+   I9100ChargeEpoch r;i9100_charge_epoch_encode(&r,&before,source.time,1,1,900000000);
+   volatile uint32_t live[32]={};uint32_t storage[96];memset(storage,0xa5,sizeof(storage));
+   i9100_charge_epoch_publish(live,&r);
+   unsigned checksum=i9100_charge_epoch_seal(storage+32,live,source.time+1000000000ULL);
+   for(unsigned n=0;n<32;n++)assert(storage[n]==0xa5a5a5a5 && storage[n+64]==0xa5a5a5a5);
+   I9100ChargeEpoch sealed;assert(i9100_charge_epoch_read(storage+32,&sealed) && sealed.route==1 && sealed.checksum==checksum);
+   BatteryModel destination;auto afterIO=destination.io();i9100_power_state after;
+   assert(!i9100_power_init(&after,&afterIO,rev));destination.time=8000000000ULL;
+   unsigned operations=destination.ops;
+   assert(i9100_charge_epoch_restore(&after,&sealed,1,destination.time,1,900000010)==I9E_RESTORED);
+   assert(destination.ops==operations && !after.enabled && after.recharging==recharge);
+   assert(after.charge_start==destination.time && after.charge_elapsed_base==311000000000ULL);
+   assert(!i9100_power_poll(&after) && after.enabled);
+   destination.time=after.charge_start+(recharge?5400ULL:18000ULL)*1000000000ULL-after.charge_elapsed_base;
+   assert(!i9100_power_poll(&after) && after.timeout && !after.enabled && !destination.sub);
+   destination.plugged=false;destination.pmic[0x10]=0;
+   assert(!i9100_power_poll(&after) && !after.timeout && !after.charge_elapsed_base && !after.refresh_elapsed_base);
+  }
+ }
+ for(unsigned mode=0;mode<8;mode++){
+  BatteryModel m;auto io=m.io();i9100_power_state before;assert(!i9100_power_init(&before,&io,14) && !i9100_power_poll(&before));
+  m.time=17999000000000ULL;I9100ChargeEpoch r;
+  if(mode==1){before.full=1;before.enabled=before.charging=0;before.charge_start=before.charge_refresh=0;}
+  if(mode==2){before.timeout=1;before.enabled=before.charging=0;}
+  if(mode==3){before.thermal_block=1;before.enabled=before.charging=0;}
+  i9100_charge_epoch_encode(&r,&before,m.time,1,1,900000000);
+  volatile uint32_t live[32],slot[32];i9100_charge_epoch_publish(live,&r);
+  i9100_charge_epoch_seal(slot,live,m.time);assert(i9100_charge_epoch_read(slot,&r));
+  if(mode==4)r.checksum^=1;
+  if(mode==5)r.flags=0;
+  BatteryModel newer;auto newerIO=newer.io();i9100_power_state after;assert(!i9100_power_init(&after,&newerIO,14));
+  uint64_t rtc=mode==6?899999999:900000010;
+  unsigned result=i9100_charge_epoch_restore(&after,&r,1,newer.time,mode!=7,rtc);
+  if(mode==0 || mode==2)assert(result==I9E_EXPIRED && after.timeout);
+  else if(mode==1)assert(result==I9E_RESTORED && after.full && !after.charge_start && !after.charge_elapsed_base);
+  else if(mode==3)assert(result==I9E_EXPIRED && after.thermal_block && after.timeout);
+  else assert(result==I9E_REJECTED && after.timeout);
+  if(result==I9E_EXPIRED || result==I9E_REJECTED)assert(!i9100_power_poll(&after) && !after.enabled);
+ }
+ {
+  BatteryModel m;auto io=m.io();i9100_power_state before;assert(!i9100_power_init(&before,&io,14) && !i9100_power_poll(&before));
+  before.charge_elapsed_base=14000000000000ULL;m.time=20000000000ULL;
+  I9100ChargeEpoch r;i9100_charge_epoch_encode(&r,&before,m.time,7,1,900000000);
+  volatile uint32_t live[32],slot[32];i9100_charge_epoch_publish(live,&r);
+  i9100_charge_epoch_seal(slot,live,m.time+601000000000ULL);
+  assert(!i9100_charge_epoch_read(slot,&r)); // Stale halt cannot silently become a new period.
+  i9100_charge_epoch_encode(&r,&before,m.time,8,0,0);i9100_charge_epoch_publish(live,&r);
+  i9100_charge_epoch_seal(slot,live,m.time);assert(!i9100_charge_epoch_read(slot,&r));
+  auto handoff=handoff_record(14,20,14019);m.time=22000000000ULL;
+  assert(i9100_charge_adopt(&before,&handoff,sizeof(handoff),m.time)==I9100_CHARGE_ADOPT_APPLIED);
+  assert(i9100_power_elapsed(before.charge_start,before.charge_elapsed_base,m.time)==14022000000000ULL);
+ }
+ uint8_t rtc[7]={59,59,23,1,12,26,31};uint64_t a,b;
+ assert(i9100_rtc_decode(rtc,2,&a));rtc[0]=0;rtc[1]=0;rtc[2]=0;rtc[4]=1;rtc[5]=27;rtc[6]=1;
+ assert(i9100_rtc_decode(rtc,2,&b) && b==a+1);
+ rtc[4]=2;rtc[5]=0;rtc[6]=29;assert(i9100_rtc_decode(rtc,2,&b));
+ rtc[5]=100;assert(!i9100_rtc_decode(rtc,2,&b));
+ rtc[5]=26;rtc[6]=28;assert(i9100_rtc_decode(rtc,2,&b));
+ assert(!i9100_rtc_decode(rtc,3,&b));rtc[0]=60;assert(!i9100_rtc_decode(rtc,2,&b));
+ puts("Warm-reset charge epoch: exact elapsed plus RTC gap, 5h/90min/full/timeout/thermal inheritance, stale/CRC/RTC refusal and reserved-memory guards passed");
+}
+
 /* Byte-level I2C peripheral driven by GPIO edges. Each instance models only
  * one known bus/address; touching another bank fails the test. */
 struct PowerGPIO {
  enum Phase {IDLE,RX,SLAVE_ACK,TX,MASTER_ACK};
  uint32_t regs[4][16384];uint8_t memory[256],hapticMemory[256];
- bool withHaptic=false,dropSlaveWrite=false;unsigned currentAddress=0,dropAddress=0,dropRegister=0,dropValue=0;
+ bool withHaptic=false,withRTC=false,dropSlaveWrite=false;uint8_t rtcMemory[256];unsigned currentAddress=0,dropAddress=0,dropRegister=0,dropValue=0;
  unsigned region,base,sda,scl,address;
  Phase phase=IDLE,next=IDLE;bool oldClock=true,oldData=true,slaveLow=false,expectAddress=true;
  bool readMode=false,nack=false,stuckClock=false,stuckData=false,masterACK=false,adcStuck=false;
  unsigned bits=0,ackPhase=0,rxByte=0,registerBytes=0,pointer=0,txByte=0,starts=0,stops=0,waits=0;
  unsigned enters=0,leaves=0,guard=0,adcSamples=0;std::vector<uint8_t> received;
- explicit PowerGPIO(bool fuel,bool haptic=false):withHaptic(haptic),region(fuel?1:0),base(fuel?0x1a0:0x40),sda(fuel?0:6),scl(fuel?1:7),address(fuel?0x36:0x66){
-  memset(regs,0,sizeof(regs));memset(memory,0,sizeof(memory));memset(hapticMemory,0,sizeof(hapticMemory));currentAddress=address;
+ explicit PowerGPIO(bool fuel,bool haptic=false,bool rtc=false):withHaptic(haptic),withRTC(rtc),region(fuel?1:0),base(fuel?0x1a0:0x40),sda(fuel?0:6),scl(fuel?1:7),address(fuel?0x36:0x66){
+  memset(regs,0,sizeof(regs));memset(memory,0,sizeof(memory));memset(hapticMemory,0,sizeof(hapticMemory));memset(rtcMemory,0,sizeof(rtcMemory));currentAddress=address;
   regs[region][base/4]=0;regs[region][(base+4)/4]=0xa5a50000;
   regs[region][(base+8)/4]=0x55660000;
  }
@@ -236,11 +308,11 @@ struct PowerGPIO {
  }
  bool clock()const{return master(scl) && !stuckClock;}
  bool data()const{return master(sda) && !slaveLow && !stuckData;}
- uint8_t *selectedMemory(){return currentAddress==0x48U?hapticMemory:memory;}
+ uint8_t *selectedMemory(){return currentAddress==0x06U?rtcMemory:currentAddress==0x48U?hapticMemory:memory;}
  void beginTX(){phase=TX;bits=0;txByte=selectedMemory()[pointer&255];slaveLow=!(txByte&0x80);}
  void acceptedByte(){
   received.push_back((uint8_t)rxByte);next=RX;
-  if(expectAddress){expectAddress=false;assert((rxByte>>1)==address||(withHaptic&&(rxByte>>1)==0x48U));currentAddress=rxByte>>1;
+  if(expectAddress){expectAddress=false;assert((rxByte>>1)==address||(withHaptic&&(rxByte>>1)==0x48U)||(withRTC&&(rxByte>>1)==0x06U));currentAddress=rxByte>>1;
    readMode=rxByte&1;if(!readMode)registerBytes=0;if(readMode)next=TX;}
   else if(!readMode){if(!registerBytes){pointer=rxByte;registerBytes=1;}else{
    unsigned reg=pointer++&255U;if(!(dropSlaveWrite&&currentAddress==dropAddress&&reg==dropRegister&&rxByte==dropValue))selectedMemory()[reg]=(uint8_t)rxByte;}}
@@ -289,6 +361,18 @@ struct PowerGPIO {
 };
 static void bus_checks()
 {
+ {
+  PowerGPIO m(false,false,true);auto hw=m.io();uint64_t seconds=0,expected=0;
+  uint8_t values[7]={29,1,13,2,11,26,20};m.rtcMemory[3]=2;
+  memcpy(m.rtcMemory+0x10,values,7);uint8_t saved[256];memcpy(saved,m.rtcMemory,256);
+  assert(i9100_rtc_decode(values,2,&expected));
+  assert(i9100_power_rtc_seconds(&hw,&seconds) && seconds==expected);
+  assert(!memcmp(saved,m.rtcMemory,256) && m.enters==m.leaves && !m.guard);
+  const std::vector<uint8_t> wire={0x0c,3,0x0d,0x0c,0x10,0x0d,0x0c,0x10,0x0d,0x0c,3,0x0d};
+  assert(m.received==wire);m.rtcMemory[3]=3;assert(!i9100_power_rtc_seconds(&hw,&seconds));
+  m.rtcMemory[3]=2;m.nack=true;assert(!i9100_power_rtc_seconds(&hw,&seconds));
+  assert(m.enters==m.leaves && !m.guard);
+ }
  for(bool fuel: {false,true}){
   PowerGPIO m(fuel);auto hw=m.io();m.memory[9]=0xa6;m.memory[10]=0x5b;
   uint32_t originalCon=m.regs[m.region][m.base/4],originalPull=m.regs[m.region][(m.base+8)/4];
@@ -368,4 +452,4 @@ static void probe_checks()
  }
  puts("Charge probe: ADC1 restoration, bounded pause, original-policy restore, thermal/timeout/IO refusal and unchanged safety deadline passed");
 }
-int main(){policy_checks();handoff_checks();bus_checks();probe_checks();return 0;}
+int main(){policy_checks();handoff_checks();epoch_checks();bus_checks();probe_checks();return 0;}

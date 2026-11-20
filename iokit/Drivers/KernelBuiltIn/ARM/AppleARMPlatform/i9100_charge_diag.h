@@ -36,8 +36,7 @@ static void i9100_charge_snapshot(const struct i9100_power_state *s,
     r[10] = (uint32_t)s->temperature_deci_c;
     r[11] = s->enabled; r[12] = s->connected; r[13] = s->charging;
     r[14] = s->full; r[15] = s->timeout; r[16] = s->recharging;
-    r[17] = s->charge_start && now >= s->charge_start ?
-        (uint32_t)((now - s->charge_start) / 1000000000ULL) : 0;
+    r[17] = (uint32_t)(i9100_power_elapsed(s->charge_start,s->charge_elapsed_base,now)/1000000000ULL);
     for (unsigned n = 0; n < 5; n++) {
         uint16_t value = 0;
         r[18 + n] = 0xffffffffU;

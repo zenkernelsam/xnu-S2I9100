@@ -45,7 +45,7 @@ static inline unsigned i9100_charge_adopt(struct i9100_power_state *s,
      r.enabled_before>1U || r.charging_before>r.enabled_before ||
      r.enabled_after || r.charging_after || r.fault || !r.polls ||
      r.qualified_samples!=11U || r.recovery_seconds<10U ||
-     r.percent<3U || r.percent>100U || r.millivolts<3600U ||
+     r.percent<3U || r.percent>100U || r.elapsed_seconds>86400U || r.millivolts<3600U ||
      r.millivolts>4300U || (int32_t)r.temperature_deci_c<50 ||
      (int32_t)r.temperature_deci_c>400 ||
      (r.full && (r.recharging || r.enabled_before ||
@@ -66,15 +66,15 @@ static inline unsigned i9100_charge_adopt(struct i9100_power_state *s,
   }
   if(!r.full && (!r.enabled_before || (int32_t)r.reason!=I9100_POWER_OK))goto rejected;
   if(r.full && r.elapsed_seconds)goto rejected;
-  if(!r.full && (uint64_t)r.elapsed_seconds>sampled_ns/1000000000ULL)goto rejected;
   s->full=r.full;s->recharging=r.recharging;s->recharge_low_count=0;
   if(!r.full){
    uint64_t elapsed=((uint64_t)r.elapsed_seconds+1U)*1000000000ULL;
    /* If the real start was in the first partial second, use the earliest
     * nonzero instant supported by the original policy's zero sentinel. */
    s->charge_start=elapsed<sampled_ns?sampled_ns-elapsed:1U;
+   s->charge_elapsed_base=elapsed<sampled_ns?0U:elapsed-sampled_ns+1U;
    uint64_t limit=(s->recharging?5400ULL:18000ULL)*1000000000ULL;
-   if(now_ns-s->charge_start>=limit){
+   if(i9100_power_elapsed(s->charge_start,s->charge_elapsed_base,now_ns)>=limit){
     s->timeout=1;s->reason=I9100_POWER_TIMEOUT;
     return I9100_CHARGE_ADOPT_EXPIRED;
    }

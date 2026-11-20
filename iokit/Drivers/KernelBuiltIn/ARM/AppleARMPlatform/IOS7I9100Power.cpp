@@ -11,6 +11,7 @@
 #include "../../../../../pexpert/arm/i9100_usb_stats.h"
 #include "i9100_power.h"
 #include "i9100_charge_adopt.h"
+#include "i9100_charge_epoch.h"
 #include "i9100_charge_diag.h"
 #include "i9100_power_budget_diag.h"
 #include "IOS7LeoGraphicsState.h"
@@ -39,7 +40,8 @@ volatile int32_t i9100_power_temp;
 volatile int32_t i9100_power_reason=I9100_POWER_IO;
 volatile uint32_t i9100_power_policy[10];
 /* One Power start owns this publication; no new USB, timer or MMIO reader. */
-volatile uint32_t i9100_charge_adopt_diag[12]={1};
+volatile uint32_t i9100_charge_adopt_diag[16]={2};
+volatile uint32_t i9100_charge_epoch_live[I9100_CHARGE_EPOCH_WORDS];
 extern processor_t master_processor;
 extern uint32_t processor_avail_count;
 extern uint32_t hz_tick_interval;
@@ -182,7 +184,9 @@ bool IOS7I9100Power::start(IOService *provider)
  i9100_charge_adopt_diag[8]=(uint32_t)adopted_now;
  i9100_charge_adopt_diag[9]=(uint32_t)(adopted_now>>32);
  i9100_charge_adopt_diag[10]=battery.enabled;
- __sync_synchronize();i9100_charge_adopt_diag[11]=1;
+ i9100_charge_adopt_diag[11]=(uint32_t)battery.charge_elapsed_base;
+ i9100_charge_adopt_diag[12]=(uint32_t)(battery.charge_elapsed_base>>32);
+ __sync_synchronize();i9100_charge_adopt_diag[15]=1;
  if(adopted!=I9100_CHARGE_ADOPT_NONE)
   IOLog("I9100 POWER handoff=%u inherited_full=%u inherited_timeout=%u recharge=%u\n",
    adopted,battery.full,battery.timeout,battery.recharging);
@@ -208,6 +212,15 @@ void IOS7I9100Power::sample(void)
  if(i9100_lpm_poweroff_ready && OSCompareAndSwap(1,2,&i9100_lpm_poweroff_request))
   thread_call_enter(i9100_lpm_poweroff_call);
  (void)i9100_power_poll(&battery);polls++;
+ /* Preserve exact policy clocks for a normal halt into the same cable's
+  * charger. The final PE hook seals this stable publication without IO. */
+ struct I9100ChargeEpoch epoch;
+ uint64_t rtc_seconds=0,rtc_began=mach_absolute_time();
+ unsigned rtc_valid=i9100_power_rtc_seconds(&hw,&rtc_seconds);
+ uint64_t rtc_finished=mach_absolute_time();
+ rtc_valid=rtc_valid && rtc_finished>=rtc_began && rtc_finished-rtc_began<=500000000ULL;
+ i9100_charge_epoch_encode(&epoch,&battery,rtc_finished,polls,rtc_valid,rtc_seconds);
+ i9100_charge_epoch_publish(i9100_charge_epoch_live,&epoch);
  if(chargeProbe==1 && chargeTest==1 && !chargeTestDone && polls>=90){
   chargeTestDone=1;
   i9100_charge_probe(&battery,&hw,polls,probeSleep);
