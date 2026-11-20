@@ -2,12 +2,14 @@
   "sources": {
     "iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp": "2fd2b6e75c723a59e66660279835881ae3cbdab21a5481f5d3ab4ff70ed344ac"
   },
-  "patch_sha256": "d8e47abce1cd9a4b2d043dcba2c4297071a1314a607fb9b9e0916b91e7b5db03",
+  "patch_sha256": "25a2ca9a6768cb33758120b690f63e4d34c0afea7387fff151d8d454b9dfe154",
   "applied": false,
   "hardware_enabled": false,
   "objects": [
     "iokit/i9100_emmc_boot_contract.o",
     "iokit/i9100_emmc_boot.cpo",
+    "iokit/i9100_emmc_clock.o",
+    "iokit/i9100_emmc_clock_native.cpo",
     "iokit/AppleARMPE.cpo"
   ],
   "requirements": "All native/pair/BSD/HFS/shutdown objects and independently reviewed DT contract; explicit rd=i9100-system only, no SD root fallback"

@@ -10,7 +10,7 @@ if hashlib.sha256(source.read_bytes()).hexdigest()!="879334a928bbffffc67d57b5849
 fixture=e.out/"i9100_emmc_native_fixture.c";fixture.write_bytes((REPO/"port-tests/i9100_emmc_native_fixture.c").read_bytes())
 # Extra include directory resolves nested fixtures; all actual production
 # code remains compiled unchanged, with wrapping only at MMIO boundary.
-c=["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c"]
+c=["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c","i9100_emmc_clock.c"]
 cpp=["i9100_emmc_native.cpp","i9100_camera_mmio.cpp"]
 # Evidence model API normally runs argv-less; make the fixture path an
 # explicit model environment input instead of replacing controller state.

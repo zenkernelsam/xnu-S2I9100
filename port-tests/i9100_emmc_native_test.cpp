@@ -17,7 +17,7 @@ uint32_t fixture_read(unsigned);void fixture_write(unsigned,uint32_t);uint64_t f
 unsigned fixture_writes();unsigned fixture_sector_writes();unsigned fixture_flushes();void fixture_fault(unsigned);void fixture_clear_fault();
 }
 enum {HOST,CMU,GPIO,GIC,CHIP,MAPS};
-static uint32_t regs[MAPS][65536/4];
+static uint32_t regs[MAPS][131072/4];
 static struct model {unsigned count,fail_at,contexts,locks,maps,descriptors,put_fail;bool interrupts,interrupt_context;} m;
 #ifndef I9100_EMMC_REAL_PARENT_MODEL
 struct i9100_peripheral_native {unsigned holds;};static i9100_peripheral_native parent;
@@ -48,7 +48,7 @@ IOMemoryMap *IOMemoryDescriptor::map(unsigned flags)
 {
  if(fail())return nullptr;assert(flags==kIOMapInhibitCache);
  const uint32_t address[MAPS]={0x12550000U,0x10030000U,0x11000000U,0x10490000U,0x10000000U};
- for(unsigned k=0;k<MAPS;k++)if(physical==address[k]){assert(bytes==(k==CMU?65536U:4096U));
+ for(unsigned k=0;k<MAPS;k++)if(physical==address[k]){assert(k==CMU?(bytes==65536U||bytes==131072U):bytes==4096U);
   auto *v=new IOMemoryMap;v->address=(uintptr_t)regs[k];m.maps++;return v;}
 #ifdef I9100_EMMC_REAL_PARENT_MODEL
  static uint32_t gpio0[1024],gpz[1024],i2c1[1024],i2c6[1024],i2c7[1024],uart0[1024],sdio3[1024];
@@ -66,7 +66,13 @@ void IOMemoryMap::release(){assert(m.maps);m.maps--;delete this;}
 extern "C" uint32_t __real_i9100_camera_mmio_read(volatile uint8_t *,unsigned);
 extern "C" void __real_i9100_camera_mmio_write(volatile uint8_t *,unsigned,uint32_t);
 extern "C" uint32_t __wrap_i9100_camera_mmio_read(volatile uint8_t *base,unsigned off)
-{return base==(volatile uint8_t *)regs[HOST]&&off!=0x9c?fixture_read(off):__real_i9100_camera_mmio_read(base,off);}
+{
+#if defined(I9100_EMMC_CLOCK_OBSERVER_MODEL)
+ return __real_i9100_camera_mmio_read(base,off); /* Observer reads quiet registers, not MMC FIFO/card protocol. */
+#else
+ return base==(volatile uint8_t *)regs[HOST]&&off!=0x9c?fixture_read(off):__real_i9100_camera_mmio_read(base,off);
+#endif
+}
 extern "C" void __wrap_i9100_camera_mmio_write(volatile uint8_t *base,unsigned off,uint32_t value)
 {assert(base==(volatile uint8_t *)regs[HOST]);fixture_write(off,value);}
 #ifndef I9100_EMMC_REAL_PARENT_MODEL
@@ -75,7 +81,7 @@ int i9100_peripheral_native_hold_get(i9100_peripheral_native *p,i9100_native_par
 int i9100_peripheral_native_hold_put(i9100_native_parent_hold *h)
 {assert(h->owned&&h->self==(uintptr_t)h&&h->context->holds);if(m.put_fail)return -1;h->context->holds--;h->owned=0;return 0;}
 #endif
-static i9100_emmc_inherited_profile profile={1,100000000U,6U<<16,0x500U,0x10001U,0x3133U,0U,0xaaU};
+static i9100_emmc_inherited_profile profile={1,100000000U,6U<<16,0x500U,0x10001U,0x3133U,0U,0xaaU,24000000U,24000000U};
 static void setup(const char *source)
 {
  assert(!m.contexts&&!m.locks&&!m.maps&&!m.descriptors);
@@ -85,6 +91,7 @@ static void setup(const char *source)
  memset(&m,0,sizeof(m));m.interrupts=true;
  memset(regs,0,sizeof(regs));regs[CMU][0xc940/4]=1U<<9;regs[CMU][0xc340/4]=1U<<16;
  regs[CMU][0xc240/4]=profile.source_mux;regs[CMU][0xc54c/4]=profile.source_divider;regs[HOST][0x9c/4]=profile.clksel;
+ regs[CMU][0x14200/4]=1U<<8;regs[CMU][0x14108/4]=0xa0960301U;
  regs[GPIO][0x40/4]=profile.gpk0_mux;regs[GPIO][0x48/4]=profile.gpk0_pull;regs[GPIO][0x4c/4]=profile.gpk0_drive;regs[GPIO][0x44/4]=4U;
  regs[CHIP][0]=0x43210011U;assert(!fixture_setup(source));
 }
@@ -99,6 +106,11 @@ int main()
  assert(!i9100_emmc_native_open(1,&parent,&profile,I9100_EMMC_N_INSPECT,nullptr,&n));
  struct i9100_emmc_native_snapshot snap={};assert(!i9100_emmc_native_snapshot(n,&snap));
  assert(snap.identity.sectors==30777344U&&snap.system_hfs_valid&&snap.data_hfs_valid&&snap.data_hfs.bytes==6442450944ULL);
+ uint8_t clockwire[512];assert(!i9100_emmc_native_clock_snapshot(n,clockwire));
+ assert(clockwire[0]=='I'&&clockwire[1]=='9'&&clockwire[2]=='E'&&clockwire[3]=='C');
+ unsigned before_clock=fixture_writes();regs[CMU][0x14108/4]^=1U<<16;
+ assert(i9100_emmc_native_validate(n)==I9100_EMMC_CLOCK&&fixture_writes()==before_clock);
+ regs[CMU][0x14108/4]^=1U<<16;assert(!i9100_emmc_native_validate(n));
  i9100_emmc_writer_identity approved=snap.identity;
  assert(i9100_emmc_native_open(1,&parent,&profile,I9100_EMMC_N_INSPECT,nullptr,&other)==I9100_EMMC_BUSY&&!other);
  i9100_emmc_host_lease old={};assert(i9100_emmc_host_acquire(&old)==I9100_EMMC_BUSY);
@@ -124,8 +136,12 @@ int main()
  assert(i9100_emmc_native_open(1,&parent,&profile,I9100_EMMC_N_DATA_RW,&wrong,&n)==I9100_EMMC_OWNER&&!n);fixture_finish();
  setup(source);regs[CMU][0xc54c/4]^=1U;
  assert(i9100_emmc_native_open(1,&parent,&profile,I9100_EMMC_N_DATA_RW,&approved,&n)==I9100_EMMC_CLOCK&&!n&&!fixture_writes());fixture_finish();
+ setup(source);regs[CMU][0x14108/4]^=1U<<16;
+ assert(i9100_emmc_native_open(1,&parent,&profile,I9100_EMMC_N_INSPECT,nullptr,&n)==I9100_EMMC_CLOCK&&!n&&!fixture_writes());fixture_finish();
  setup(source);regs[GIC][0x10c/4]|=1U<<13;
- assert(i9100_emmc_native_open(1,&parent,&profile,I9100_EMMC_N_INSPECT,nullptr,&n)==I9100_EMMC_OWNER&&!n);fixture_finish();
+ assert(i9100_emmc_native_open(1,&parent,&profile,I9100_EMMC_N_INSPECT,nullptr,&n)==I9100_EMMC_BUSY&&n&&m.maps==5);
+ assert(i9100_emmc_native_close(&n)==I9100_EMMC_BUSY&&n);
+ regs[GIC][0x10c/4]=0;finish(&n); /* Independent host owner became idle; production never clears it. */
  setup(source);assert(!i9100_emmc_native_open(1,&parent,&profile,I9100_EMMC_N_DATA_RW,&approved,&n));
  regs[CMU][0xc240/4]^=1U;assert(!i9100_emmc_native_write_data(n,high,1U,bytes));finish(&n);
  setup(source);assert(!i9100_emmc_native_open(1,&parent,&profile,I9100_EMMC_N_DATA_RW,&approved,&n));

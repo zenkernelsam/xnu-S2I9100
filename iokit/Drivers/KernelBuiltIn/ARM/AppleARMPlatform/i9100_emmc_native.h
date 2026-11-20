@@ -11,6 +11,7 @@ struct i9100_emmc_native;
 struct i9100_emmc_inherited_profile {
  uint32_t board_data_reviewed,ciu_clock_hz,source_mux,source_divider,clksel;
  uint32_t gpk0_mux,gpk0_pull,gpk0_drive;
+ uint32_t xxti_hz,xusbxti_hz; /* Explicit24MHz board reference; used to verify the actual PLL chain. */
 };
 struct i9100_emmc_native_snapshot {
  struct i9100_emmc_writer_identity identity;
@@ -25,6 +26,7 @@ int i9100_emmc_native_open(int enabled,struct i9100_peripheral_native *,
  const struct i9100_emmc_inherited_profile *,enum i9100_emmc_native_mode,
  const struct i9100_emmc_writer_identity *approved_identity,struct i9100_emmc_native **);
 int i9100_emmc_native_snapshot(struct i9100_emmc_native *,struct i9100_emmc_native_snapshot *);
+int i9100_emmc_native_clock_snapshot(struct i9100_emmc_native *,uint8_t out[512]);
 int i9100_emmc_native_validate(struct i9100_emmc_native *);
 int i9100_emmc_native_read(struct i9100_emmc_native *,uint64_t absolute_lba,uint32_t sectors,uint8_t *);
 int i9100_emmc_native_write_data(struct i9100_emmc_native *,uint64_t absolute_lba,uint32_t sectors,const uint8_t *);

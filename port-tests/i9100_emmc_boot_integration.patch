@@ -1,12 +1,13 @@
 --- a/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp
 +++ b/iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/AppleARMPE.cpp
-@@ -14,2 +14,5 @@
+@@ -14,2 +14,6 @@
  #define HIGH_SCORE  100000
 +#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 +#include "i9100_emmc_boot.h"
++#include "i9100_emmc_clock_native.h"
 +#endif
  #define super IOPlatformExpert
-@@ -96,3 +99,7 @@
+@@ -96,3 +100,7 @@
      ios7leo_register_display(this);
 +#if defined(BOARD_CONFIG_EXYNOS4210_I9100)
 +    if (!i9100_emmc_root_selected()) ios7leo_prepare_root_file();
@@ -14,9 +15,10 @@
      ios7leo_prepare_root_file();
 +#endif
  #if defined(BOARD_CONFIG_EXYNOS3475_J1XLTE)
-@@ -100,3 +107,4 @@
+@@ -100,3 +108,5 @@
  #elif defined(BOARD_CONFIG_EXYNOS4210_I9100)
 -    ios7i9100_register_sd(this);
++    ios6i9100_register_emmc_clock_observation();
 +    if (i9100_emmc_root_selected()) ios6i9100_register_emmc_boot(this);
 +    else ios7i9100_register_sd(this);
      ios7i9100_register_power(this);

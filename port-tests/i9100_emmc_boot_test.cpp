@@ -41,6 +41,14 @@ static void boot_setup(const char *path,i9100_emmc_boot_contract *c)
 }
 static void boot_quiet()
 {assert(!m.contexts&&!m.locks&&!m.maps&&!m.descriptors&&!objects);fixture_finish();}
+static uint32_t legacy_record_crc(const uint8_t *bytes,unsigned length)
+{
+ uint32_t value=UINT32_MAX;
+ for(unsigned i=0;i<length;i++){
+  value^=bytes[i];for(unsigned bit=0;bit<8;bit++)value=(value>>1)^((0U-(value&1U))&0xedb88320U);
+ }
+ return value^UINT32_MAX;
+}
 #ifndef I9100_EMMC_BOOT_MAIN
 #define I9100_EMMC_BOOT_MAIN main
 #endif
@@ -56,6 +64,13 @@ int I9100_EMMC_BOOT_MAIN()
  }
  if(const char *folder=getenv("I9100_EMMC_BOOT_MODEL_EVIDENCE"))fixture_export_table_evidence(folder);
  assert(!i9100_emmc_boot_encode(&decoded,again)&&!memcmp(wire,again,256));
+ uint8_t legacy_wire[256];memcpy(legacy_wire,wire,256);legacy_wire[4]=1;
+ memset(legacy_wire+188,0,8);uint32_t legacy_crc=legacy_record_crc(legacy_wire,252);
+ for(unsigned k=0;k<4;k++)legacy_wire[252+k]=(uint8_t)(legacy_crc>>(8*k));
+ auto unchanged=decoded;
+ assert(i9100_emmc_boot_decode(legacy_wire,256,&decoded)==I9100_EMMC_ARGUMENT&&!memcmp(&decoded,&unchanged,sizeof(decoded)));
+ auto bad_clock=c;bad_clock.host.xxti_hz=26000000U;
+ assert(i9100_emmc_boot_encode(&bad_clock,again)==I9100_EMMC_ARGUMENT&&!m.count);
  memset(&decoded,0x55,sizeof(decoded));auto saved=decoded;wire[27]^=1;
  assert(i9100_emmc_boot_decode(wire,256,&decoded)==I9100_EMMC_ARGUMENT&&!memcmp(&decoded,&saved,sizeof(decoded)));wire[27]^=1;
  assert(i9100_emmc_boot_open(0,&platform,wire,256,&owner)==I9100_EMMC_UNSUPPORTED&&!owner&&!m.count);

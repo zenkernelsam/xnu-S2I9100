@@ -34,7 +34,11 @@ else:
     supervised_timer=' if(timer->setTimeoutMS(1000)!=kIOReturnSuccess){\n  stopSupervision("initial timer arm failed",true);return false;\n }'
     if edited[power].count(legacy_timer)!=1 and edited[power].count(supervised_timer)!=1:
         raise RuntimeError("Charger start timer/cleanup changed; inspect before integrating")
-    replace(power," return true;\n}\nvoid IOS7I9100Power::sample(void)",publisher+"\n}\nvoid IOS7I9100Power::sample(void)")
+    if 'void IOS7I9100Power::observeLowBattery(void)' in edited[power]:
+        replace(power," observeLowBattery();\n return true;\n}\nvoid IOS7I9100Power::observeLowBattery(void)",
+                      " observeLowBattery();\n"+publisher+"\n}\nvoid IOS7I9100Power::observeLowBattery(void)")
+    else:
+        replace(power," return true;\n}\nvoid IOS7I9100Power::sample(void)",publisher+"\n}\nvoid IOS7I9100Power::sample(void)")
 stop='''IOReturn IOS7I9100Power::stopShared(OSObject *owner,void *,void *,void *,void *)
 {
  IOS7I9100Power *s=(IOS7I9100Power *)owner;

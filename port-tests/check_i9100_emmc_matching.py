@@ -104,7 +104,7 @@ def main():
     history=ROOT/'assets/i9100-backup/mmcblk0-head1mb.img'
     if hashlib.sha256(history.read_bytes()).hexdigest()!='879334a928bbffffc67d57b584906c03bee10f1310a88a0f1362fc6dfb3724ef':raise RuntimeError('Historical table drift')
     os.environ['I9100_EMMC_HISTORICAL_SOURCE']=str(history)
-    c=['i9100_emmc.c','i9100_emmc_layout.c','i9100_emmc_writer.c','i9100_emmc_host.c','i9100_emmc_boot_contract.c',
+    c=['i9100_emmc.c','i9100_emmc_layout.c','i9100_emmc_writer.c','i9100_emmc_host.c','i9100_emmc_boot_contract.c','i9100_emmc_clock.c',
        'i9100_gpio_broker.c','i9100_clock_gates.c','i9100_irq_registry.c','i9100_peripheral_board.c','i9100_irq_cascade.c',
        'i9100_i2c_samsung.c','i9100_uart_bluetooth.c','i9100_sdio.c','i9100_bluetooth_h4.c','i9100_bcm_f2.c']
     cpp=['i9100_emmc_native.cpp','i9100_camera_mmio.cpp','IOS6I9100EMMCStorage.cpp','IOS6I9100EMMCRaw.cpp',

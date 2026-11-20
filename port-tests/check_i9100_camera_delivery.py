@@ -83,6 +83,23 @@ def main():
             if sha(ROOT/override['path'])!=override['sha256']:raise RuntimeError('Retained model source override changed')
         if m.get('native_model_artifact_sha256') and sha(ROOT/m['native_model_artifact'])!=m['native_model_artifact_sha256']:
             raise RuntimeError('Retained native model binary changed')
+        if m.get('clock_source_references'):
+            for name,item in m['clock_source_references'].items():
+                reference=(ROOT/name).resolve()
+                if not reference.is_relative_to(ROOT/'research')or sha(reference)!=item['sha256']:
+                    raise RuntimeError('Original eMMC clock reference changed')
+                if item.get('git_blob'):
+                    raw=reference.read_bytes()
+                    blob=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+                    if blob!=item['git_blob']:raise RuntimeError('Original Samsung clock blob changed')
+            if sha(ROOT/'uniloader-S2I9100/scripts/i9100/emmc-clock-evidence.py')!=m['python_decoder_sha256']:
+                raise RuntimeError('Clock decoder changed after C cross-reference')
+            for name,expected in m['record_outputs'].items():
+                if sha(folder/name)!=expected:raise RuntimeError('Actual C clock record changed')
+            original=m['original_samsung_pll_crossref']
+            if sha(ROOT/original['source'])!=original['sha256']or sha(folder/'original-pll-model')!=original['model_sha256']:
+                raise RuntimeError('Original Samsung PLL arithmetic model changed')
+            if sha(folder/'models')!=m['model_artifact_sha256']:raise RuntimeError('Clock model executable changed')
         if m.get('actual_matching'):
             proof=m['actual_matching']
             for name,expected in proof['source_files'].items():

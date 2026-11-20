@@ -13,7 +13,7 @@ os.environ['I9100_EMMC_BOOT_MODEL_RECORD']=str(e.out/'actual-contract.bin')
 os.environ['I9100_EMMC_BOOT_MODEL_EVIDENCE']=str(e.out)
 for name in ('i9100_emmc_native_fixture.c','i9100_emmc_writer_test.c','i9100_emmc_test.c'):
     (e.out/name).write_bytes((REPO/'port-tests'/name).read_bytes())
-c=['i9100_emmc.c','i9100_emmc_layout.c','i9100_emmc_writer.c','i9100_emmc_host.c','i9100_emmc_boot_contract.c']
+c=['i9100_emmc.c','i9100_emmc_layout.c','i9100_emmc_writer.c','i9100_emmc_host.c','i9100_emmc_boot_contract.c','i9100_emmc_clock.c']
 c+=['i9100_gpio_broker.c','i9100_clock_gates.c','i9100_irq_registry.c','i9100_peripheral_board.c','i9100_irq_cascade.c',
     'i9100_i2c_samsung.c','i9100_uart_bluetooth.c','i9100_sdio.c','i9100_bluetooth_h4.c','i9100_bcm_f2.c']
 cpp=['i9100_emmc_native.cpp','i9100_camera_mmio.cpp','IOS6I9100EMMCStorage.cpp','IOS6I9100EMMCRaw.cpp','IOS6I9100EMMCBlockDriver.cpp',

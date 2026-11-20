@@ -43,10 +43,10 @@
  #include "../../../../../pexpert/arm/i9100_usb_stats.h"
  #include "i9100_power.h"
 +#include "i9100_power_shared.h"
+ #include "i9100_low_battery.h"
  #include "i9100_charge_adopt.h"
  #include "i9100_charge_epoch.h"
- #include "i9100_charge_diag.h"
-@@ -122,6 +123,8 @@
+@@ -127,6 +128,8 @@
  public:
   virtual bool init(void);
   virtual bool start(IOService *);
@@ -55,19 +55,19 @@
   virtual void free(void);
  };
  OSDefineMetaClassAndStructors(IOS7I9100Power,IOPMPowerSource)
-@@ -225,7 +228,8 @@
-    i9100_lpm_poweroff_call=thread_call_allocate(i9100_lpm_poweroff_worker,0);
-   __sync_synchronize();i9100_lpm_poweroff_ready=i9100_lpm_poweroff_call!=0;
+@@ -234,7 +237,8 @@
+   lowBattery.enabled=1;
   }
+  observeLowBattery();
 - return true;
 + const i9100_power_haptic_ops haptic={i9100_power_haptic_config_read,i9100_power_haptic_config_write,1};
 + return !i9100_power_shared_enabled()||!i9100_power_shared_publish_haptic(this,&hw,&haptic);
  }
- void IOS7I9100Power::sample(void)
+ void IOS7I9100Power::observeLowBattery(void)
  {
-@@ -310,8 +314,23 @@
+@@ -342,8 +346,23 @@
    s->stopSupervision("timer rearm failed",true);
-  }
+  }else s->observeLowBattery();
  }
 +IOReturn IOS7I9100Power::stopShared(OSObject *owner,void *,void *,void *,void *)
 +{

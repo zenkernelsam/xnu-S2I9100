@@ -38,24 +38,27 @@ C_SOURCES = [
     "i9100_sensor_hid_wire.c", "i9100_sensor_hid_queue.c",
     "i9100_bt_boot.c",
     "i9100_bt_probe.c", "i9100_bt_acl.c", "i9100_bt_stream.c",
-    "i9100_emmc_host.c", "i9100_emmc_boot_contract.c",
+    "i9100_emmc_host.c", "i9100_emmc_boot_contract.c", "i9100_emmc_clock.c",
 ]
-CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp", "i9100_emmc_boot.cpp",
+CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp", "i9100_emmc_boot.cpp", "i9100_emmc_clock_native.cpp",
                "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_sensor_worker.cpp", "i9100_haptic_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp", "IOS6I9100AudioPCM.cpp", "i9100_pl330_ring_native.cpp", "i9100_pl330_ring_mmio.cpp", "i9100_audio_gated.cpp", "i9100_sensor_hid.cpp", "i9100_sensor_hid_endpoint.cpp", "i9100_bt_worker.cpp", "i9100_bt_control.cpp", "i9100_camera_native.cpp", "i9100_camera_mmio.cpp", "i9100_mfc_native.cpp", "i9100_emmc_native.cpp", "IOS6I9100EMMCStorage.cpp", "IOS6I9100EMMCRaw.cpp", "IOS6I9100EMMCBlockDriver.cpp", "i9100_emmc_alias.cpp", "i9100_emmc_publication.cpp"]
 TESTS = [
-    ("i9100_emmc_boot_test.cpp", ["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c","i9100_emmc_boot_contract.c",
+    ("i9100_emmc_clock_test.c", ["i9100_emmc_clock.c"]),
+    ("i9100_emmc_clock_native_test.cpp", ["i9100_emmc_clock.c","i9100_emmc_host.c","i9100_emmc.c",
+      "i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_clock_native.cpp","i9100_camera_mmio.cpp"]),
+    ("i9100_emmc_boot_test.cpp", ["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c","i9100_emmc_boot_contract.c","i9100_emmc_clock.c",
       "i9100_gpio_broker.c","i9100_clock_gates.c","i9100_irq_registry.c","i9100_peripheral_board.c","i9100_irq_cascade.c",
       "i9100_i2c_samsung.c","i9100_uart_bluetooth.c","i9100_sdio.c","i9100_bluetooth_h4.c","i9100_bcm_f2.c",
       "i9100_emmc_native.cpp","i9100_camera_mmio.cpp","IOS6I9100EMMCStorage.cpp","IOS6I9100EMMCRaw.cpp","IOS6I9100EMMCBlockDriver.cpp","i9100_emmc_alias.cpp",
       "i9100_emmc_publication.cpp","i9100_emmc_boot.cpp","i9100_peripheral_native.cpp"]),
-    ("i9100_emmc_matching_test.cpp", ["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c","i9100_emmc_boot_contract.c",
+    ("i9100_emmc_matching_test.cpp", ["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c","i9100_emmc_boot_contract.c","i9100_emmc_clock.c",
       "i9100_gpio_broker.c","i9100_clock_gates.c","i9100_irq_registry.c","i9100_peripheral_board.c","i9100_irq_cascade.c",
       "i9100_i2c_samsung.c","i9100_uart_bluetooth.c","i9100_sdio.c","i9100_bluetooth_h4.c","i9100_bcm_f2.c",
       "i9100_emmc_native.cpp","i9100_camera_mmio.cpp","IOS6I9100EMMCStorage.cpp","IOS6I9100EMMCRaw.cpp","IOS6I9100EMMCBlockDriver.cpp","i9100_emmc_alias.cpp",
       "i9100_emmc_publication.cpp","i9100_emmc_boot.cpp","i9100_peripheral_native.cpp"]),
-    ("i9100_emmc_native_test.cpp", ["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c",
+    ("i9100_emmc_native_test.cpp", ["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c","i9100_emmc_clock.c",
         "i9100_emmc_native.cpp","i9100_camera_mmio.cpp"]),
-    ("i9100_emmc_storage_test.cpp", ["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c",
+    ("i9100_emmc_storage_test.cpp", ["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c","i9100_emmc_host.c","i9100_emmc_clock.c",
         "i9100_emmc_native.cpp","i9100_camera_mmio.cpp","IOS6I9100EMMCStorage.cpp","IOS6I9100EMMCRaw.cpp","IOS6I9100EMMCBlockDriver.cpp","i9100_emmc_alias.cpp"]),
     ("i9100_emmc_writer_test.c", ["i9100_emmc.c","i9100_emmc_layout.c","i9100_emmc_writer.c"]),
     ("i9100_mfc_native_test.cpp", ["i9100_mfc.c","i9100_mfc_layout.c","i9100_dma_guard.c",
@@ -223,7 +226,7 @@ def main():
                         captured[name]=hashlib.sha256(raw).hexdigest()
                     e.result["pdev_sources"]=captured;extra=["i9100-pdev.c"]
                     overrides={"i9100-pdev.c":folder/"i9100-pdev.c"}
-                if test in ("i9100_emmc_native_test.cpp","i9100_emmc_storage_test.cpp","i9100_emmc_boot_test.cpp","i9100_emmc_matching_test.cpp"):
+                if test in ("i9100_emmc_native_test.cpp","i9100_emmc_storage_test.cpp","i9100_emmc_boot_test.cpp","i9100_emmc_matching_test.cpp","i9100_emmc_clock_native_test.cpp"):
                     historical=ROOT/"assets/i9100-backup/mmcblk0-head1mb.img"
                     if hashlib.sha256(historical.read_bytes()).hexdigest()!="879334a928bbffffc67d57b584906c03bee10f1310a88a0f1362fc6dfb3724ef":raise RuntimeError("Historical emmc fixture changed")
                     os.environ["I9100_EMMC_HISTORICAL_SOURCE"]=str(historical)
@@ -238,7 +241,7 @@ def main():
                         test_override,_,_=prepare_matching(e);host_defines=('I9100_EMMC_MATCH_ENGINE=1',)
                 e.model_cpp(test, [name for name in sources if name.endswith(".c")]+extra,
                             [name for name in sources if name.endswith(".cpp")],
-                            libraries=["crypto"] if test in ("i9100_bcm_worker_test.cpp","i9100_bt_worker_test.cpp","i9100_bt_control_test.cpp","i9100_mfc_native_test.cpp") else ["pthread"] if test in ("i9100_power_shared_test.cpp","i9100_power_haptic_test.cpp","i9100_haptic_worker_test.cpp","i9100_emmc_native_test.cpp","i9100_emmc_storage_test.cpp","i9100_emmc_boot_test.cpp","i9100_emmc_matching_test.cpp") else (),
+                            libraries=["crypto"] if test in ("i9100_bcm_worker_test.cpp","i9100_bt_worker_test.cpp","i9100_bt_control_test.cpp","i9100_mfc_native_test.cpp") else ["pthread"] if test in ("i9100_power_shared_test.cpp","i9100_power_haptic_test.cpp","i9100_haptic_worker_test.cpp","i9100_emmc_native_test.cpp","i9100_emmc_storage_test.cpp","i9100_emmc_boot_test.cpp","i9100_emmc_matching_test.cpp","i9100_emmc_clock_native_test.cpp") else (),
                             source_overrides=overrides,
                             wrapped_functions=("i9100_sdio_init",) if test=="i9100_native_sdio_success_test.cpp" else
                             ("i9100_uart_bt_init","i9100_bt_worker_stream_open") if test=="i9100_bt_control_test.cpp" else
@@ -247,20 +250,27 @@ def main():
                                 "i9100_sensor_hid_test.cpp","i9100_sensor_hid_endpoint_test.cpp","i9100_sensor_hid_service_test.cpp") else
                             ("i9100_ring_mmio_read","i9100_ring_mmio_write","pthread_mutex_init","pthread_mutex_lock","pthread_mutex_unlock") if test=="i9100_audio_gated_pdev_test.cpp" else
                             ("pthread_mutex_init","pthread_mutex_lock","pthread_mutex_unlock") if test=="i9100_audio_pdev_test.cpp" else
-                            ("i9100_camera_mmio_read","i9100_camera_mmio_write") if test in ("i9100_camera_native_test.cpp","i9100_mfc_native_test.cpp","i9100_emmc_native_test.cpp","i9100_emmc_storage_test.cpp","i9100_emmc_boot_test.cpp","i9100_emmc_matching_test.cpp") else
+                            ("i9100_camera_mmio_read","i9100_camera_mmio_write") if test in ("i9100_camera_native_test.cpp","i9100_mfc_native_test.cpp","i9100_emmc_native_test.cpp","i9100_emmc_storage_test.cpp","i9100_emmc_boot_test.cpp","i9100_emmc_matching_test.cpp","i9100_emmc_clock_native_test.cpp") else
                             ("i9100_ring_mmio_read","i9100_ring_mmio_write") if test in
                             ("i9100_pl330_ring_native_test.cpp","i9100_audio_gated_pipeline_test.cpp","i9100_audio_gated_user_test.cpp") else (),
                             extra_sdk=REPO/'port-tests/bt-control-sdk' if test=='i9100_bt_control_test.cpp' else
-                            REPO/'port-tests/emmc-storage-sdk' if test in ('i9100_emmc_storage_test.cpp','i9100_emmc_boot_test.cpp','i9100_emmc_matching_test.cpp') else
+                            REPO/'port-tests/emmc-storage-sdk' if test in ('i9100_emmc_storage_test.cpp','i9100_emmc_boot_test.cpp','i9100_emmc_matching_test.cpp','i9100_emmc_clock_native_test.cpp') else
                             REPO/'port-tests/emmc-native-sdk' if test=='i9100_emmc_native_test.cpp' else None,
                             test_override=test_override,extra_defines=host_defines)
                 if test=="i9100_power_shared_test.cpp":
                     for n in range(1,4):e.run([str(e.out/"models"),str(n)],"shared-prepare-failure-"+str(n)+"-tests")
+                if test=="i9100_emmc_clock_native_test.cpp":
+                    for scenario in ('conflict-data','conflict-legacy','conflict-root','conflict-rootdev','bad-root-clock','busy-hook'):
+                        e.run([str(e.out/'models'),scenario],'hook-'+scenario+'-tests')
                 if test in ("i9100_audio_pdev_test.cpp","i9100_audio_gated_pdev_test.cpp") and any(
                     hashlib.sha256((REPO/"userland/audio"/name).read_bytes()).hexdigest()!=sha for name,sha in captured.items()):
                     raise RuntimeError("Pdev input changed during the model")
             else:
-                if test=="i9100_emmc_writer_test.c":
+                if test=="i9100_emmc_clock_test.c":
+                    e.run(['clang','-std=c99','-O1','-Wall','-Wextra','-Werror','-fno-pie','-no-pie','-fsanitize=address,undefined','-fno-sanitize-recover=all',
+                        '-I'+str(PLATFORM),str(REPO/'port-tests'/test),str(PLATFORM/'i9100_emmc_clock.c'),'-o',str(folder/'models')],'compile-clock-model')
+                    e.run([str(folder/'models'),str(folder)],'clock-model-tests')
+                elif test=="i9100_emmc_writer_test.c":
                     historical=ROOT/"assets/i9100-backup/mmcblk0-head1mb.img"
                     digest=hashlib.sha256(historical.read_bytes()).hexdigest()
                     if digest!="879334a928bbffffc67d57b584906c03bee10f1310a88a0f1362fc6dfb3724ef":

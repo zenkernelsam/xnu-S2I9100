@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "i9100_emmc_native.h"
+#include "i9100_emmc_clock.h"
 #include <IOKit/IOLib.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOMemoryDescriptor.h>
@@ -21,13 +22,17 @@ struct i9100_emmc_native {
  IOMemoryDescriptor *memory[EN_MAPS];IOMemoryMap *mapping[EN_MAPS];volatile uint8_t *regs[EN_MAPS];
  i9100_emmc_card card;i9100_emmc_writer *writer;i9100_emmc_layout layout;
  struct i9100_emmc_native_snapshot snapshot;
- uintptr_t consumers[4];uint32_t phase,mode,probe_attempted,sealed;int error,cleanup_error;
+ uintptr_t consumers[4];uint32_t phase,mode,probe_attempted,sealed,clock_attempted;int error,cleanup_error;
+ uint8_t clock_capture[I9100_EMMC_CLOCK_BYTES];
 };
 static int take(IOLock *l){return l&&ml_get_interrupts_enabled()&&!ml_at_interrupt_context()&&IOLockTryLock(l)?0:-1;}
 static int serialize(IOLock *l)
 {if(!l||!ml_get_interrupts_enabled()||ml_at_interrupt_context())return -1;IOLockLock(l);return 0;}
 static uint32_t rd(i9100_emmc_native *n,unsigned map,unsigned off)
 {return map>=EN_MAPS||!n->regs[map]?0xffffffffU:i9100_camera_mmio_read(n->regs[map],off);}
+static uint32_t clock_read(void *cookie,unsigned map,unsigned off)
+{return rd((i9100_emmc_native *)cookie,map,off);}
+static uint64_t now(void *);
 static int resources(i9100_emmc_native *n)
 {
  if(i9100_emmc_host_check(&n->lease))return I9100_EMMC_OWNER;
@@ -37,6 +42,10 @@ static int resources(i9100_emmc_native *n)
  uint32_t mux=rd(n,EN_CMU,0xc240),div=rd(n,EN_CMU,0xc54c),sel=rd(n,EN_HOST,0x9c);
  if(mux==0xffffffffU||div==0xffffffffU||sel==0xffffffffU||(mux&0xf0000U)!=n->profile.source_mux||
     (div&0xff0fU)!=n->profile.source_divider||sel!=n->profile.clksel)return I9100_EMMC_CLOCK;
+ struct i9100_emmc_clock_result observed;
+ const i9100_emmc_clock_io clock={n,clock_read,0,0};
+ if(i9100_emmc_clock_rate(&clock,n->profile.xxti_hz,n->profile.xusbxti_hz,&observed)||
+    observed.ciu_hz!=n->profile.ciu_clock_hz)return I9100_EMMC_CLOCK;
  uint32_t con=rd(n,EN_GPIO,0x40),pull=rd(n,EN_GPIO,0x48),drive=rd(n,EN_GPIO,0x4c),dat=rd(n,EN_GPIO,0x44);
  if(con==0xffffffffU||pull==0xffffffffU||drive==0xffffffffU||dat==0xffffffffU||
     (con&0xffffU)!=n->profile.gpk0_mux||(pull&0xffU)!=n->profile.gpk0_pull||(drive&0xffU)!=n->profile.gpk0_drive||!(dat&4U))return I9100_EMMC_OWNER;
@@ -49,6 +58,19 @@ static int actual_idle(i9100_emmc_native *n)
  if(cmd==0xffffffffU||status==0xffffffffU||ctrl==0xffffffffU||bmod==0xffffffffU)return I9100_EMMC_IO;
  if(cmd&(1U<<31)||status&((15U<<4)|(1U<<9)|(1U<<10)|(0x1fffU<<17)|(1U<<30)|(1U<<31))||ctrl&7U||
     ctrl&((1U<<5)|(1U<<25))||bmod&(1U<<7)||rd(n,EN_HOST,EM_IDINTEN)||rd(n,EN_HOST,EM_INTMASK))return I9100_EMMC_BUSY;
+ return 0;
+}
+static int inherited_idle(i9100_emmc_native *n)
+{
+ /* Pre-probe failure did not alter the card. A profile-rate mismatch must
+  * not itself prevent map cleanup, but an externally busy/gated host must
+  * retain its reservation until actual quiescence is observed. */
+ uint32_t gate=rd(n,EN_CMU,0xc940),mask=rd(n,EN_CMU,0xc340);
+ if(gate==0xffffffffU||mask==0xffffffffU||!(gate&(1U<<9))||!(mask&(1U<<16)))return I9100_EMMC_BUSY;
+ uint32_t cmd=rd(n,EN_HOST,EM_CMD),status=rd(n,EN_HOST,EM_STATUS),ctrl=rd(n,EN_HOST,EM_CTRL),bmod=rd(n,EN_HOST,EM_BMOD);
+ if(cmd==0xffffffffU||status==0xffffffffU||ctrl==0xffffffffU||bmod==0xffffffffU||cmd&(1U<<31)||
+    status&((15U<<4)|(1U<<9)|(1U<<10)|(0x1fffU<<17)|(1U<<30)|(1U<<31))||ctrl&(7U|(1U<<5)|(1U<<25))||
+    bmod&(1U<<7)||rd(n,EN_HOST,EM_IDINTEN)||rd(n,EN_HOST,EM_INTMASK)||rd(n,EN_GIC,0x10c)&(1U<<13))return I9100_EMMC_BUSY;
  return 0;
 }
 static uint32_t card_read(void *p,unsigned off){return rd((i9100_emmc_native *)p,EN_HOST,off);}
@@ -103,6 +125,7 @@ static int cleanup(i9100_emmc_native *n)
  for(unsigned i=0;i<4U;i++)if(n->consumers[i])return I9100_EMMC_BUSY;
  if(n->writer&&n->writer->opened){int e=i9100_emmc_writer_close(n->writer);if(e)return e;}
  if(n->probe_attempted&&n->regs[EN_HOST]){int e=actual_idle(n);if(e)return e;}
+ else if(n->clock_attempted&&n->regs[EN_HOST]){int e=inherited_idle(n);if(e)return e;}
  if(n->lease.owned){int e=i9100_emmc_host_release(&n->lease,1);if(e)return e;}
  for(unsigned i=0;i<EN_MAPS;i++){
   if(n->mapping[i]){n->mapping[i]->release();n->mapping[i]=0;n->regs[i]=0;}
@@ -120,6 +143,7 @@ int i9100_emmc_native_open(int enabled,i9100_peripheral_native *parent,const i91
  if(!parent||!p||p->board_data_reviewed!=1U||p->ciu_clock_hz<400000U||p->ciu_clock_hz>200000000U||
     p->source_mux&~0xf0000U||p->source_divider&~0xff0fU||p->clksel==0xffffffffU||
     p->gpk0_mux!=0x3133U||p->gpk0_pull&~0xffU||p->gpk0_drive&~0xffU||
+    p->xxti_hz!=24000000U||p->xusbxti_hz!=24000000U||
     (mode!=I9100_EMMC_N_INSPECT&&mode!=I9100_EMMC_N_DATA_RW)||(mode==I9100_EMMC_N_DATA_RW&&!approved)||
     !ml_get_interrupts_enabled()||ml_at_interrupt_context())return I9100_EMMC_ARGUMENT;
  i9100_emmc_native *n=(i9100_emmc_native *)IOMalloc(sizeof(*n));if(!n)return I9100_EMMC_IO;
@@ -130,12 +154,17 @@ int i9100_emmc_native_open(int enabled,i9100_peripheral_native *parent,const i91
  {
   const uint32_t pa[EN_MAPS]={0x12550000U,0x10030000U,0x11000000U,0x10490000U,0x10000000U};
   for(unsigned k=0;k<EN_MAPS;k++){
-   n->memory[k]=IOMemoryDescriptor::withPhysicalAddress(pa[k],k==EN_CMU?65536U:4096U,kIODirectionInOut);
+   n->memory[k]=IOMemoryDescriptor::withPhysicalAddress(pa[k],k==EN_CMU?131072U:4096U,kIODirectionInOut);
    n->mapping[k]=n->memory[k]?n->memory[k]->map(kIOMapInhibitCache):0;
    n->regs[k]=n->mapping[k]?(volatile uint8_t *)n->mapping[k]->getAddress():0;if(!n->regs[k]){e=I9100_EMMC_IO;goto fail;}
   }
  }
- e=actual_idle(n);if(e)goto fail;
+ {
+  const i9100_emmc_clock_io io={n,clock_read,now,0};struct i9100_emmc_clock_result observed;
+  n->clock_attempted=1;e=i9100_emmc_clock_capture(1,&io,p->xxti_hz,p->xusbxti_hz,n->clock_capture,&observed);
+  if(!e&&observed.ciu_hz!=p->ciu_clock_hz)e=I9100_EMMC_CLOCK;
+ }
+ if(e)goto fail;e=actual_idle(n);if(e)goto fail;
  {
   i9100_emmc_io io={n,card_read,card_write,now,delay,p->ciu_clock_hz,20000000U,50000U};
   i9100_emmc_init(&n->card,&io);n->probe_attempted=1;e=i9100_emmc_probe(&n->card);if(e)goto fail;
@@ -159,6 +188,14 @@ fail:n->error=e;n->phase=EN_CLOSING;
 }
 int i9100_emmc_native_snapshot(i9100_emmc_native *n,struct i9100_emmc_native_snapshot *out)
 {if(!n||!out)return I9100_EMMC_ARGUMENT;if(serialize(n->lifecycle))return I9100_EMMC_BUSY;save(n);*out=n->snapshot;IOLockUnlock(n->lifecycle);return 0;}
+int i9100_emmc_native_clock_snapshot(i9100_emmc_native *n,uint8_t *out)
+{
+ if(!n||!out||serialize(n->lifecycle))return I9100_EMMC_ARGUMENT;
+ /* This is the original PRE-PROBE read-only capture. It is not refreshed
+  * after MMC initialized CLKDIV/CTYPE, so host evidence cannot quietly
+  * lose the inherited loader state. Native IO verifies the live PLL rate. */
+ memcpy(out,n->clock_capture,I9100_EMMC_CLOCK_BYTES);IOLockUnlock(n->lifecycle);return 0;
+}
 int i9100_emmc_native_validate(i9100_emmc_native *n)
 {
  if(!n)return I9100_EMMC_ARGUMENT;if(serialize(n->lifecycle))return I9100_EMMC_BUSY;

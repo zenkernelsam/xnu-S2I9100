@@ -13,6 +13,7 @@ struct IOLock {bool held;};
 void *IOMalloc(size_t);void IOFree(void *,size_t);
 IOLock *IOLockAlloc();void IOLockFree(IOLock *);bool IOLockTryLock(IOLock *);void IOLockUnlock(IOLock *);void IOLockLock(IOLock *);
 void OSSynchronizeIO();void IODelay(unsigned);
+void IOLog(const char *,...);
 void *i9100_model_event_allocate(size_t);void i9100_model_event_free(void *);
 class OSObject {
  mutable std::atomic<unsigned> refs{1};

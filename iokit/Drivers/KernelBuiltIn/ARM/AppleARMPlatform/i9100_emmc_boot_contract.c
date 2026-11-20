@@ -14,6 +14,7 @@ static int valid(const struct i9100_emmc_boot_contract *c)
     (!!(c->flags&I9100_EMMC_BOOT_REVIEWED)!=!!c->host.board_data_reviewed)||
     ((c->flags&3U)==3U)||c->host.ciu_clock_hz<400000U||c->host.ciu_clock_hz>200000000U||
     (c->host.source_mux&~0xf0000U)||(c->host.source_divider&~0xff0fU)||c->host.clksel==~0U||
+    c->host.xxti_hz!=24000000U||c->host.xusbxti_hz!=24000000U||
     c->host.gpk0_mux!=0x3133U||(c->host.gpk0_pull&~0xffU)||(c->host.gpk0_drive&~0xffU)||
     c->card.sectors!=30777344ULL||!nonzero((const uint8_t *)c->card.cid,16)||
     !nonzero(c->card.disk_guid,16)||!nonzero(c->card.system_guid,16)||!nonzero(c->card.data_guid,16)||
@@ -26,7 +27,7 @@ static int valid(const struct i9100_emmc_boot_contract *c)
 int i9100_emmc_boot_encode(const struct i9100_emmc_boot_contract *c,uint8_t out[I9100_EMMC_BOOT_BYTES])
 {
  if(!out||valid(c))return I9100_EMMC_ARGUMENT;
- uint8_t b[I9100_EMMC_BOOT_BYTES]={0};memcpy(b,"I9EB",4);put32(b+4,1);put32(b+8,sizeof(b));put32(b+12,c->flags);
+ uint8_t b[I9100_EMMC_BOOT_BYTES]={0};memcpy(b,"I9EB",4);put32(b+4,2);put32(b+8,sizeof(b));put32(b+12,c->flags);
  const uint32_t host[8]={c->host.board_data_reviewed,c->host.ciu_clock_hz,c->host.source_mux,c->host.source_divider,
   c->host.clksel,c->host.gpk0_mux,c->host.gpk0_pull,c->host.gpk0_drive};
  for(unsigned i=0;i<8;i++)put32(b+16+i*4U,host[i]);
@@ -35,17 +36,19 @@ int i9100_emmc_boot_encode(const struct i9100_emmc_boot_contract *c,uint8_t out[
  memcpy(b+76,c->card.disk_guid,16);memcpy(b+92,c->card.system_guid,16);memcpy(b+108,c->card.data_guid,16);
  put64(b+124,c->card.sectors);put32(b+132,c->system.create_date);memcpy(b+136,c->system.finder_volume_id,8);
  put32(b+144,c->data.create_date);memcpy(b+148,c->data.finder_volume_id,8);memcpy(b+156,c->pair_manifest_sha256,32);
+ put32(b+188,c->host.xxti_hz);put32(b+192,c->host.xusbxti_hz);
  put32(b+252,crc(b,252));memcpy(out,b,sizeof(b));return 0;
 }
 int i9100_emmc_boot_decode(const uint8_t *b,unsigned bytes,struct i9100_emmc_boot_contract *out)
 {
- if(!b||!out||bytes!=I9100_EMMC_BOOT_BYTES||memcmp(b,"I9EB",4)||get32(b+4)!=1||get32(b+8)!=bytes||
+ if(!b||!out||bytes!=I9100_EMMC_BOOT_BYTES||memcmp(b,"I9EB",4)||get32(b+4)!=2||get32(b+8)!=bytes||
     get32(b+252)!=crc(b,252))return I9100_EMMC_ARGUMENT;
- for(unsigned i=188;i<252;i++)if(b[i])return I9100_EMMC_ARGUMENT;
+ for(unsigned i=196;i<252;i++)if(b[i])return I9100_EMMC_ARGUMENT;
  struct i9100_emmc_boot_contract c;memset(&c,0,sizeof(c));c.flags=get32(b+12);
  uint32_t host[8];for(unsigned i=0;i<8;i++)host[i]=get32(b+16+i*4U);
  c.host.board_data_reviewed=host[0];c.host.ciu_clock_hz=host[1];c.host.source_mux=host[2];c.host.source_divider=host[3];
  c.host.clksel=host[4];c.host.gpk0_mux=host[5];c.host.gpk0_pull=host[6];c.host.gpk0_drive=host[7];
+ c.host.xxti_hz=get32(b+188);c.host.xusbxti_hz=get32(b+192);
  for(unsigned i=0;i<4;i++)c.card.cid[i]=get32(b+48+i*4U);
  c.card.primary_crc=get32(b+64);c.card.backup_crc=get32(b+68);c.card.entries_crc=get32(b+72);
  memcpy(c.card.disk_guid,b+76,16);memcpy(c.card.system_guid,b+92,16);memcpy(c.card.data_guid,b+108,16);
