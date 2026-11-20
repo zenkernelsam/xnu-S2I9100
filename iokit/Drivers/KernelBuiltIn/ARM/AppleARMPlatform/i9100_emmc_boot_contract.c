@@ -22,12 +22,21 @@ static int valid(const struct i9100_emmc_boot_contract *c)
     !c->system.create_date||!c->data.create_date||!nonzero(c->system.finder_volume_id,8)||
     !nonzero(c->data.finder_volume_id,8)||!memcmp(c->system.finder_volume_id,c->data.finder_volume_id,8)||
     !nonzero(c->pair_manifest_sha256,32))return I9100_EMMC_ARGUMENT;
+ const struct i9100_emmc_sdr_plan *p=&c->sdr;
+ if(p->width){
+  if(p->board_reviewed!=c->host.board_data_reviewed||p->board_reviewed>1U||(p->width!=4U&&p->width!=8U)||
+     p->high_speed>1U||p->vcc_mv!=3300U||p->ciu_hz!=c->host.ciu_clock_hz||memcmp(p->cid,c->card.cid,16)||
+     !p->target_hz||p->target_hz>(p->high_speed?52000000U:20000000U)||p->target_hz>p->ciu_hz/2U)
+   return I9100_EMMC_ARGUMENT;
+ }else{
+  const uint8_t *raw=(const uint8_t *)p;for(unsigned i=0;i<sizeof(*p);i++)if(raw[i])return I9100_EMMC_ARGUMENT;
+ }
  return 0;
 }
 int i9100_emmc_boot_encode(const struct i9100_emmc_boot_contract *c,uint8_t out[I9100_EMMC_BOOT_BYTES])
 {
  if(!out||valid(c))return I9100_EMMC_ARGUMENT;
- uint8_t b[I9100_EMMC_BOOT_BYTES]={0};memcpy(b,"I9EB",4);put32(b+4,2);put32(b+8,sizeof(b));put32(b+12,c->flags);
+ uint8_t b[I9100_EMMC_BOOT_BYTES]={0};memcpy(b,"I9EB",4);put32(b+4,c->sdr.width?3U:2U);put32(b+8,sizeof(b));put32(b+12,c->flags);
  const uint32_t host[8]={c->host.board_data_reviewed,c->host.ciu_clock_hz,c->host.source_mux,c->host.source_divider,
   c->host.clksel,c->host.gpk0_mux,c->host.gpk0_pull,c->host.gpk0_drive};
  for(unsigned i=0;i<8;i++)put32(b+16+i*4U,host[i]);
@@ -37,18 +46,29 @@ int i9100_emmc_boot_encode(const struct i9100_emmc_boot_contract *c,uint8_t out[
  put64(b+124,c->card.sectors);put32(b+132,c->system.create_date);memcpy(b+136,c->system.finder_volume_id,8);
  put32(b+144,c->data.create_date);memcpy(b+148,c->data.finder_volume_id,8);memcpy(b+156,c->pair_manifest_sha256,32);
  put32(b+188,c->host.xxti_hz);put32(b+192,c->host.xusbxti_hz);
+ if(c->sdr.width){
+  const uint32_t transport[10]={c->sdr.board_reviewed,c->sdr.width,c->sdr.high_speed,c->sdr.target_hz,
+   c->sdr.ciu_hz,c->sdr.vcc_mv,c->sdr.cid[0],c->sdr.cid[1],c->sdr.cid[2],c->sdr.cid[3]};
+  for(unsigned i=0;i<10;i++)put32(b+196+i*4U,transport[i]);
+ }
  put32(b+252,crc(b,252));memcpy(out,b,sizeof(b));return 0;
 }
 int i9100_emmc_boot_decode(const uint8_t *b,unsigned bytes,struct i9100_emmc_boot_contract *out)
 {
- if(!b||!out||bytes!=I9100_EMMC_BOOT_BYTES||memcmp(b,"I9EB",4)||get32(b+4)!=2||get32(b+8)!=bytes||
+ if(!b||!out||bytes!=I9100_EMMC_BOOT_BYTES||memcmp(b,"I9EB",4)||(get32(b+4)!=2U&&get32(b+4)!=3U)||get32(b+8)!=bytes||
     get32(b+252)!=crc(b,252))return I9100_EMMC_ARGUMENT;
- for(unsigned i=196;i<252;i++)if(b[i])return I9100_EMMC_ARGUMENT;
+ for(unsigned i=get32(b+4)==3U?236U:196U;i<252;i++)if(b[i])return I9100_EMMC_ARGUMENT;
  struct i9100_emmc_boot_contract c;memset(&c,0,sizeof(c));c.flags=get32(b+12);
  uint32_t host[8];for(unsigned i=0;i<8;i++)host[i]=get32(b+16+i*4U);
  c.host.board_data_reviewed=host[0];c.host.ciu_clock_hz=host[1];c.host.source_mux=host[2];c.host.source_divider=host[3];
  c.host.clksel=host[4];c.host.gpk0_mux=host[5];c.host.gpk0_pull=host[6];c.host.gpk0_drive=host[7];
  c.host.xxti_hz=get32(b+188);c.host.xusbxti_hz=get32(b+192);
+ if(get32(b+4)==3U){
+  c.sdr.board_reviewed=get32(b+196);c.sdr.width=get32(b+200);c.sdr.high_speed=get32(b+204);
+  c.sdr.target_hz=get32(b+208);c.sdr.ciu_hz=get32(b+212);c.sdr.vcc_mv=get32(b+216);
+  for(unsigned i=0;i<4;i++)c.sdr.cid[i]=get32(b+220+i*4U);
+  if(!c.sdr.width)return I9100_EMMC_ARGUMENT;
+ }
  for(unsigned i=0;i<4;i++)c.card.cid[i]=get32(b+48+i*4U);
  c.card.primary_crc=get32(b+64);c.card.backup_crc=get32(b+68);c.card.entries_crc=get32(b+72);
  memcpy(c.card.disk_guid,b+76,16);memcpy(c.card.system_guid,b+92,16);memcpy(c.card.data_guid,b+108,16);

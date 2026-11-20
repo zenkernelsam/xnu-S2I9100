@@ -24,6 +24,8 @@ struct i9100_emmc_native {
  struct i9100_emmc_native_snapshot snapshot;
  uintptr_t consumers[4];uint32_t phase,mode,probe_attempted,sealed,clock_attempted;int error,cleanup_error;
  uint8_t clock_capture[I9100_EMMC_CLOCK_BYTES];
+ i9100_emmc_sdr_session sdr;
+ uint32_t pad_owned,pad_restoring,saved_gpk0[3],saved_gpk1[3];
 };
 static int take(IOLock *l){return l&&ml_get_interrupts_enabled()&&!ml_at_interrupt_context()&&IOLockTryLock(l)?0:-1;}
 static int serialize(IOLock *l)
@@ -47,8 +49,15 @@ static int resources(i9100_emmc_native *n)
  if(i9100_emmc_clock_rate(&clock,n->profile.xxti_hz,n->profile.xusbxti_hz,&observed)||
     observed.ciu_hz!=n->profile.ciu_clock_hz)return I9100_EMMC_CLOCK;
  uint32_t con=rd(n,EN_GPIO,0x40),pull=rd(n,EN_GPIO,0x48),drive=rd(n,EN_GPIO,0x4c),dat=rd(n,EN_GPIO,0x44);
+ uint32_t expected_pull=n->pad_owned?(n->profile.gpk0_pull&0x3fU):n->profile.gpk0_pull;
+ uint32_t expected_drive=n->pad_owned?((n->profile.gpk0_drive&0x3fU)|0x80U):n->profile.gpk0_drive;
  if(con==0xffffffffU||pull==0xffffffffU||drive==0xffffffffU||dat==0xffffffffU||
-    (con&0xffffU)!=n->profile.gpk0_mux||(pull&0xffU)!=n->profile.gpk0_pull||(drive&0xffU)!=n->profile.gpk0_drive||!(dat&4U))return I9100_EMMC_OWNER;
+    (con&0xffffU)!=n->profile.gpk0_mux||(pull&0xffU)!=expected_pull||(drive&0xffU)!=expected_drive||!(dat&4U))return I9100_EMMC_OWNER;
+ if(n->pad_owned){
+  if((con&0x0ffff000U)!=0x03333000U||(pull&0x3fc0U)||(drive&0x3fc0U)!=0x2a80U)return I9100_EMMC_OWNER;
+  if(n->sdr.width==8U&&((rd(n,EN_GPIO,0x60)&0x0ffff000U)!=0x04444000U||
+     (rd(n,EN_GPIO,0x68)&0x3fc0U)||(rd(n,EN_GPIO,0x6c)&0x3fc0U)!=0x2a80U))return I9100_EMMC_OWNER;
+ }
  return 0;
 }
 static int actual_idle(i9100_emmc_native *n)
@@ -78,10 +87,43 @@ static void card_write(void *p,unsigned off,uint32_t value)
 {i9100_emmc_native *n=(i9100_emmc_native *)p;if(n->regs[EN_HOST])i9100_camera_mmio_write(n->regs[EN_HOST],off,value);}
 static uint64_t now(void *){uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);return ns;}
 static int delay(void *,uint32_t us){if(!ml_get_interrupts_enabled()||ml_at_interrupt_context()||us>1000U)return -1;IODelay(us);return 0;}
+static int pad_write(i9100_emmc_native *n,unsigned off,uint32_t mask,uint32_t value)
+{
+ uint32_t old=rd(n,EN_GPIO,off);if(old==0xffffffffU)return I9100_EMMC_IO;
+ i9100_camera_mmio_write(n->regs[EN_GPIO],off,(old&~mask)|(value&mask));
+ uint32_t actual=rd(n,EN_GPIO,off);return actual==0xffffffffU||(actual&mask)!=(value&mask)?I9100_EMMC_READBACK:0;
+}
+static int sdr_board_check(void *p){return resources((i9100_emmc_native *)p);}
+static int sdr_prepare_pads(void *p,unsigned width)
+{
+ auto *n=(i9100_emmc_native *)p;if(n->pad_owned||(width!=4U&&width!=8U))return I9100_EMMC_ARGUMENT;
+ int e=resources(n);if(e)return e;
+ const unsigned offsets[3]={0,8,12};
+ for(unsigned i=0;i<3;i++){
+  n->saved_gpk0[i]=rd(n,EN_GPIO,0x40+offsets[i]);n->saved_gpk1[i]=rd(n,EN_GPIO,0x60+offsets[i]);
+  if(n->saved_gpk0[i]==0xffffffffU||n->saved_gpk1[i]==0xffffffffU)return I9100_EMMC_IO;
+ }
+ /* Global peripheral brokers reserve these banks. Only the exact MMC
+  * host lease can program data-pad fields, never CMD/CLK/eMMC_EN/DAT. */
+ n->pad_owned=1;
+ const uint32_t mask[3]={0x0ffff000U,0x3fc0U,0x3fc0U},value[3]={0x03333000U,0,0x2a80U};
+ for(unsigned i=0;i<3;i++){e=pad_write(n,0x40+offsets[i],mask[i],value[i]);if(e)return e;}
+ if(width==8U)for(unsigned i=0;i<3;i++){e=pad_write(n,0x60+offsets[i],mask[i],i==0?0x04444000U:value[i]);if(e)return e;}
+ return resources(n);
+}
+static int sdr_restore_pads(i9100_emmc_native *n)
+{
+ if(!n->pad_owned)return 0;
+ const unsigned offsets[3]={0,8,12};const uint32_t masks[3]={0x0ffff000U,0x3fc0U,0x3fc0U};
+ n->pad_restoring=1;
+ for(unsigned i=0;i<3;i++){int e=pad_write(n,0x40+offsets[i],masks[i],n->saved_gpk0[i]);if(e)return e;}
+ if(n->sdr.width==8U)for(unsigned i=0;i<3;i++){int e=pad_write(n,0x60+offsets[i],masks[i],n->saved_gpk1[i]);if(e)return e;}
+ n->pad_owned=n->pad_restoring=0;return resources(n);
+}
 static int claim(void *p){return take(((i9100_emmc_native *)p)->transaction);}
 static void release_claim(void *p){IOLockUnlock(((i9100_emmc_native *)p)->transaction);}
 static int exclusive(void *p,const i9100_emmc_card *c)
-{i9100_emmc_native *n=(i9100_emmc_native *)p;return c!=&n->card||resources(n)?-1:0;}
+{i9100_emmc_native *n=(i9100_emmc_native *)p;return c!=&n->card||resources(n)||i9100_emmc_transport_check(&n->card)?-1:0;}
 static int layout_read(void *p,uint64_t lba,uint8_t out[512])
 {return i9100_emmc_read(&((i9100_emmc_native *)p)->card,lba,1,out);}
 static bool same_identity(const i9100_emmc_writer_identity *a,const i9100_emmc_writer_identity *b)
@@ -123,7 +165,13 @@ static int read_layout(i9100_emmc_native *n)
 static int cleanup(i9100_emmc_native *n)
 {
  for(unsigned i=0;i<4U;i++)if(n->consumers[i])return I9100_EMMC_BUSY;
+ if(n->pad_restoring)return n->cleanup_error?n->cleanup_error:I9100_EMMC_READBACK;
+ if(n->sdr.attempted&&n->sdr.poisoned)return n->sdr.error?n->sdr.error:I9100_EMMC_NO_DEVICE;
  if(n->writer&&n->writer->opened){int e=i9100_emmc_writer_close(n->writer);if(e)return e;}
+ if(n->sdr.attempted&&n->sdr.phase==I9100_SDR_ACTIVE){
+  int e=actual_idle(n);if(e)return e;e=i9100_emmc_sdr_restore(&n->card,&n->sdr);if(e)return e;
+ }
+ if(n->pad_owned){int e=actual_idle(n);if(e)return e;e=sdr_restore_pads(n);if(e)return e;}
  if(n->probe_attempted&&n->regs[EN_HOST]){int e=actual_idle(n);if(e)return e;}
  else if(n->clock_attempted&&n->regs[EN_HOST]){int e=inherited_idle(n);if(e)return e;}
  if(n->lease.owned){int e=i9100_emmc_host_release(&n->lease,1);if(e)return e;}
@@ -136,8 +184,8 @@ static int cleanup(i9100_emmc_native *n)
 }
 static void dispose(i9100_emmc_native *n)
 {if(n->writer)IOFree(n->writer,sizeof(*n->writer));if(n->lifecycle)IOLockFree(n->lifecycle);if(n->transaction)IOLockFree(n->transaction);IOFree(n,sizeof(*n));}
-int i9100_emmc_native_open(int enabled,i9100_peripheral_native *parent,const i9100_emmc_inherited_profile *p,
- enum i9100_emmc_native_mode mode,const i9100_emmc_writer_identity *approved,i9100_emmc_native **out)
+static int native_open(int enabled,i9100_peripheral_native *parent,const i9100_emmc_inherited_profile *p,
+ enum i9100_emmc_native_mode mode,const i9100_emmc_writer_identity *approved,const i9100_emmc_sdr_plan *sdr,i9100_emmc_native **out)
 {
  if(!out||*out||(enabled!=0&&enabled!=1))return I9100_EMMC_ARGUMENT;if(!enabled)return I9100_EMMC_UNSUPPORTED;
  if(!parent||!p||p->board_data_reviewed!=1U||p->ciu_clock_hz<400000U||p->ciu_clock_hz>200000000U||
@@ -146,6 +194,9 @@ int i9100_emmc_native_open(int enabled,i9100_peripheral_native *parent,const i91
     p->xxti_hz!=24000000U||p->xusbxti_hz!=24000000U||
     (mode!=I9100_EMMC_N_INSPECT&&mode!=I9100_EMMC_N_DATA_RW)||(mode==I9100_EMMC_N_DATA_RW&&!approved)||
     !ml_get_interrupts_enabled()||ml_at_interrupt_context())return I9100_EMMC_ARGUMENT;
+ if(sdr&&(sdr->board_reviewed!=1U||(sdr->width!=4U&&sdr->width!=8U)||sdr->high_speed>1U||sdr->vcc_mv!=3300U||
+    !sdr->target_hz||sdr->target_hz>52000000U||sdr->ciu_hz!=p->ciu_clock_hz||
+    (approved&&memcmp(sdr->cid,approved->cid,16))))return I9100_EMMC_ARGUMENT;
  i9100_emmc_native *n=(i9100_emmc_native *)IOMalloc(sizeof(*n));if(!n)return I9100_EMMC_IO;
  memset(n,0,sizeof(*n));n->phase=EN_BUILDING;n->parent=parent;n->profile=*p;n->mode=mode;
  int e=i9100_emmc_host_acquire(&n->lease);if(e){dispose(n);return e;}
@@ -171,6 +222,17 @@ int i9100_emmc_native_open(int enabled,i9100_peripheral_native *parent,const i91
  }
  e=read_layout(n);if(e)goto fail;
  if(approved&&!same_identity(approved,&n->snapshot.identity)){e=I9100_EMMC_OWNER;goto fail;}
+ if(sdr){
+  struct i9100_emmc_native_snapshot initial=n->snapshot;
+  const i9100_emmc_sdr_board_ops board={n,sdr_board_check,sdr_prepare_pads};
+  e=i9100_emmc_sdr_apply(1,&n->card,&n->sdr,sdr,&board);if(e)goto fail;
+  /* Requalify both partition tables/HFS identities at the final rate. */
+  e=read_layout(n);if(e)goto fail;if(approved&&!same_identity(approved,&n->snapshot.identity)){e=I9100_EMMC_OWNER;goto fail;}
+  if(!same_identity(&initial.identity,&n->snapshot.identity)||initial.system_hfs_valid!=n->snapshot.system_hfs_valid||
+     initial.data_hfs_valid!=n->snapshot.data_hfs_valid||
+     (initial.system_hfs_valid&&memcmp(&initial.system_hfs,&n->snapshot.system_hfs,sizeof(initial.system_hfs)))||
+     (initial.data_hfs_valid&&memcmp(&initial.data_hfs,&n->snapshot.data_hfs,sizeof(initial.data_hfs)))){e=I9100_EMMC_OWNER;goto fail;}
+ }
  if(mode==I9100_EMMC_N_DATA_RW){
   if(!n->snapshot.system_hfs_valid||!n->snapshot.data_hfs_valid||n->snapshot.system_hfs.bytes!=n->snapshot.system.sectors*512ULL||
      n->snapshot.data_hfs.bytes!=n->snapshot.data.sectors*512ULL||!(n->snapshot.data_hfs.attributes&0x2000U))
@@ -186,6 +248,15 @@ int i9100_emmc_native_open(int enabled,i9100_peripheral_native *parent,const i91
 fail:n->error=e;n->phase=EN_CLOSING;
  {int off=cleanup(n);n->cleanup_error=off;save(n);if(!off){dispose(n);*out=0;}}return e;
 }
+int i9100_emmc_native_open(int enabled,i9100_peripheral_native *parent,const i9100_emmc_inherited_profile *p,
+ enum i9100_emmc_native_mode mode,const i9100_emmc_writer_identity *approved,i9100_emmc_native **out)
+{return native_open(enabled,parent,p,mode,approved,0,out);}
+int i9100_emmc_native_open_sdr(int enabled,i9100_peripheral_native *parent,const i9100_emmc_inherited_profile *p,
+ enum i9100_emmc_native_mode mode,const i9100_emmc_writer_identity *approved,const i9100_emmc_sdr_plan *sdr,i9100_emmc_native **out)
+{if(enabled&&!sdr)return I9100_EMMC_ARGUMENT;return native_open(enabled,parent,p,mode,approved,sdr,out);}
+int i9100_emmc_native_sdr_snapshot(i9100_emmc_native *n,i9100_emmc_sdr_session *out)
+{if(!n||!out)return I9100_EMMC_ARGUMENT;if(serialize(n->lifecycle))return I9100_EMMC_BUSY;
+ memcpy(out,&n->sdr,sizeof(*out));IOLockUnlock(n->lifecycle);return 0;}
 int i9100_emmc_native_snapshot(i9100_emmc_native *n,struct i9100_emmc_native_snapshot *out)
 {if(!n||!out)return I9100_EMMC_ARGUMENT;if(serialize(n->lifecycle))return I9100_EMMC_BUSY;save(n);*out=n->snapshot;IOLockUnlock(n->lifecycle);return 0;}
 int i9100_emmc_native_clock_snapshot(i9100_emmc_native *n,uint8_t *out)
@@ -200,6 +271,7 @@ int i9100_emmc_native_validate(i9100_emmc_native *n)
 {
  if(!n)return I9100_EMMC_ARGUMENT;if(serialize(n->lifecycle))return I9100_EMMC_BUSY;
  int e=n->phase!=EN_READY||!n->card.ready?I9100_EMMC_NO_DEVICE:n->error?n->error:resources(n);
+ if(!e)e=i9100_emmc_transport_check(&n->card);
  if(!e&&n->writer&&n->writer->grant.poisoned)e=I9100_EMMC_DIRTY;
  IOLockUnlock(n->lifecycle);return e;
 }

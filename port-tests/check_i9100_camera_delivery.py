@@ -24,6 +24,8 @@ def retained(folder):
     for name, expected in manifest.get("sources", {}).items():
         if sha(PLATFORM / name) != expected:
             raise RuntimeError("Evidence source drift: " + name)
+    for name,expected in manifest.get('companion_headers',{}).items():
+        if sha(PLATFORM/name)!=expected:raise RuntimeError('Compiled companion ABI changed: '+name)
     if manifest.get("cross_compiled"):
         for item in json.loads((folder / "compile-commands.json").read_text()):
             source = ROOT / item["source_file"]
@@ -102,6 +104,13 @@ def main():
             if sha(ROOT/original['source'])!=original['sha256']or sha(folder/'original-pll-model')!=original['model_sha256']:
                 raise RuntimeError('Original Samsung PLL arithmetic model changed')
             if sha(folder/'models')!=m['model_artifact_sha256']:raise RuntimeError('Clock model executable changed')
+        for name,item in m.get('sdr_reference_sources',{}).items():
+            reference=(ROOT/name).resolve()
+            if not reference.is_relative_to(ROOT/'research')or sha(reference)!=item['sha256']:
+                raise RuntimeError('SDR original board/controller source changed')
+            raw=reference.read_bytes()
+            if hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()!=item['git_blob']:
+                raise RuntimeError('SDR original reference Gitblob changed')
         if m.get('actual_matching'):
             proof=m['actual_matching']
             for name,expected in proof['source_files'].items():
@@ -119,6 +128,9 @@ def main():
         for name, expected in m.get("nested_fixtures", {}).items():
             if sha(REPO / "port-tests" / name) != expected:
                 raise RuntimeError("Nested model fixture changed")
+        if m.get('sdr_boot_path'):
+            if sha(folder/'actual-contract-sdr.bin')!=m['actual_sdr_contract_sha256']or sha(PLATFORM/'i9100_emmc_sdr.h')!=m['sdr_companion_header_sha256']:
+                raise RuntimeError('Actual SDR boot wire or consumed ABI changed')
         if m.get("host_source_override"):
             override = m["host_source_override"]
             if sha(PLATFORM / "i9100_dma_native.cpp") != override["original_sha256"] or sha(folder / "i9100_dma_native.cpp") != override["copy_sha256"]:
@@ -155,6 +167,7 @@ def main():
     if a.include_emmc:
         needed.update(("i9100_emmc.c", "i9100_emmc_writer.c", "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp"))
         needed.update(name for name in names if name.startswith(("i9100_emmc_","IOS6I9100EMMC")))
+        if (PLATFORM/'i9100_emmc_sdr.h').is_file():needed.add('IOS7I9100GPT.cpp')
     if any(json.loads((ROOT/name/'manifest.json').read_text()).get('shared_power_rtc_model') for name in models):
         needed.add('i9100_power_shared.cpp')
     if kernel.get('hfs_boot_copy'):
@@ -185,6 +198,9 @@ def main():
             raise RuntimeError("Current camera code was not linked: " + name)
         if chosen["module_header"] and sha(ROOT / chosen["module_header"]) != chosen["module_header_sha256"]:
             raise RuntimeError("Current camera header was not compiled")
+        if name in ('i9100_emmc.c','i9100_emmc_native.cpp'):
+            dep=Path(ROOT/chosen['object']).with_suffix('.d')
+            if not dep.is_file()or 'i9100_emmc_sdr.h'not in dep.read_text():raise RuntimeError('SDR ABI was not consumed by paired ARM compile')
         kind = ".cpo" if name.endswith(".cpp") else ".o"
         matching = [path for path in inputs if object_name(path) in (name + kind, Path(name).stem + kind)]
         if len(matching) != 1 or sha(matching[0]) != sha(ROOT / chosen["object"]):

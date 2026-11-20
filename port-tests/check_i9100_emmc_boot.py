@@ -22,6 +22,13 @@ e.model_cpp('i9100_emmc_boot_test.cpp',c+['i9100_emmc_native_fixture.c'],cpp,
  source_overrides={'i9100_emmc_native_fixture.c':e.out/'i9100_emmc_native_fixture.c'},
  wrapped_functions=('i9100_camera_mmio_read','i9100_camera_mmio_write'),
  extra_sdk=REPO/'port-tests/emmc-storage-sdk',libraries=('pthread',))
+os.environ['I9100_EMMC_BOOT_MODEL_SDR_RECORD']=str(e.out/'actual-contract-sdr.bin')
+e.model_cpp('i9100_emmc_boot_test.cpp',c+['i9100_emmc_native_fixture.c'],cpp,
+ source_overrides={'i9100_emmc_native_fixture.c':e.out/'i9100_emmc_native_fixture.c'},
+ wrapped_functions=('i9100_camera_mmio_read','i9100_camera_mmio_write'),
+ extra_sdk=REPO/'port-tests/emmc-storage-sdk',libraries=('pthread',),extra_defines=('I9100_EMMC_SDR_BOOT_MODEL=1',))
+e.result['sdr_boot_path']=True;e.result['actual_sdr_contract_sha256']=hashlib.sha256((e.out/'actual-contract-sdr.bin').read_bytes()).hexdigest()
+e.result['sdr_companion_header_sha256']=hashlib.sha256((REPO/'iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_emmc_sdr.h').read_bytes()).hexdigest()
 e.result['nested_fixtures']={n:hashlib.sha256((REPO/'port-tests'/n).read_bytes()).hexdigest() for n in
  ('i9100_emmc_storage_test.cpp','i9100_emmc_native_test.cpp','i9100_emmc_native_fixture.c','i9100_emmc_writer_test.c','i9100_emmc_test.c')}
 e.result['actual_contract_sha256']=hashlib.sha256((e.out/'actual-contract.bin').read_bytes()).hexdigest()

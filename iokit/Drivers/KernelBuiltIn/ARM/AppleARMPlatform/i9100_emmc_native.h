@@ -4,6 +4,7 @@
 #include "i9100_emmc_writer.h"
 #include "i9100_emmc_host.h"
 #include "i9100_peripheral_native.h"
+#include "i9100_emmc_sdr.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,6 +26,10 @@ enum i9100_emmc_native_mode {I9100_EMMC_N_INSPECT=0,I9100_EMMC_N_DATA_RW=1};
 int i9100_emmc_native_open(int enabled,struct i9100_peripheral_native *,
  const struct i9100_emmc_inherited_profile *,enum i9100_emmc_native_mode,
  const struct i9100_emmc_writer_identity *approved_identity,struct i9100_emmc_native **);
+int i9100_emmc_native_open_sdr(int enabled,struct i9100_peripheral_native *,
+ const struct i9100_emmc_inherited_profile *,enum i9100_emmc_native_mode,
+ const struct i9100_emmc_writer_identity *approved_identity,const struct i9100_emmc_sdr_plan *,struct i9100_emmc_native **);
+int i9100_emmc_native_sdr_snapshot(struct i9100_emmc_native *,struct i9100_emmc_sdr_session *);
 int i9100_emmc_native_snapshot(struct i9100_emmc_native *,struct i9100_emmc_native_snapshot *);
 int i9100_emmc_native_clock_snapshot(struct i9100_emmc_native *,uint8_t out[512]);
 int i9100_emmc_native_validate(struct i9100_emmc_native *);
@@ -37,7 +42,11 @@ int i9100_emmc_native_hold_put(struct i9100_emmc_native *,uintptr_t consumer);
 int i9100_emmc_native_close(struct i9100_emmc_native **);
 /* Default OFF; real IOKit MMIO and single host/card lifecycle. Adopt a
  * reviewed inherited CIU rate/pins/mux/divider/CLKSEL; verify live fields
- * on every IO. No GPIO/CMU/PMIC programming or invented frequency.
+ * on every IO. Legacy entry makes no GPIO/CMU/PMIC changes. Explicit SDR
+ * entry configures only GPK0/1 data pads under the same host lease, performs
+ * the one-shot card transition before grants/publication, and restores
+ * card mode then saved data-pad fields on clean close. eMMC_EN/CMD/CLK,
+ * unrelated GPIO, CMU and PMIC stay unchanged. No invented frequency.
  * Inspect reads real current CID/GPT+PIT/HFS. DATA_RW requires separately
  * approved current CID/table identity and two exact HFSX/HFS+ roles; only
  * DATAFS is writable at this runtime API. No system deployment interface.

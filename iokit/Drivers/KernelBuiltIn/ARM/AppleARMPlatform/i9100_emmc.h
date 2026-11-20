@@ -34,7 +34,7 @@ struct i9100_emmc_io {
  void (*write32)(void *,unsigned,uint32_t);
  uint64_t (*now_ns)(void *);
  int (*delay_us)(void *,uint32_t); /* zero=success; nonzero=abort */
- uint32_t input_clock_hz; /* verified CIU rate BEFORE CLKDIV, AFTER CLKSEL */
+ uint32_t input_clock_hz; /* Verified4210 CIU after fixed/2, before DW CLKDIV. */
  uint32_t max_read_clock_hz; /* zero keeps identification clock */
  uint32_t poll_bound; /* independent bound even if the clock stops */
 };
@@ -48,6 +48,7 @@ struct i9100_emmc_card {
  uintptr_t self;
  uint32_t generation;
  struct i9100_emmc_write_grant *write_grant;
+ struct i9100_emmc_sdr_session *sdr;
 };
 struct i9100_emmc_write_grant {
  uintptr_t self,card;
@@ -61,12 +62,15 @@ int i9100_emmc_probe(struct i9100_emmc_card *);
 int i9100_emmc_read(struct i9100_emmc_card *,uint64_t,uint32_t,uint8_t *);
 int i9100_emmc_write(struct i9100_emmc_card *,struct i9100_emmc_write_grant *,uint64_t,uint32_t,const uint8_t *);
 int i9100_emmc_synchronize(struct i9100_emmc_card *,struct i9100_emmc_write_grant *);
+int i9100_emmc_transport_check(struct i9100_emmc_card *);
 /* Read-only clients create no grant and still issue no write/CMD6. The
  * opt-in writer policy alone binds a grant after current CID + both GPTs
  * + PIT checks. The lower command gate independently hardcodes user-area
  * FACTORYFS/DATAFS bounds and exact grant/card/generation. CMD6 can only
  * flush an already enabled supported device cache, never select boot,
- * enable caching, change partition/bus/voltage or erase. Caller serializes
+ * enable caching, change partition/voltage or erase. Explicit pre-writer
+ * SDR initialization has a separate address-bound gate (i9100_emmc_sdr.h);
+ * ordinary clients never acquire it. Caller serializes
  * every card API, including read/probe, and keeps grant storage live. */
 #ifdef __cplusplus
 }

@@ -4,6 +4,7 @@
 static unsigned maps_started;
 static uint8_t hfs_system[512],hfs_data[512];
 static struct i9100_emmc_writer_identity expected_identity;
+static struct {unsigned enabled,switches,busy,width,timing,power_class,failure;} sdr_fixture;
 static void make_hfs(uint8_t h[512],uint32_t bytes_blocks,int journaled)
 {memset(h,0,512);h[0]='H';h[1]='X';h[3]=5;big32(h+4,0x100U|(journaled?0x2000U:0));
  big32(h+40,8192);big32(h+44,bytes_blocks);big32(h+48,1U);}
@@ -11,7 +12,8 @@ int fixture_setup(const char *source)
 {
  if(wm.d.head)return -1;expected_identity=setup_writer(source,1);
  wm.m.count=wm.m.position=0;wm.m.commands=wm.m.writes=0;wm.m.state=0;wm.m.cmd1=0;
- maps_started=0;make_hfs(hfs_system,196608U,0);make_hfs(hfs_data,786432U,1);return 0;
+ maps_started=0;memset(&sdr_fixture,0,sizeof(sdr_fixture));
+ make_hfs(hfs_system,196608U,0);make_hfs(hfs_data,786432U,1);return 0;
 }
 void fixture_finish(void){done();}
 void fixture_identity(struct i9100_emmc_writer_identity *i){*i=expected_identity;}
@@ -30,10 +32,36 @@ void fixture_export_table_evidence(const char *folder)
  unsigned pitbytes=28U+get32(wm.d.head+0x4404U)*132U;assert(0x4400U+pitbytes<=1048576U);
  output_file(folder,"pit.bin",wm.d.head+0x4400U,pitbytes);
 }
-uint32_t fixture_read(unsigned off){return wread(&wm,off);}
+void fixture_enable_sdr(unsigned failure){sdr_fixture.enabled=1;sdr_fixture.failure=failure;}
+unsigned fixture_sdr_switches(void){return sdr_fixture.switches;}
+uint32_t fixture_read(unsigned off)
+{if(sdr_fixture.enabled&&off==EM_STATUS&&sdr_fixture.busy)return 1U<<9;return wread(&wm,off);}
 void fixture_write(unsigned off,uint32_t value)
 {
+ if(sdr_fixture.enabled&&off==EM_CMD&&!(value&(1U<<21))&&(value&63U)==6U&&wm.m.regs[EM_CMDARG/4]!=0x03200100U){
+  uint32_t arg=wm.m.regs[EM_CMDARG/4];unsigned index=(arg>>16)&255U,data_value=(arg>>8)&255U;
+  assert((arg&0xff0000ffU)==0x03000001U&&(index==183U||index==185U||index==187U)&&!(value&((1U<<9)|(1U<<10))));
+  sdr_fixture.switches++;maps_started++;wm.m.commands++;wm.m.regs[EM_CMD/4]=value&~(1U<<31);wm.m.regs[EM_RINTSTS/4]|=1U<<2;
+  if(sdr_fixture.failure==1&&sdr_fixture.switches==1){response(&wm.m,1U<<7);return;}
+  if(sdr_fixture.failure==2&&sdr_fixture.switches>3){response(&wm.m,1U<<7);return;}
+  if(index==183U)sdr_fixture.width=data_value;else if(index==185U)sdr_fixture.timing=data_value;else sdr_fixture.power_class=data_value;
+  sdr_fixture.busy=2;response(&wm.m,7U<<9);return;
+ }
+ if(sdr_fixture.enabled&&off==EM_CMD&&!(value&(1U<<21))&&(value&63U)==13U&&sdr_fixture.busy){
+  sdr_fixture.busy--;maps_started++;wm.m.commands++;wm.m.regs[EM_CMD/4]=value&~(1U<<31);
+  wm.m.regs[EM_RINTSTS/4]|=1U<<2;response(&wm.m,7U<<9);return;
+ }
  wwrite(&wm,off,value);maps_started++;
+ if(sdr_fixture.enabled&&off==EM_CMD&&!(value&(1U<<21))&&(value&63U)==8U){
+  const unsigned fields[]={183,185,187,196,202,203,248};
+  const uint8_t bytes[]={sdr_fixture.width,sdr_fixture.timing,sdr_fixture.power_class,3,0x43,0x21,20};
+  for(unsigned i=0;i<sizeof(fields)/sizeof(fields[0]);i++){
+   unsigned shift=(fields[i]&3U)*8U;wm.m.words[fields[i]/4U]=(wm.m.words[fields[i]/4U]&~(255U<<shift))|((uint32_t)bytes[i]<<shift);
+  }
+  if(sdr_fixture.failure==3&&sdr_fixture.switches)wm.m.words[212/4U]^=1U;
+  unsigned ctype=sdr_fixture.width==0?0:sdr_fixture.width==1?1:1U<<16;
+  if(wm.m.regs[EM_CTYPE/4]!=ctype)wm.m.regs[EM_RINTSTS/4]|=1U<<7;
+ }
  if(off==EM_CMD&&!(value&(1U<<21))&&((value&63U)==17U||(value&63U)==18U)){
   uint64_t lba=wm.m.regs[EM_CMDARG/4];unsigned count=wm.m.regs[EM_BYTCNT/4]/512U;
   for(unsigned i=0;i<count;i++){

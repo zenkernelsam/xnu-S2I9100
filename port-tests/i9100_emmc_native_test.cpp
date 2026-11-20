@@ -74,7 +74,18 @@ extern "C" uint32_t __wrap_i9100_camera_mmio_read(volatile uint8_t *base,unsigne
 #endif
 }
 extern "C" void __wrap_i9100_camera_mmio_write(volatile uint8_t *base,unsigned off,uint32_t value)
-{assert(base==(volatile uint8_t *)regs[HOST]);fixture_write(off,value);}
+{
+#if defined(I9100_EMMC_SDR_NATIVE_MODEL)
+ if(base==(volatile uint8_t *)regs[GPIO]){
+  assert(off==0x40||off==0x48||off==0x4c||off==0x60||off==0x68||off==0x6c);
+  uint32_t mask=off==0x40||off==0x60?0x0ffff000U:0x3fc0U;
+  assert(!((regs[GPIO][off/4U]^value)&~mask));
+  if(sdr_gpio_drop_offset==off)return;
+  __real_i9100_camera_mmio_write(base,off,value);sdr_gpio_writes++;return;
+ }
+#endif
+ assert(base==(volatile uint8_t *)regs[HOST]);fixture_write(off,value);
+}
 #ifndef I9100_EMMC_REAL_PARENT_MODEL
 int i9100_peripheral_native_hold_get(i9100_peripheral_native *p,i9100_native_parent_hold *h)
 {assert(!h->owned);p->holds++;h->context=p;h->self=(uintptr_t)h;h->owned=1;return 0;}
