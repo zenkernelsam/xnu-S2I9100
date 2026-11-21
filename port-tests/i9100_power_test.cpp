@@ -402,16 +402,18 @@ static void epoch_checks()
  /* Captured S-Boot binary12 clock: Jan 1 2000, 09:43:54 AM. */
  uint8_t native12[7]={0x36,0x2b,0x09,0x01,0x01,0x00,0x01};
  assert(i9100_rtc_decode(native12,0,&a) && a==35034);
+ uint8_t nativeNoon[7]={0x28,0x09,0x4c,0x01,0x01,0x00,0x01};
+ assert(i9100_rtc_decode(nativeNoon,0,&a) && a==43780);
  for(unsigned h=0;h<24;h++){
-  uint8_t twelve[7]={59,59,(uint8_t)((h%12)|(h>=12?0x40:0)),1,12,26,31};
+  uint8_t twelve[7]={59,59,(uint8_t)(((h%12)?h%12:12)|(h>=12?0x40:0)),1,12,26,31};
   uint8_t twentyfour[7]={59,59,(uint8_t)h,1,12,26,31};
   assert(i9100_rtc_decode(twelve,0,&a) && i9100_rtc_decode(twentyfour,2,&b) && a==b);
  }
  uint8_t midnight12[7]={59,59,0x4b,1,12,26,31};
  assert(i9100_rtc_decode(midnight12,0,&a));
- uint8_t nextday12[7]={0,0,0,2,1,27,1};
+ uint8_t nextday12[7]={0,0,12,2,1,27,1};
  assert(i9100_rtc_decode(nextday12,0,&b) && b==a+1);
- for(unsigned badHour: {0x0cU,0x0fU,0x10U,0x20U,0x4cU,0x80U}){
+ for(unsigned badHour: {0x00U,0x0fU,0x10U,0x20U,0x4fU,0x80U}){
   native12[2]=(uint8_t)badHour;b=123;
   assert(!i9100_rtc_decode(native12,0,&b) && b==123);
  }
