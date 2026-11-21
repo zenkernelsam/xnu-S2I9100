@@ -525,7 +525,10 @@ static void bus_checks()
   const std::vector<uint8_t> wire={0x0c,3,0x0d,0x0c,0x10,0x0d,0x0c,0x10,0x0d,0x0c,3,0x0d};
   assert(m.received==wire);
   struct i9100_rtc_read observed;assert(i9100_power_rtc_snapshot(&hw,&seconds,&observed));
-  assert(observed.version==1 && !(observed.sequence&1U) && observed.status==1 && observed.read_mask==15);
+  assert(observed.version==2 && !(observed.sequence&1U) && observed.status==1 && observed.read_mask==15);
+  uint32_t checksum=2166136261U;const uint8_t *sealed=(const uint8_t *)&observed;
+  for(unsigned n=0;n<44;n++)checksum=(checksum^sealed[n])*16777619U;
+  assert(observed.reserved==checksum && i9100_rtc_read_diag[11]==checksum);
   assert(observed.controls==0x202 && observed.first_low==0x020d011d && observed.first_high==0x141a0b);
   m.rtcMemory[3]=3;uint8_t bcdTime[7]={0x29,1,0x13,2,0x11,0x26,0x20};
   memcpy(m.rtcMemory+0x10,bcdTime,7);memcpy(saved,m.rtcMemory,256);
