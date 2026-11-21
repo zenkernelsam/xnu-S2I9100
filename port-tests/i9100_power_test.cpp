@@ -391,7 +391,14 @@ static void epoch_checks()
  rtc[4]=2;rtc[5]=0;rtc[6]=29;assert(i9100_rtc_decode(rtc,2,&b));
  rtc[5]=100;assert(!i9100_rtc_decode(rtc,2,&b));
  rtc[5]=26;rtc[6]=28;assert(i9100_rtc_decode(rtc,2,&b));
- assert(!i9100_rtc_decode(rtc,3,&b));rtc[0]=60;assert(!i9100_rtc_decode(rtc,2,&b));
+ uint8_t bcd[7]={0x59,0x59,0x23,1,0x12,0x26,0x31};
+ uint8_t binary[7]={59,59,23,1,12,26,31};
+ assert(i9100_rtc_decode(bcd,3,&a) && i9100_rtc_decode(binary,2,&b) && a==b);
+ bcd[0]=0;bcd[1]=0;bcd[2]=0;bcd[4]=1;bcd[5]=0x27;bcd[6]=1;
+ assert(i9100_rtc_decode(bcd,3,&b) && b==a+1);
+ bcd[0]=0x1a;assert(!i9100_rtc_decode(bcd,3,&b));bcd[0]=0;
+ assert(!i9100_rtc_decode(bcd,1,&b));bcd[2]=0x24;assert(!i9100_rtc_decode(bcd,3,&b));
+ rtc[0]=60;assert(!i9100_rtc_decode(rtc,2,&b));
  puts("Warm-reset charge epoch: exact elapsed plus RTC gap, 5h/90min/full/timeout/thermal inheritance, stale/CRC/RTC refusal and reserved-memory guards passed");
 }
 
@@ -498,8 +505,22 @@ static void bus_checks()
   assert(i9100_power_rtc_seconds(&hw,&seconds) && seconds==expected);
   assert(!memcmp(saved,m.rtcMemory,256) && m.enters==m.leaves && !m.guard);
   const std::vector<uint8_t> wire={0x0c,3,0x0d,0x0c,0x10,0x0d,0x0c,0x10,0x0d,0x0c,3,0x0d};
-  assert(m.received==wire);m.rtcMemory[3]=3;assert(!i9100_power_rtc_seconds(&hw,&seconds));
+  assert(m.received==wire);
+  struct i9100_rtc_read observed;assert(i9100_power_rtc_snapshot(&hw,&seconds,&observed));
+  assert(observed.version==1 && !(observed.sequence&1U) && observed.status==1 && observed.read_mask==15);
+  assert(observed.controls==0x202 && observed.first_low==0x020d011d && observed.first_high==0x141a0b);
+  m.rtcMemory[3]=3;uint8_t bcdTime[7]={0x29,1,0x13,2,0x11,0x26,0x20};
+  memcpy(m.rtcMemory+0x10,bcdTime,7);memcpy(saved,m.rtcMemory,256);
+  assert(i9100_power_rtc_snapshot(&hw,&seconds,&observed) && seconds==expected);
+  assert(observed.status==1 && observed.read_mask==15 && observed.controls==0x303);
+  assert(!memcmp(saved,m.rtcMemory,256)); /* Raw observation never changes RTC. */
+  m.rtcMemory[0x10]=0x1a;seconds=123;
+  assert(!i9100_power_rtc_snapshot(&hw,&seconds,&observed) && seconds==123);
+  assert(observed.status==7 && observed.read_mask==15 && observed.first_low==0x0213011a);
+  m.rtcMemory[3]=0;assert(!i9100_power_rtc_snapshot(&hw,&seconds,&observed));
+  assert(observed.status==7 && observed.controls==0);
   m.rtcMemory[3]=2;m.nack=true;assert(!i9100_power_rtc_seconds(&hw,&seconds));
+  assert(i9100_rtc_read_diag[8]==2 && !i9100_rtc_read_diag[2] && !(i9100_rtc_read_diag[1]&1U));
   assert(m.enters==m.leaves && !m.guard);
  }
  for(bool fuel: {false,true}){
