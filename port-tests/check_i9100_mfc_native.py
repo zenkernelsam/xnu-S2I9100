@@ -8,7 +8,7 @@ from i9100_mfc_dma_model import prepare
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("--cross-compile", action="store_true")
 a = p.parse_args()
-c = ["i9100_mfc.c", "i9100_mfc_decode.c", "i9100_mfc_layout.c", "i9100_dma_guard.c"]
+c = ["i9100_mfc.c", "i9100_mfc_decode.c", "i9100_mfc_layout.c", "i9100_dma_guard.c", "i9100_mfc_host.c"]
 cpp = ["i9100_mfc_native.cpp", "i9100_camera_mmio.cpp"]
 e = Evidence("mfc-native-offline")
 e.wait_idle_seconds = 60

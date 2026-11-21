@@ -24,6 +24,7 @@ static volatile uint32_t mfc_reserved;
 struct i9100_mfc_native {
  i9100_peripheral_native *parent;i9100_native_parent_hold parent_hold;
  i9100_mfc_supply supply;i9100_mfc_supply_lease supply_lease;
+ i9100_mfc_host_lease host;
  IOLock *lifecycle,*engine;
  IOMemoryDescriptor *memory[MN_MAPS];IOMemoryMap *mapping[MN_MAPS];volatile uint8_t *regs[MN_MAPS];
  i9100_dma_native *allocation[2];i9100_mfc core; i9100_mfc_decoder decoder;
@@ -47,7 +48,7 @@ static bool supply_valid(i9100_mfc_native *n)
  n->supply_lease.generation&&!n->supply.validate(n->supply.cookie,&n->supply_lease);}
 static int resources(i9100_mfc_native *n)
 {
- if(!supply_valid(n))return I9100_MFC_OWNER;
+ if(i9100_mfc_host_check(&n->host)||!supply_valid(n))return I9100_MFC_OWNER;
  uint32_t gate=rd(n,MN_CMU,0xc928),power=rd(n,MN_PMU,0x3c40),status=rd(n,MN_PMU,0x3c44);
  uint32_t source=rd(n,MN_CMU,0xc228),divider=rd(n,MN_CMU,0xc528),irq=rd(n,MN_GIC,0x10c);
  if(gate==0xffffffffU||power==0xffffffffU||status==0xffffffffU||source==0xffffffffU||divider==0xffffffffU||irq==0xffffffffU||
@@ -95,6 +96,7 @@ static int cleanup(i9100_mfc_native *n)
   if(n->memory[i]){n->memory[i]->release();n->memory[i]=0;}
  }
  if(n->parent_hold.owned){int e=i9100_peripheral_native_hold_put(&n->parent_hold);if(e)return e;}
+ if(n->host.owned){int e=i9100_mfc_host_release(&n->host,1);if(e)return e;}
  if(n->reserved){__sync_lock_release(&mfc_reserved);n->reserved=0;}return 0;
 }
 static void dispose(i9100_mfc_native *n)
@@ -118,6 +120,7 @@ static int open_native(int enabled,i9100_peripheral_native *parent,const i9100_m
  memset(n,0,sizeof(*n));n->reserved=1;n->parent=parent;n->supply=*supply;n->phase=I9100_MFC_N_BUILDING;n->decode_enabled=config!=0;
  int e=i9100_peripheral_native_hold_get(parent,&n->parent_hold);if(e){__sync_lock_release(&mfc_reserved);dispose(n);return e;}*out=n;
  n->lifecycle=IOLockAlloc();n->engine=IOLockAlloc();if(!n->lifecycle||!n->engine){e=I9100_MFC_IO;goto fail;}
+ e=i9100_mfc_host_acquire(supply->host,&n->host);if(e)goto fail;
  e=n->supply.acquire(n->supply.cookie,&n->supply_lease);if(e)goto fail;if(!supply_valid(n)){e=I9100_MFC_OWNER;goto fail;}
  {
   const uint32_t phys[MN_MAPS]={0x13400000U,0x13620000U,0x13630000U,0x10030000U,0x10020000U,0x10490000U};
@@ -202,7 +205,11 @@ int i9100_mfc_native_status(i9100_mfc_native *n,struct i9100_mfc_native_status *
 static bool outside_context(i9100_mfc_native *n,const void *p,uint32_t bytes)
 {uintptr_t a=(uintptr_t)p,b=(uintptr_t)n;return p&&bytes&&a<=~(uintptr_t)0-bytes&&!(a<b+sizeof(*n)&&b<a+bytes);}
 static int decode_ready(i9100_mfc_native *n)
-{return !n->decode_enabled?I9100_MFC_DISABLED:n->error?n->error:n->phase!=I9100_MFC_N_READY?I9100_MFC_BUSY:resources(n);}
+{
+ if(!n->decode_enabled)return I9100_MFC_DISABLED;if(n->error)return n->error;
+ if(n->phase!=I9100_MFC_N_READY)return I9100_MFC_BUSY;
+ int e=resources(n);if(e)fault(n,e);return e;
+}
 int i9100_mfc_native_frame(i9100_mfc_native *n,const void *data,uint32_t bytes,uint32_t tag,int last)
 {
  if(!n||(bytes&&!outside_context(n,data,bytes)))return I9100_MFC_ARGUMENT;

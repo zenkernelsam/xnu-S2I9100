@@ -3,6 +3,7 @@
 #define I9100_MFC_NATIVE_H
 #include "i9100_mfc.h"
 #include "i9100_mfc_decode.h"
+#include "i9100_mfc_host.h"
 #include "i9100_peripheral_native.h"
 #ifdef __cplusplus
 extern "C" {
@@ -14,6 +15,7 @@ struct i9100_mfc_supply {
  int (*acquire)(void *,struct i9100_mfc_supply_lease *);
  int (*validate)(void *,const struct i9100_mfc_supply_lease *);
  int (*release)(void *,struct i9100_mfc_supply_lease *);
+ const struct i9100_mfc_host_lease *host;
 };
 enum i9100_mfc_native_phase {I9100_MFC_N_BUILDING=1,I9100_MFC_N_PREPARED=2,
  I9100_MFC_N_BOOT=3,I9100_MFC_N_SYSINIT=4,I9100_MFC_N_OPEN=5,I9100_MFC_N_HEADER=6,

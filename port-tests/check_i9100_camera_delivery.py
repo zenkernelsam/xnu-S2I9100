@@ -93,6 +93,10 @@ def main():
                 if sha(REPO/name)!=expected:raise RuntimeError('Independent tile-reference fixture changed')
             if sha(folder/'tile-reference')!=m['reference_executable_sha256']:
                 raise RuntimeError('Original reference executable changed')
+            if m.get('mfc_original_pll_crossref'):
+                pll=m['mfc_original_pll_crossref']
+                if sha(ROOT/pll['source'])!=pll['sha256']or sha(folder/'original-pll-model')!=pll['model_sha256']:
+                    raise RuntimeError('Original MFC PLL arithmetic reference changed')
         if not found:
             raise RuntimeError("Not a model proof")
         if m.get('native_model_source_override'):
@@ -237,6 +241,10 @@ def main():
             dep=Path(ROOT/chosen['object']).with_suffix('.d')
             if not dep.is_file()or 'i9100_mfc_decode.h'not in dep.read_text():
                 raise RuntimeError('MFC DPB ABI was not consumed by paired ARM compile')
+        if name in ('i9100_mfc_native.cpp','i9100_mfc_board_native.cpp'):
+            dep=Path(ROOT/chosen['object']).with_suffix('.d')
+            if not dep.is_file()or 'i9100_mfc_host.h'not in dep.read_text():
+                raise RuntimeError('MFC shared host ABI was not consumed by paired ARM compile')
         kind = ".cpo" if name.endswith(".cpp") else ".o"
         matching = [path for path in inputs if object_name(path) in (name + kind, Path(name).stem + kind)]
         if len(matching) != 1 or sha(matching[0]) != sha(ROOT / chosen["object"]):

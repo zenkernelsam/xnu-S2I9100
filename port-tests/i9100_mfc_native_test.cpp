@@ -133,7 +133,7 @@ static int release(void *,i9100_mfc_supply_lease *l)
  assert(l->owned&&m.supply_owned);if(m.release_error)return -124;
  regs[CMU][0xc928/4]=0;regs[PMU][0x3c40/4]=regs[PMU][0x3c44/4]=0;l->owned=0;m.supply_owned=0;return 0;
 }
-static const i9100_mfc_supply supply={nullptr,acquire,validate,release};
+static const i9100_mfc_supply supply={nullptr,acquire,validate,release,nullptr};
 static uint8_t firmware[262144];
 static const uint8_t stream[]={0,0,0,1,0x67,0x42,0,0x1e,0xf4,0x05,0x01,0xec,0x80};
 static i9100_mfc_firmware_profile profile()
