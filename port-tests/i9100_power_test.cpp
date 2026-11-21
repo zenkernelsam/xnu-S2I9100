@@ -399,6 +399,22 @@ static void epoch_checks()
  bcd[0]=0x1a;assert(!i9100_rtc_decode(bcd,3,&b));bcd[0]=0;
  assert(!i9100_rtc_decode(bcd,1,&b));bcd[2]=0x24;assert(!i9100_rtc_decode(bcd,3,&b));
  rtc[0]=60;assert(!i9100_rtc_decode(rtc,2,&b));
+ /* Captured S-Boot binary12 clock: Jan 1 2000, 09:43:54 AM. */
+ uint8_t native12[7]={0x36,0x2b,0x09,0x01,0x01,0x00,0x01};
+ assert(i9100_rtc_decode(native12,0,&a) && a==35034);
+ for(unsigned h=0;h<24;h++){
+  uint8_t twelve[7]={59,59,(uint8_t)((h%12)|(h>=12?0x40:0)),1,12,26,31};
+  uint8_t twentyfour[7]={59,59,(uint8_t)h,1,12,26,31};
+  assert(i9100_rtc_decode(twelve,0,&a) && i9100_rtc_decode(twentyfour,2,&b) && a==b);
+ }
+ uint8_t midnight12[7]={59,59,0x4b,1,12,26,31};
+ assert(i9100_rtc_decode(midnight12,0,&a));
+ uint8_t nextday12[7]={0,0,0,2,1,27,1};
+ assert(i9100_rtc_decode(nextday12,0,&b) && b==a+1);
+ for(unsigned badHour: {0x0cU,0x0fU,0x10U,0x20U,0x4cU,0x80U}){
+  native12[2]=(uint8_t)badHour;b=123;
+  assert(!i9100_rtc_decode(native12,0,&b) && b==123);
+ }
  puts("Warm-reset charge epoch: exact elapsed plus RTC gap, 5h/90min/full/timeout/thermal inheritance, stale/CRC/RTC refusal and reserved-memory guards passed");
 }
 
@@ -519,6 +535,12 @@ static void bus_checks()
   assert(observed.status==7 && observed.read_mask==15 && observed.first_low==0x0213011a);
   m.rtcMemory[3]=0;assert(!i9100_power_rtc_snapshot(&hw,&seconds,&observed));
   assert(observed.status==7 && observed.controls==0);
+  uint8_t native12[7]={0x36,0x2b,0x09,0x01,0x01,0x00,0x01};
+  memcpy(m.rtcMemory+0x10,native12,7);memcpy(saved,m.rtcMemory,256);
+  assert(i9100_power_rtc_snapshot(&hw,&seconds,&observed) && seconds==35034);
+  assert(observed.status==1 && observed.read_mask==15 && observed.controls==0);
+  assert(observed.first_low==0x01092b36 && observed.first_high==0x010001);
+  assert(!memcmp(saved,m.rtcMemory,256));
   m.rtcMemory[3]=2;m.nack=true;assert(!i9100_power_rtc_seconds(&hw,&seconds));
   assert(i9100_rtc_read_diag[8]==2 && !i9100_rtc_read_diag[2] && !(i9100_rtc_read_diag[1]&1U));
   assert(m.enters==m.leaves && !m.guard);
