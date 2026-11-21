@@ -19,11 +19,18 @@ def main():
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
-struct component {char *cn_nameptr;int cn_namelen;};
-struct nameidata {struct component ni_cnd;};
+struct componentname {char *cn_nameptr;int cn_namelen;};
+struct nameidata {struct componentname ni_cnd;};
 struct image_params {char *ip_strings,*ip_endargv,*ip_endenvv,*ip_strendp;int ip_envc,ip_argspace,ip_strspace;struct nameidata *ip_ndp;};
-static int enabled=1,abi=6;
-static int PE_parse_boot_argn(const char *key,void *dest,int size){assert(size==4);*(int *)dest=!strcmp(key,"i9100setupnative")?enabled:abi;return 1;}
+static int enabled=1,abi=6,canvas=360;
+static int PE_parse_boot_argn(const char *key,void *dest,int size){
+ assert(size==4);
+ if(!strcmp(key,"i9100setupnative"))*(int *)dest=enabled;
+ else if(!strcmp(key,"i9100hidabi"))*(int *)dest=abi;
+ else if(!strcmp(key,"i9100uicanvas"))*(int *)dest=canvas;
+ else return 0;
+ return 1;
+}
 #include "bsd/dev/arm/i9100_setup_native_layout.h"
 static unsigned checks;
 static void check(const char *input,size_t length,int count,const char *expected,int expected_changed,int mode){
@@ -31,9 +38,17 @@ static void check(const char *input,size_t length,int count,const char *expected
  struct nameidata nd={{"Setup",5}};
  struct image_params ip={workspace,workspace,workspace+length,workspace+length,count,999,888,&nd};
  uint8_t uuid[16]={0x58,0x0d,0xfd,0x1e,0xdb,0xd5,0x3d,0x33,0x84,0x4b,0xca,0x66,0x35,0xc0,0xb3,0xcd};
- unsigned pointer_size=4;enabled=1;abi=6;
+ unsigned pointer_size=4;enabled=1;abi=6;canvas=360;
  if(mode==1)enabled=0;if(mode==2)uuid[0]^=1;if(mode==3)nd.ni_cnd.cn_nameptr="Other";
  if(mode==4)pointer_size=8;if(mode==5)abi=7;if(mode==6)ip.ip_endenvv=workspace-0;
+ if(mode>=7){
+  const uint8_t preferences_uuid[16]={0x6e,0x85,0xe1,0x69,0x5d,0xae,0x3b,0x05,0xaf,0x77,0xdd,0x6d,0x68,0xc0,0x88,0x99};
+  nd.ni_cnd.cn_nameptr="Preferences";
+  nd.ni_cnd.cn_namelen=11;
+  if(mode!=8)memcpy(uuid,preferences_uuid,sizeof(uuid));
+  if(mode==9)canvas=0;
+  if(mode==10)nd.ni_cnd.cn_nameptr="PreferenceX";
+ }
  memset((void *)i9100_setup_native_layout_diag,0,sizeof(i9100_setup_native_layout_diag));i9100_setup_native_layout_diag[0]=1;
  i9100_setup_native_layout(&ip,uuid,pointer_size);
  assert(ip.ip_argspace==999 && ip.ip_strspace==888 && ip.ip_envc==count);
@@ -56,6 +71,9 @@ int main(void){
  CASE("CLASSIC=1\0",257,"CLASSIC=1\0",0,0);
  CASE("CLASSIC=1\0",-1,"CLASSIC=1\0",0,0);
  CASE("",0,"",0,0);
+ CASE("CLASSIC=1\0",1,"CLASSIC=0\0",1,7);
+ for(int n=8;n<=10;n++)CASE("CLASSIC=1\0",1,"CLASSIC=1\0",0,n);
+ CASE("CLASSIC=1\0CLASSIC=0\0",2,"CLASSIC=1\0CLASSIC=0\0",0,7);
  enabled=1;abi=6;i9100_setup_native_layout_diag[3]=UINT32_MAX;i9100_setup_native_count(3);assert(i9100_setup_native_layout_diag[3]==UINT32_MAX);
  printf("PASS %u production exec workspace/identity/duplicate/malformed/default-off cases and saturated diagnostics\n",checks);
 }
