@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "i9100_mfc_native.h"
+#include "i9100_mfc_board_native.h"
+#include "i9100_mfc_power.h"
 #include "i9100_dma_native.h"
 #include <IOKit/IOLib.h>
 #include <IOKit/IOLocks.h>
@@ -29,6 +31,8 @@ struct i9100_mfc_native {
  IOMemoryDescriptor *memory[MN_MAPS];IOMemoryMap *mapping[MN_MAPS];volatile uint8_t *regs[MN_MAPS];
  i9100_dma_native *allocation[2];i9100_mfc core; i9100_mfc_decoder decoder;
  uint32_t phase,reserved,source,divider,stream_supplied,decode_enabled;int error,cleanup_error;
+ uint32_t holds;uintptr_t hold_tokens[4];
+ struct {uintptr_t token;struct i9100_mfc_board *board;uint32_t generation,irq_generation,bound;} ctl;
 };
 static int take(IOLock *l){return l&&ml_get_interrupts_enabled()&&IOLockTryLock(l)?0:-1;}
 static uint32_t rd(i9100_mfc_native *n,unsigned map,unsigned off)
@@ -48,11 +52,20 @@ static bool supply_valid(i9100_mfc_native *n)
  n->supply_lease.generation&&!n->supply.validate(n->supply.cookie,&n->supply_lease);}
 static int resources(i9100_mfc_native *n)
 {
- if(i9100_mfc_host_check(&n->host)||!supply_valid(n))return I9100_MFC_OWNER;
+ int e=i9100_mfc_host_check(&n->host);
+ if(e==I9100_MP_BUSY)return I9100_MFC_BUSY; /* gate held elsewhere: defer, not ownership loss */
+ if(e)return I9100_MFC_OWNER;
+ {
+  struct i9100_mfc_supply_lease *l=&n->supply_lease;
+  e=(l->self!=(uintptr_t)l||l->owned!=1U||!l->provider||!l->generation)?I9100_MFC_OWNER:
+   n->supply.validate(n->supply.cookie,l);
+  if(e==I9100_MP_BUSY)return I9100_MFC_BUSY;
+  if(e)return I9100_MFC_OWNER;
+ }
  uint32_t gate=rd(n,MN_CMU,0xc928),power=rd(n,MN_PMU,0x3c40),status=rd(n,MN_PMU,0x3c44);
  uint32_t source=rd(n,MN_CMU,0xc228),divider=rd(n,MN_CMU,0xc528),irq=rd(n,MN_GIC,0x10c);
  if(gate==0xffffffffU||power==0xffffffffU||status==0xffffffffU||source==0xffffffffU||divider==0xffffffffU||irq==0xffffffffU||
-    (gate&7U)!=7U||(power&7U)!=7U||(status&7U)!=7U||irq&(1U<<30))return I9100_MFC_OWNER;
+    (gate&7U)!=7U||(power&7U)!=7U||(status&7U)!=7U||((irq&(1U<<30))&&!n->ctl.bound))return I9100_MFC_OWNER;
  if(n->phase!=I9100_MFC_N_BUILDING&&((source&0x111U)!=(n->source&0x111U)||(divider&15U)!=(n->divider&15U)))return I9100_MFC_OWNER;
  for(unsigned unit=MN_MMU_L;unit<=MN_MMU_R;unit++)if(rd(n,unit,0)||rd(n,unit,0x18))return I9100_MFC_OWNER;
  return 0;
@@ -62,7 +75,9 @@ static int idle(void *p)
 static int normal_nc(void *p,const i9100_dma_buffer *a,const i9100_dma_buffer *b)
 {
  i9100_mfc_native *n=(i9100_mfc_native *)p;
- if(resources(n)||a!=i9100_dma_native_buffer(n->allocation[0])||b!=i9100_dma_native_buffer(n->allocation[1]))return -1;
+ int e=resources(n);
+ if(e==I9100_MFC_BUSY)return I9100_MFC_BUSY; /* transient gate contention: caller retries the reply */
+ if(e||a!=i9100_dma_native_buffer(n->allocation[0])||b!=i9100_dma_native_buffer(n->allocation[1]))return -1;
  const i9100_dma_buffer *banks[2]={a,b};
  for(unsigned k=0;k<2;k++){
   const i9100_dma_buffer *v=banks[k];
@@ -150,24 +165,87 @@ int i9100_mfc_native_open(int enabled,i9100_peripheral_native *parent,const i910
 int i9100_mfc_native_open_decode(int enabled,i9100_peripheral_native *parent,const i9100_mfc_supply *supply,
  const i9100_mfc_decode_config *config,i9100_mfc_native **out)
 {if(!config&&enabled)return I9100_MFC_ARGUMENT;return open_native(enabled,parent,supply,config,out);}
-int i9100_mfc_native_start(i9100_mfc_native *n,const i9100_mfc_firmware_profile *profile,const void *firmware,uint32_t bytes,
- const void *stream,uint32_t stream_bytes)
+/* The exclusive controller lease: the board that issued our supply lease
+ * must actually verify the handed IRQ-owner token (identity, ownership and
+ * issuing generation) at bind time and at every command entry. An unissued,
+ * copied or stale integer is refused before any hardware/fault path; a
+ * legitimate bound owner's real resource damage still latches. While bound,
+ * raw transitions and masked polling are refused; a lifetime hold never
+ * grants command or IRQ-armed exemption. */
+static int control(i9100_mfc_native *n,uintptr_t ctl,int raw)
+{
+ if(!n->ctl.bound)return ctl?I9100_MFC_OWNER:0;
+ if(!ctl)return raw;
+ if(ctl!=n->ctl.token||n->ctl.generation!=n->supply_lease.generation)return I9100_MFC_OWNER;
+ unsigned generation=0;
+ int e=i9100_mfc_board_irq_verify(n->ctl.board,ctl,&generation);
+ if(e==I9100_MP_BUSY)return I9100_MFC_BUSY;
+ if(e||generation!=n->ctl.irq_generation)return I9100_MFC_OWNER;
+ return 0;
+}
+int i9100_mfc_native_control_bind(i9100_mfc_native *n,uintptr_t ctl)
+{
+ if(!n||!ctl)return I9100_MFC_ARGUMENT;
+ if(take(n->lifecycle))return I9100_MFC_BUSY;
+ int e=n->phase==I9100_MFC_N_CLOSING||n->phase==I9100_MFC_N_FAILED||n->error?I9100_MFC_OWNER:
+  n->ctl.bound?I9100_MFC_BUSY:0;
+ i9100_mfc_board *b=(i9100_mfc_board *)n->supply_lease.provider;
+ unsigned generation=0;
+ /* The MP-domain remap applies only to the provider's own verify result;
+  * the pre-verify gate already speaks MFC errors. */
+ if(!e){e=!b?I9100_MFC_OWNER:i9100_mfc_board_irq_verify(b,ctl,&generation);
+  if(e==I9100_MP_BUSY)e=I9100_MFC_BUSY;else if(e)e=I9100_MFC_OWNER;}
+ if(!e){n->ctl.token=ctl;n->ctl.board=b;n->ctl.generation=n->supply_lease.generation;
+  n->ctl.irq_generation=generation;n->ctl.bound=1;}
+ IOLockUnlock(n->lifecycle);return e;
+}
+int i9100_mfc_native_control_drop(i9100_mfc_native *n,uintptr_t ctl)
+{
+ if(!n||!ctl)return I9100_MFC_ARGUMENT;
+ if(take(n->lifecycle))return I9100_MFC_BUSY;
+ int e=!n->ctl.bound||n->ctl.token!=ctl?I9100_MFC_OWNER:0;
+ if(!e){n->ctl.bound=0;n->ctl.token=0;n->ctl.board=0;n->ctl.generation=n->ctl.irq_generation=0;}
+ IOLockUnlock(n->lifecycle);return e;
+}
+static int start_impl(i9100_mfc_native *n,const i9100_mfc_firmware_profile *profile,const void *firmware,uint32_t bytes,
+ const void *stream,uint32_t stream_bytes,uintptr_t ctl)
 {
  if(!n||(stream==0)!=(stream_bytes==0U)||(n->decode_enabled&&!stream_bytes))return I9100_MFC_ARGUMENT;if(take(n->lifecycle))return I9100_MFC_BUSY;
- int e=n->phase!=I9100_MFC_N_PREPARED?I9100_MFC_BUSY:resources(n);
+ /* Qualification is verified before any hardware, polling or fault path:
+  * a refused foreign/raw entry reports ownership without poisoning the
+  * bound controller; after this point an OWNER from resources() is real
+  * damage to the legal owner and still latches. */
+ int e=control(n,ctl,I9100_MFC_OWNER);
+ if(e){IOLockUnlock(n->lifecycle);return e;}
+ e=n->phase!=I9100_MFC_N_PREPARED?I9100_MFC_BUSY:resources(n);
  if(!e)e=i9100_mfc_stage_firmware(&n->core,i9100_dma_native_buffer(n->allocation[0]),i9100_dma_native_buffer(n->allocation[1]),profile,firmware,bytes);
  if(!e&&stream_bytes)e=i9100_mfc_stage_h264(&n->core,stream,stream_bytes);
  if(!e)e=i9100_mfc_boot(&n->core);
- if(e&&n->core.staged)fault(n,e);
+ if(e&&e!=I9100_MFC_BUSY&&n->core.staged)fault(n,e);
  if(e&&e!=I9100_MFC_BUSY&&e!=I9100_MFC_ARGUMENT)fault(n,e);
  if(!e){n->phase=I9100_MFC_N_BOOT;n->stream_supplied=stream_bytes!=0U;}IOLockUnlock(n->lifecycle);return e;
 }
-int i9100_mfc_native_poll(i9100_mfc_native *n)
+int i9100_mfc_native_start(i9100_mfc_native *n,const i9100_mfc_firmware_profile *profile,const void *firmware,uint32_t bytes,
+ const void *stream,uint32_t stream_bytes)
+{return start_impl(n,profile,firmware,bytes,stream,stream_bytes,0);}
+int i9100_mfc_native_start_ctl(i9100_mfc_native *n,const i9100_mfc_firmware_profile *profile,const void *firmware,uint32_t bytes,
+ const void *stream,uint32_t stream_bytes,uintptr_t ctl)
+{return start_impl(n,profile,firmware,bytes,stream,stream_bytes,ctl);}
+static int poll_impl(i9100_mfc_native *n,uintptr_t ctl)
 {
  if(!n)return I9100_MFC_ARGUMENT;if(take(n->lifecycle))return I9100_MFC_BUSY;
- int e=n->error?n->error:resources(n);
- if(!e&&n->phase==I9100_MFC_N_READY)goto out;
- if(!e&&(n->phase<I9100_MFC_N_BOOT||n->phase>I9100_MFC_N_HEADER)&&
+ int e=n->error?n->error:control(n,ctl,I9100_MFC_BUSY);
+ /* A latched error or a refused qualification exits before hardware and
+  * before fault(): a wrong controller can never damage the legal owner. */
+ if(e)goto out;
+ e=resources(n);
+ /* READY skips the core poll only when no mailbox residue exists: a late
+  * reply for a dead command still has to be drained through the real
+  * polling path so request_ready can prove mailbox quiescence. */
+ if(!e&&n->phase==I9100_MFC_N_READY&&!n->core.pending)goto out;
+ /* A still-pending mailbox command is itself permission to poll: residue
+  * must drain whatever phase the bookkeeping last reached. */
+ if(!e&&!n->core.pending&&(n->phase<I9100_MFC_N_BOOT||n->phase>I9100_MFC_N_HEADER)&&
     n->phase!=I9100_MFC_N_BUFFERS&&n->phase!=I9100_MFC_N_FRAME){e=I9100_MFC_BUSY;goto out;}
  if(!e)e=i9100_mfc_poll(&n->core);
  if(!e&&!n->core.pending){
@@ -185,6 +263,8 @@ int i9100_mfc_native_poll(i9100_mfc_native *n)
  if(e&&e!=I9100_MFC_BUSY)fault(n,e);else if(!e&&n->phase!=I9100_MFC_N_READY)e=I9100_MFC_BUSY;
 out:IOLockUnlock(n->lifecycle);return e;
 }
+int i9100_mfc_native_poll(i9100_mfc_native *n){return poll_impl(n,0);}
+int i9100_mfc_native_poll_ctl(i9100_mfc_native *n,uintptr_t ctl){return poll_impl(n,ctl);}
 int i9100_mfc_native_status(i9100_mfc_native *n,struct i9100_mfc_native_status *out)
 {
  if(!n||!out)return I9100_MFC_ARGUMENT;if(take(n->lifecycle))return I9100_MFC_BUSY;memset(out,0,sizeof(*out));
@@ -194,7 +274,7 @@ int i9100_mfc_native_status(i9100_mfc_native *n,struct i9100_mfc_native_status *
  out->width=n->core.sequence.width;out->height=n->core.sequence.height;out->dpb_count=n->core.sequence.dpb_count;out->consumed_bytes=n->core.consumed_bytes;
  out->bank_a_state=n->allocation[0]?i9100_dma_native_buffer(n->allocation[0])->state:0;
  out->bank_b_state=n->allocation[1]?i9100_dma_native_buffer(n->allocation[1])->state:0;
- out->held_mask=n->core.held_mask;out->error=n->error;out->cleanup_error=n->cleanup_error;
+ out->held_mask=n->core.held_mask;out->error=n->error;out->cleanup_error=n->cleanup_error;out->stop_stage=n->core.stop_stage;
  out->decode_enabled=n->decode_enabled;out->frame_submitted=n->decoder.frame_submitted;out->frame_completed=n->decoder.frame_completed;
  out->display_ready=n->decoder.display_ready;out->leased=n->decoder.leased;out->input_bytes=n->decoder.input_bytes;
  out->input_start=n->decoder.input_start;out->draining=n->decoder.draining;out->drained=n->decoder.drained;
@@ -208,22 +288,32 @@ static int decode_ready(i9100_mfc_native *n)
 {
  if(!n->decode_enabled)return I9100_MFC_DISABLED;if(n->error)return n->error;
  if(n->phase!=I9100_MFC_N_READY)return I9100_MFC_BUSY;
- int e=resources(n);if(e)fault(n,e);return e;
+ int e=resources(n);if(e&&e!=I9100_MFC_BUSY)fault(n,e);return e;
 }
-int i9100_mfc_native_frame(i9100_mfc_native *n,const void *data,uint32_t bytes,uint32_t tag,int last)
+static int frame_impl(i9100_mfc_native *n,const void *data,uint32_t bytes,uint32_t tag,int last,uintptr_t ctl)
 {
  if(!n||(bytes&&!outside_context(n,data,bytes)))return I9100_MFC_ARGUMENT;
- if(take(n->lifecycle))return I9100_MFC_BUSY;int e=decode_ready(n);
+ if(take(n->lifecycle))return I9100_MFC_BUSY;int e=control(n,ctl,I9100_MFC_OWNER);
+ if(e){IOLockUnlock(n->lifecycle);return e;} /* refused before hardware/fault */
+ e=decode_ready(n);
  if(!e)e=i9100_mfc_decoder_frame(&n->core,data,bytes,tag,last);
  if(!e)n->phase=I9100_MFC_N_FRAME;else if(n->core.fault)fault(n,e);
  IOLockUnlock(n->lifecycle);return e;
 }
-int i9100_mfc_native_acquire(i9100_mfc_native *n,i9100_mfc_frame_lease *lease)
+int i9100_mfc_native_frame(i9100_mfc_native *n,const void *data,uint32_t bytes,uint32_t tag,int last)
+{return frame_impl(n,data,bytes,tag,last,0);}
+int i9100_mfc_native_frame_ctl(i9100_mfc_native *n,const void *data,uint32_t bytes,uint32_t tag,int last,uintptr_t ctl)
+{return frame_impl(n,data,bytes,tag,last,ctl);}
+static int acquire_impl(i9100_mfc_native *n,i9100_mfc_frame_lease *lease,uintptr_t ctl)
 {
  if(!n||!outside_context(n,lease,sizeof(*lease)))return I9100_MFC_ARGUMENT;
- if(take(n->lifecycle))return I9100_MFC_BUSY;int e=decode_ready(n);
+ if(take(n->lifecycle))return I9100_MFC_BUSY;int e=control(n,ctl,I9100_MFC_OWNER);
+ if(e){IOLockUnlock(n->lifecycle);return e;} /* refused before hardware/fault */
+ e=decode_ready(n);
  if(!e)e=i9100_mfc_decoder_acquire(&n->core,lease);IOLockUnlock(n->lifecycle);return e;
 }
+int i9100_mfc_native_acquire(i9100_mfc_native *n,i9100_mfc_frame_lease *lease){return acquire_impl(n,lease,0);}
+int i9100_mfc_native_acquire_ctl(i9100_mfc_native *n,i9100_mfc_frame_lease *lease,uintptr_t ctl){return acquire_impl(n,lease,ctl);}
 int i9100_mfc_native_release(i9100_mfc_native *n,i9100_mfc_frame_lease *lease)
 {
  if(!n||!outside_context(n,lease,sizeof(*lease)))return I9100_MFC_ARGUMENT;
@@ -241,10 +331,54 @@ int i9100_mfc_native_copy_nv12(i9100_mfc_native *n,const i9100_mfc_frame_lease *
  if(!e)e=i9100_mfc_decoder_copy_nv12(&n->core,lease,y,yc,ys,c,cc,cs);
  IOLockUnlock(n->lifecycle);return e;
 }
+int i9100_mfc_native_hold_get(i9100_mfc_native *n,uintptr_t token)
+{
+ if(!n||!token||token==(uintptr_t)n)return I9100_MFC_ARGUMENT;
+ if(take(n->lifecycle))return I9100_MFC_BUSY;
+ int e=n->phase==I9100_MFC_N_CLOSING||n->error?I9100_MFC_OWNER:0;
+ if(!e&&n->holds>=4U)e=I9100_MFC_BUSY;
+ if(!e)for(unsigned i=0;i<n->holds;i++)if(n->hold_tokens[i]==token){e=I9100_MFC_OWNER;break;}
+ if(!e){n->hold_tokens[n->holds++]=token;}IOLockUnlock(n->lifecycle);return e;
+}
+int i9100_mfc_native_hold_put(i9100_mfc_native *n,uintptr_t token)
+{
+ if(!n||!token)return I9100_MFC_ARGUMENT;
+ if(take(n->lifecycle))return I9100_MFC_BUSY;
+ int e=I9100_MFC_OWNER;
+ for(unsigned i=0;i<n->holds;i++)if(n->hold_tokens[i]==token){n->hold_tokens[i]=n->hold_tokens[--n->holds];n->hold_tokens[n->holds]=0;e=0;break;}
+ IOLockUnlock(n->lifecycle);return e;
+}
+/* Owned engine shutdown for the bound controller: the control lease proves
+ * identity, resources() re-verifies supply/power/IRQ accounting, the core
+ * stop performs the real reset/MC-wait/mailbox quiesce, and an independent
+ * readback confirms RISC/MC/mailboxes/latch and both MMU domains are
+ * actually quiet. Refused qualification exits before any hardware write; a
+ * failed stop keeps the lease, arenas, IRQ and frame-return rights so the
+ * caller can fix the cause and retry the same stage. */
+int i9100_mfc_native_shutdown_ctl(i9100_mfc_native *n,uintptr_t ctl)
+{
+ if(!n)return I9100_MFC_ARGUMENT;
+ if(take(n->lifecycle))return I9100_MFC_BUSY;
+ int e=control(n,ctl,I9100_MFC_OWNER);
+ if(!e)e=resources(n);
+ if(!e)e=i9100_mfc_stop(&n->core);
+ if(!e){
+  /* Success requires more than the core's own bookkeeping: reread the
+   * actual RISC/MC/mailbox/latch and both MMU domains. */
+  uint32_t reset=rd(n,MN_MFC,0),mc=rd(n,MN_MFC,0x510);
+  if(reset==0xffffffffU||mc==0xffffffffU)e=I9100_MFC_IO;
+  else if((reset&1U)||(mc&3U)||rd(n,MN_MFC,0x30)||rd(n,MN_MFC,0x44)||rd(n,MN_MFC,8))e=I9100_MFC_BUSY;
+  else for(unsigned unit=MN_MMU_L;unit<=MN_MMU_R;unit++)if(rd(n,unit,0)||rd(n,unit,0x18)){e=I9100_MFC_BUSY;break;}
+ }
+ if(e)n->cleanup_error=e;
+ IOLockUnlock(n->lifecycle);return e;
+}
 int i9100_mfc_native_close(i9100_mfc_native **owner)
 {
  if(!owner||!*owner)return I9100_MFC_ARGUMENT;i9100_mfc_native *n=*owner;
- if(n->lifecycle&&take(n->lifecycle))return I9100_MFC_BUSY;n->phase=I9100_MFC_N_CLOSING;
+ if(n->lifecycle&&take(n->lifecycle))return I9100_MFC_BUSY;
+ if(n->holds||n->ctl.bound){if(n->lifecycle)IOLockUnlock(n->lifecycle);return I9100_MFC_BUSY;}
+ n->phase=I9100_MFC_N_CLOSING;
  int e=cleanup(n);n->cleanup_error=e;if(n->lifecycle)IOLockUnlock(n->lifecycle);
  if(e)return e;*owner=0;dispose(n);return 0;
 }

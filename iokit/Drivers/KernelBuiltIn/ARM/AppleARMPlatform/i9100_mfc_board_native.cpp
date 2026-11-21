@@ -18,6 +18,8 @@ struct i9100_mfc_board {
  IOLock *lifecycle,*power_lock;i9100_mfc_host_lease host;i9100_irq_lease irq;
  IOMemoryDescriptor *memory[MP_REGIONS];IOMemoryMap *maps[MP_REGIONS];volatile uint8_t *regs[MP_REGIONS];
  i9100_mfc_power power;i9100_mfc_supply_lease *borrower;uint32_t closing,ready,attempted;int error,cleanup_error;
+ void (*irq_notify)(void *);void *irq_cookie;i9100_mfc_board_irq_token *irq_owner;
+ uint32_t irq_generation,irq_notified,irq_spurious,irq_mask_failed;
 };
 static bool thread(){return ml_get_interrupts_enabled()&&!ml_at_interrupt_context();}
 static int take(IOLock *l){return l&&thread()&&IOLockTryLock(l)?0:-1;}
@@ -32,22 +34,52 @@ static void power_drop(void *p){IOLockUnlock(((i9100_mfc_board *)p)->power_lock)
 static uint64_t now(void *){uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);return ns;}
 static int delay(void *,uint32_t us){if(!thread()||us>1000U)return -1;IODelay(us);return 0;}
 static void barrier(void *){OSSynchronizeIO();}
-static int masked_irq(void *p,uint32_t){(void)p;return -1;}
+/* Interrupt upper half: verify only our own MFC source latch, mask the
+ * leased level source and notify the bound sink. The latch itself stays
+ * asserted for the deferred worker to consume through the normal poll path,
+ * which deasserts it. No thread locks, allocation, codec polling, IAR or
+ * EOI; the provider that dispatched retains the complete acknowledge token
+ * and performs exactly one EOI. */
+static int masked_irq(void *p,uint32_t)
+{
+ i9100_mfc_board *b=(i9100_mfc_board *)p;
+ if(!b->regs[MP_MFC]||!(i9100_camera_mmio_read(b->regs[MP_MFC],8)&1U)){b->irq_spurious++;return 0;}
+ if(i9100_irq_mask(&b->irq))b->irq_mask_failed++;b->irq_notified++;
+ if(b->irq_notify)b->irq_notify(b->irq_cookie);
+ return 0;
+}
+/* Three-state ownership check: 0 quiet and exact, I9100_MP_BUSY when an
+ * exact bound owner is mid-dispatch or pre-EOI (a transient the deferred
+ * worker must out-wait, not a foreign fault), -1 for any foreign, stale,
+ * faulted or otherwise unaccounted line state. A bound token never exempts
+ * a faulted slot. */
 static int irq_exact(i9100_mfc_board *b)
 {
  i9100_irq_lease *l=&b->irq;i9100_irq_registry *r=l->registry;
  if(!r||!l->active||l->self!=(uintptr_t)l||l->slot>=I9100_IRQ_SLOTS)return -1;
  uint32_t saved=r->io.enter(r->io.cookie);i9100_irq_slot *s=&r->slots[l->slot];
- bool ok=r->enabled&&s->irq==126U&&s->token==l->token&&s->lease==(uintptr_t)l&&s->ready&&!s->restoring&&!s->enabled&&!s->fault&&
-  !(r->io.read_dist(r->io.cookie,0x10c)&(1U<<30))&&!(r->io.read_dist(r->io.cookie,0x30c)&(1U<<30))&&
+ bool bound=b->irq_owner&&b->irq_owner->self==(uintptr_t)b->irq_owner&&
+  b->irq_owner->board==(uintptr_t)b&&b->irq_owner->owned==1U&&s->handler==masked_irq&&s->cookie==(void *)b;
+ uint32_t hw=r->io.read_dist(r->io.cookie,0x10c)&(1U<<30);
+ uint32_t act=r->io.read_dist(r->io.cookie,0x30c)&(1U<<30);
+ bool ok=r->enabled&&s->irq==126U&&s->token==l->token&&s->lease==(uintptr_t)l&&s->ready&&!s->restoring&&!s->fault&&
+  (!s->enabled||bound)&&(!!hw==!!s->enabled||(bound&&hw))&&
   ((r->io.read_dist(r->io.cookie,0x47c)>>16)&255U)==0x80U&&
   ((r->io.read_dist(r->io.cookie,0x87c)>>16)&255U)==1U&&!(r->io.read_dist(r->io.cookie,0xc1c)&(2U<<28));
- r->io.leave(r->io.cookie,saved);return ok?0:-1;
+ int e=!ok?-1:bound&&(s->busy||act)?I9100_MP_BUSY:!bound&&act?-1:0;
+ r->io.leave(r->io.cookie,saved);return e;
 }
 static int exclusive(void *p)
-{i9100_mfc_board *b=(i9100_mfc_board *)p;return i9100_mfc_host_check(&b->host)||irq_exact(b)?-1:0;}
+{i9100_mfc_board *b=(i9100_mfc_board *)p;return i9100_mfc_host_check(&b->host)?-1:irq_exact(b);}
 static int consumers_idle(void *p)
 {i9100_mfc_board *b=(i9100_mfc_board *)p;return b->borrower||i9100_mfc_host_has_child(&b->host)!=0?-1:0;}
+/* Runs from the power supplier under its io lock while the caller holds the
+ * lifecycle gate (supply get/check are the only validate entry points). An
+ * exact bound irq owner makes IRQ126 enable/active accounted state rather
+ * than foreign power-domain evidence; the owner masks before releasing. */
+static int irq_owned(void *p)
+{i9100_mfc_board *b=(i9100_mfc_board *)p;i9100_mfc_board_irq_token *t=b->irq_owner;
+ return t&&t->self==(uintptr_t)t&&t->board==(uintptr_t)b&&t->owned==1U?1:0;}
 static int stop_state(i9100_mfc_board *b)
 {
  uint32_t gate=read32(b,MP_CMU,0xc928),config=read32(b,MP_PMU,0x3c40),status=read32(b,MP_PMU,0x3c44);
@@ -75,7 +107,7 @@ static int supply_check(void *p,const i9100_mfc_supply_lease *l)
 {
  i9100_mfc_board *b=(i9100_mfc_board *)p;if(!b||b->self!=(uintptr_t)b)return I9100_MP_OWNER;
  if(take(b->lifecycle))return I9100_MP_BUSY;int e=!lease_exact(b,l)||b->closing?I9100_MP_OWNER:0;
- if(!e){e=i9100_mfc_power_validate(&b->power);if(e&&!b->error)b->error=e;}
+ if(!e){e=i9100_mfc_power_validate(&b->power);if(e&&e!=I9100_MP_BUSY&&!b->error)b->error=e;}
  IOLockUnlock(b->lifecycle);return e;
 }
 static int supply_put(void *p,i9100_mfc_supply_lease *l)
@@ -86,7 +118,7 @@ static int supply_put(void *p,i9100_mfc_supply_lease *l)
 }
 static int cleanup(i9100_mfc_board *b)
 {
- if(b->borrower||(b->host.owned&&i9100_mfc_host_has_child(&b->host)!=0))return I9100_MP_BUSY;
+ if(b->borrower||b->irq_owner||(b->host.owned&&i9100_mfc_host_has_child(&b->host)!=0))return I9100_MP_BUSY;
  if(b->host.owned){int e=i9100_mfc_host_begin_close(&b->host);if(e)return e;}
  if(b->power.owned){int e=i9100_mfc_power_release(&b->power);if(e)return e;}
  if(b->irq.active){int e=i9100_irq_unregister(&b->irq);if(e)return e;}
@@ -122,7 +154,7 @@ int i9100_mfc_board_open(int enabled,i9100_peripheral_native *parent,const i9100
  }
  e=i9100_irq_register_masked(i9100_peripheral_native_irqs(parent),126,0,masked_irq,b,&b->irq);if(e)goto fail;
  {
-  i9100_mfc_power_io io={b,read32,write32,power_take,power_drop,now,delay,barrier,exclusive,consumers_idle};
+  i9100_mfc_power_io io={b,read32,write32,power_take,power_drop,now,delay,barrier,exclusive,consumers_idle,irq_owned};
   e=i9100_mfc_power_init(&b->power,&io,cfg);if(!e)e=i9100_mfc_power_enable(&b->power,1);if(e)goto fail;
   b->attempted=1;e=i9100_mfc_power_acquire(&b->power);if(e)goto fail;
  }
@@ -146,6 +178,134 @@ int i9100_mfc_board_status(i9100_mfc_board *b,struct i9100_mfc_board_status *out
  out->divider=b->power.divider;out->reset=b->power.confirm_reset;out->mc=b->power.confirm_mc;out->error=b->error;out->cleanup_error=b->cleanup_error;
  memcpy(out->before,b->power.before,sizeof(out->before));memcpy(out->after,b->power.after,sizeof(out->after));IOLockUnlock(b->lifecycle);return 0;
 }
+static bool token_exact(i9100_mfc_board *b,const i9100_mfc_board_irq_token *t)
+{return b->irq_owner==t&&t&&t->self==(uintptr_t)t&&t->board==(uintptr_t)b&&t->owned==1U&&t->generation==b->irq_generation;}
+static int slot_verified(i9100_mfc_board *b)
+{
+ i9100_irq_lease *l=&b->irq;i9100_irq_registry *r=l->registry;
+ if(!r||!l->active||l->self!=(uintptr_t)l||l->slot>=I9100_IRQ_SLOTS)return -1;
+ uint32_t saved=r->io.enter(r->io.cookie);i9100_irq_slot *s=&r->slots[l->slot];
+ bool ok=r->enabled&&s->irq==126U&&s->token==l->token&&s->lease==(uintptr_t)l&&s->handler==masked_irq&&
+  s->cookie==(void *)b&&s->ready&&!s->restoring&&!s->fault;
+ r->io.leave(r->io.cookie,saved);return ok?0:-1;
+}
+int i9100_mfc_board_irq_acquire(i9100_mfc_board *b,void (*notify)(void *),void *cookie,i9100_mfc_board_irq_token *token)
+{
+ if(!b||b->self!=(uintptr_t)b||!notify||!token||token->self||token->owned||!outside(b,token,sizeof(*token)))return I9100_MP_ARGUMENT;
+ if(take(b->lifecycle))return I9100_MP_BUSY;
+ int e=b->closing||!b->ready||b->error?I9100_MP_DISABLED:b->irq_owner||!b->borrower?I9100_MP_BUSY:slot_verified(b)?I9100_MP_OWNER:0;
+ if(!e){memset(token,0,sizeof(*token));token->self=(uintptr_t)token;token->board=(uintptr_t)b;
+  token->generation=++b->irq_generation;token->owned=1;b->irq_notify=notify;b->irq_cookie=cookie;b->irq_owner=token;}
+ IOLockUnlock(b->lifecycle);return e;
+}
+static int token_gate(i9100_mfc_board *b,const i9100_mfc_board_irq_token *t)
+{
+ if(!b||b->self!=(uintptr_t)b||!t||t->self!=(uintptr_t)t)return I9100_MP_ARGUMENT;
+ if(take(b->lifecycle))return I9100_MP_BUSY;
+ int e=b->closing?I9100_MP_DISABLED:!token_exact(b,t)||slot_verified(b)?I9100_MP_OWNER:0;
+ if(e)IOLockUnlock(b->lifecycle);return e;
+}
+int i9100_mfc_board_irq_mask(i9100_mfc_board *b,const i9100_mfc_board_irq_token *t)
+{int e=token_gate(b,t);if(e)return e;e=i9100_irq_mask(&b->irq);IOLockUnlock(b->lifecycle);return e;}
+int i9100_mfc_board_irq_unmask(i9100_mfc_board *b,const i9100_mfc_board_irq_token *t)
+{int e=token_gate(b,t);if(e)return e;e=i9100_irq_unmask(&b->irq);IOLockUnlock(b->lifecycle);return e;}
+int i9100_mfc_board_irq_enabled(i9100_mfc_board *b,const i9100_mfc_board_irq_token *t)
+{
+ int e=token_gate(b,t);if(e)return e;
+ i9100_irq_registry *r=b->irq.registry;uint32_t saved=r->io.enter(r->io.cookie);
+ e=r->slots[b->irq.slot].enabled?1:0;r->io.leave(r->io.cookie,saved);IOLockUnlock(b->lifecycle);return e;
+}
+/* Clears a stale host latch from thread context under the exact token; the
+ * workloop uses it only after a notify arrived without an in-flight reply. */
+int i9100_mfc_board_irq_ack(i9100_mfc_board *b,const i9100_mfc_board_irq_token *t)
+{
+ int e=token_gate(b,t);if(e)return e;
+ /* Report whether the latch was actually raised: a cleared-again source is
+  * the only stale-event evidence the deferred drain can still observe. The
+  * latch lives in the MFC domain, reachable only while the always-on CMU
+  * still feeds the local clock gate AND the PMU still powers the block —
+  * a powered-but-gated domain loses the latch physically and probing it
+  * would itself fault, so the domain proof refuses with the real ownership
+  * error instead of touching MMIO. CMU/PMU are read inline under this lock:
+  * the supply validate would retake the same lifecycle gate. */
+ uint32_t gate=b->regs[MP_CMU]?read32(b,MP_CMU,0xc928):0xffffffffU;
+ uint32_t config=b->regs[MP_PMU]?read32(b,MP_PMU,0x3c40):0xffffffffU;
+ uint32_t status=b->regs[MP_PMU]?read32(b,MP_PMU,0x3c44):0xffffffffU;
+ int raised=0;
+ if(gate==0xffffffffU||config==0xffffffffU||status==0xffffffffU||
+    (gate&7U)!=7U||(config&7U)!=7U||(status&7U)!=7U)e=I9100_MP_OWNER;
+ else{raised=(int)(read32(b,MP_MFC,8)&1U);if(raised)write32(b,MP_MFC,8,0);}
+ IOLockUnlock(b->lifecycle);return e?e:raised;
+}
+int i9100_mfc_board_irq_line(i9100_mfc_board *b,const i9100_mfc_board_irq_token *t,unsigned *enabled,unsigned *active,unsigned *dispatch)
+{
+ int e=token_gate(b,t);if(e)return e;
+ i9100_irq_registry *r=b->irq.registry;uint32_t saved=r->io.enter(r->io.cookie);
+ if(enabled)*enabled=r->slots[b->irq.slot].enabled;
+ if(dispatch)*dispatch=r->slots[b->irq.slot].busy?1U:0;
+ if(active)*active=(r->io.read_dist(r->io.cookie,0x30c)&(1U<<30))?1U:0;
+ r->io.leave(r->io.cookie,saved);IOLockUnlock(b->lifecycle);return 0;
+}
+int i9100_mfc_board_irq_release(i9100_mfc_board *b,i9100_mfc_board_irq_token *t)
+{
+ int e=token_gate(b,t);if(e)return e;
+ i9100_irq_registry *r=b->irq.registry;uint32_t saved=r->io.enter(r->io.cookie);int enabled=r->slots[b->irq.slot].enabled;r->io.leave(r->io.cookie,saved);
+ if(enabled){e=i9100_irq_mask(&b->irq);saved=r->io.enter(r->io.cookie);enabled=r->slots[b->irq.slot].enabled;r->io.leave(r->io.cookie,saved);
+  if(e||enabled){IOLockUnlock(b->lifecycle);return e?e:I9100_MP_IO;}}
+ /* The notify cookie, DMA and power ownership stay bound until the exact
+  * owner's registry dispatch, busy handler and GIC active/EOI window have
+  * all quiesced; otherwise release is a transient refusal, not a teardown. */
+ saved=r->io.enter(r->io.cookie);
+ enabled=r->slots[b->irq.slot].busy||(r->io.read_dist(r->io.cookie,0x30c)&(1U<<30));
+ r->io.leave(r->io.cookie,saved);
+ if(enabled){IOLockUnlock(b->lifecycle);return I9100_MP_BUSY;}
+ b->irq_notify=0;b->irq_cookie=0;b->irq_owner=0;t->owned=0;IOLockUnlock(b->lifecycle);return 0;
+}
+int i9100_mfc_board_irq_verify(i9100_mfc_board *b,uintptr_t token_self,unsigned *generation)
+{
+ if(!b||b->self!=(uintptr_t)b||!token_self)return I9100_MP_ARGUMENT;
+ if(take(b->lifecycle))return I9100_MP_BUSY;
+ /* The caller's integer is only compared, never dereferenced: an unissued
+  * value is a refusal, not a pointer to inspect. */
+ i9100_mfc_board_irq_token *t=b->irq_owner;
+ int e=!t||(uintptr_t)t!=token_self||t->self!=token_self||t->board!=(uintptr_t)b||t->owned!=1U?I9100_MP_OWNER:0;
+ if(!e&&generation)*generation=t->generation;
+ IOLockUnlock(b->lifecycle);return e;
+}
+/* Faulted-slot owner sequence, runnable only by the exact bound token:
+ * mask is retried once (a still-lost write stays an error and keeps the
+ * latched fault), the registry slot must still name our lease and handler,
+ * and the dispatch/EOI window must be proven quiet under the registry lock.
+ * Verified actual state resolves the recorded-vs-actual mismatch, so the
+ * latched fault is released; the original diagnostics stay in
+ * irq_mask_failed and the consumer's error counters. With release set the
+ * binding itself is handed back on the same successful pass. Never unmask,
+ * never restart codec work, never touch a foreign slot. */
+static int faulted_owner_cleanup(i9100_mfc_board *b,i9100_mfc_board_irq_token *t,int release)
+{
+ if(!b||b->self!=(uintptr_t)b||!t||t->self!=(uintptr_t)t)return I9100_MP_ARGUMENT;
+ if(take(b->lifecycle))return I9100_MP_BUSY;
+ int e=b->closing?I9100_MP_DISABLED:!token_exact(b,t)?I9100_MP_OWNER:0;
+ i9100_irq_registry *r=b->irq.registry;
+ if(!e&&(!r||!b->irq.active||b->irq.self!=(uintptr_t)&b->irq||b->irq.slot>=I9100_IRQ_SLOTS))e=I9100_MP_OWNER;
+ if(!e)e=i9100_irq_mask(&b->irq);
+ if(!e){
+  uint32_t saved=r->io.enter(r->io.cookie);
+  i9100_irq_slot *s=&r->slots[b->irq.slot];
+  int ours=s->irq==126U&&s->token==b->irq.token&&s->lease==(uintptr_t)&b->irq&&
+   s->handler==masked_irq&&s->cookie==(void*)b&&s->ready&&!s->restoring;
+  int quiet=!s->busy&&!(r->io.read_dist(r->io.cookie,0x30c)&(1U<<30));
+  if(!ours)e=I9100_MP_OWNER;
+  else if(!quiet)e=I9100_MP_BUSY;
+  else{s->fault=0;if(release){b->irq_notify=0;b->irq_cookie=0;b->irq_owner=0;t->owned=0;}}
+  r->io.leave(r->io.cookie,saved);
+ }
+ IOLockUnlock(b->lifecycle);return e;
+}
+int i9100_mfc_board_irq_repair(i9100_mfc_board *b,i9100_mfc_board_irq_token *t)
+{return faulted_owner_cleanup(b,t,0);}
+int i9100_mfc_board_irq_cleanup(i9100_mfc_board *b,i9100_mfc_board_irq_token *t)
+{return faulted_owner_cleanup(b,t,1);}
 int i9100_mfc_board_close(i9100_mfc_board **owner)
 {
  if(!owner||!*owner||(*owner)->self!=(uintptr_t)*owner||!thread())return I9100_MP_ARGUMENT;i9100_mfc_board *b=*owner;

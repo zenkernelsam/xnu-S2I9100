@@ -8,7 +8,7 @@ extern "C" {
 #endif
 enum i9100_mfc_error {I9100_MFC_ARGUMENT=-840,I9100_MFC_DISABLED=-841,I9100_MFC_BUSY=-842,
  I9100_MFC_IO=-843,I9100_MFC_TIMEOUT=-844,I9100_MFC_FIRMWARE=-845,I9100_MFC_REPLY=-846,
- I9100_MFC_OWNER=-847,I9100_MFC_HASH=-848,I9100_MFC_LAYOUT=-849};
+ I9100_MFC_OWNER=-847,I9100_MFC_HASH=-848,I9100_MFC_LAYOUT=-849,I9100_MFC_ABORTED=-850};
 struct i9100_mfc_firmware_profile {
  uint32_t board_data_reviewed,system_bytes,firmware_bytes,expected_version,timeout_ms;
  uint8_t sha256[32];
@@ -35,6 +35,7 @@ struct i9100_mfc {
  uint32_t banks_written,channels_written,last_channel0;
  uint8_t stream_sha256[32];
  int first_error,cleanup_error;
+ uint32_t stop_stage;
  struct i9100_mfc_decoder *decoder;
 };
 int i9100_mfc_init(struct i9100_mfc *,const struct i9100_mfc_io *);

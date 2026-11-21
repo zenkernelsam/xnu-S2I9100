@@ -37,8 +37,15 @@ static int restore(struct i9100_mfc *m,unsigned off,uint32_t saved,uint32_t writ
 }
 static int stop_locked(struct i9100_mfc *m)
 {
- if(!m->staged&&!m->boot_attempted&&!m->bank_a)return 0;
- int e=0;
+ if(!m->staged&&!m->boot_attempted&&!m->bank_a){
+  /* A late firmware reply can land after a reset/fault teardown already
+   * ran: drain stale mailbox evidence so stop_state can prove quiescence.
+   * Clean mailboxes take the original fast path with no writes at all. */
+  if(!rd(m,H2R)&&!rd(m,R2H)&&!rd(m,HOST_INTERRUPT)&&!m->pending)return 0;
+  int e=exact(m,H2R,0);if(!e)e=exact(m,R2H,0);if(!e)e=exact(m,HOST_INTERRUPT,0);
+  if(e){m->cleanup_error=e;m->fault=1;return e;}m->pending=0;return 0;
+ }
+ int e=0;m->stop_stage=1;
  if(m->boot_attempted){
   e=exact(m,RESET,0x3f6);if(!e)e=exact(m,RESET,0x3e2);
   if(!e)e=m->io.delay_us(m->io.cookie,10000)?I9100_MFC_IO:mc_idle(m);
@@ -47,27 +54,43 @@ static int stop_locked(struct i9100_mfc *m)
  /* Reset stops new DMA, but a displayed surface still pins both arenas.
   * Do not abort/unhold its backing allocations before the exact lease is
   * returned. Cleanup errors retain the decoder and its release authority. */
+ m->stop_stage=2;
  if(!e&&m->decoder)e=i9100_mfc_decoder_cleanup_locked(m);
  if(e&&m->decoder){
   if(m->risc_running){if(m->bank_a)i9100_dma_quarantine(m->bank_a);if(m->bank_b)i9100_dma_quarantine(m->bank_b);}
   m->cleanup_error=e;m->fault=1;return e;
  }
  struct i9100_dma_buffer *buffers[2]={m->bank_a,m->bank_b};
+ m->stop_stage=3;
  for(unsigned n=0;n<2;n++)if((m->held_mask&(1U<<n))&&buffers[n]&&
      (buffers[n]->state==I9100_DMA_DEVICE||buffers[n]->state==I9100_DMA_QUARANTINED)){
-  int d=i9100_dma_abort(buffers[n]);if(!d)m->prepared_mask&=~(1U<<n);else if(!e)e=I9100_MFC_IO;
+  /* DMA_BUSY is a transient is_idle/lock probe loss (board gate held by a
+   * concurrent drain): propagate BUSY so the caller's bounded retry wins,
+   * not a permanent IO fault. */
+  int d=i9100_dma_abort(buffers[n]);
+  if(!d)m->prepared_mask&=~(1U<<n);
+  else if(!e)e=d==I9100_DMA_BUSY?I9100_MFC_BUSY:d==I9100_DMA_OWNER?I9100_MFC_OWNER:I9100_MFC_IO;
  }
+ m->stop_stage=4;
  if(!e&&i9100_mfc_idle(m))e=I9100_MFC_BUSY;
+ m->stop_stage=5;
  if(!e&&m->boot_attempted){e=exact(m,H2R,0);if(!e)e=exact(m,R2H,0);if(!e)e=exact(m,HOST_INTERRUPT,0);}
+ m->stop_stage=6;
  if(!e&&(m->banks_written&1U))e=restore(m,BANK_A,m->initial_bank_a,m->bank_a->physical);
  if(!e&&(m->banks_written&2U))e=restore(m,BANK_B,m->initial_bank_b,m->bank_b->physical);
  if(!e&&(m->channels_written&1U))e=restore(m,0x2040,m->initial_channel[0],m->last_channel0);
  if(!e&&(m->channels_written&2U))e=restore(m,0x2080,m->initial_channel[1],UINT32_MAX);
+ m->stop_stage=7;
  for(unsigned n=0;n<2&&!e;n++)if(m->held_mask&(1U<<n)){
-  if(i9100_dma_unhold(buffers[n]))e=I9100_MFC_IO;else m->held_mask&=~(1U<<n);
+  int d=i9100_dma_unhold(buffers[n]);
+  if(!d)m->held_mask&=~(1U<<n);
+  else e=d==I9100_DMA_BUSY?I9100_MFC_BUSY:d==I9100_DMA_OWNER?I9100_MFC_OWNER:I9100_MFC_IO;
  }
+ m->stop_stage=8;
  m->cleanup_error=e;
- if(e){m->fault=1;return e;}
+ /* A transient BUSY leaves cleanup pending without declaring the engine
+  * damaged: the caller retries the same stage after the gate clears. */
+ if(e){if(e!=I9100_MFC_BUSY)m->fault=1;return e;}
  m->bank_a=m->bank_b=0;m->staged=m->h264_staged=m->boot_attempted=m->prepared_mask=0;
  m->pending=m->state=m->instance_open=m->fault=m->banks_written=m->channels_written=0;return 0;
 }
@@ -251,7 +274,9 @@ int i9100_mfc_poll(struct i9100_mfc *m)
      m->consumed_bytes>m->plan.stream_bytes||i9100_mfc_h264_sizes(width,height,count,&m->sequence))
    {e=I9100_MFC_REPLY;goto fail;}m->state=STATE_HEADER;
  }else if(reply==15U||reply==5U){
-  e=i9100_mfc_decoder_complete_locked(m,reply);if(e){if(m->fault)goto done;goto fail;}
+  e=i9100_mfc_decoder_complete_locked(m,reply);
+  if(e==I9100_MFC_BUSY)goto done; /* transient gate busy: retry the reply later */
+  if(e){if(m->fault)goto done;goto fail;}
  }
  e=exact(m,0x2000,0xffffU);if(!e)e=exact(m,R2H,0);if(!e)e=exact(m,HOST_INTERRUPT,0);
  if(e)goto fail;m->pending=0;goto done;

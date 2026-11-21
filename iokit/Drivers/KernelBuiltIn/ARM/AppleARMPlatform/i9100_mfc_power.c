@@ -88,7 +88,7 @@ int i9100_mfc_power_init(struct i9100_mfc_power *p,const struct i9100_mfc_power_
 {
  if(!p||p->initialized||!io||!cfg||cfg->board_data_reviewed!=1U||cfg->xxti_hz!=24000000U||
     cfg->maximum_clock_hz<10000000U||cfg->maximum_clock_hz>200000000U||!io->read32||!io->write32||!io->lock||!io->unlock||
-    !io->now_ns||!io->delay_us||!io->barrier||!io->exclusive||!io->consumers_idle)return I9100_MP_ARGUMENT;
+    !io->now_ns||!io->delay_us||!io->barrier||!io->exclusive||!io->consumers_idle||!io->irq_owned)return I9100_MP_ARGUMENT;
  memset(p,0,sizeof(*p));p->self=(uintptr_t)p;p->io=*io;p->config=*cfg;p->initialized=1;return 0;
 }
 int i9100_mfc_power_enable(struct i9100_mfc_power *p,int on)
@@ -101,7 +101,7 @@ int i9100_mfc_power_acquire(struct i9100_mfc_power *p)
  int e=enter(p);if(e)return e;
  if(!p->enabled){e=I9100_MP_DISABLED;goto out;}
  if(p->owned||p->fault||p->generation==UINT32_MAX){e=I9100_MP_BUSY;goto out;}
- if(p->io.exclusive(p->io.cookie)){e=I9100_MP_OWNER;goto out;}
+ e=p->io.exclusive(p->io.cookie);if(e==I9100_MP_BUSY)goto out;if(e){e=I9100_MP_OWNER;goto out;}
  if(p->io.consumers_idle(p->io.cookie)){e=I9100_MP_BUSY;goto out;}
  e=snapshot(p,p->before);if(e)goto out;p->io.barrier(p->io.cookie);e=snapshot(p,p->after);if(e)goto out;
  for(unsigned f=0;f<MP_FIELD_COUNT;f++){
@@ -134,7 +134,8 @@ int i9100_mfc_power_acquire(struct i9100_mfc_power *p)
  }
  if((rd(p,MP_CMU,DIV)&DIV_MASK)!=p->divider-1U){e=divider_set(p,p->divider-1U);if(e)goto fail;}
  e=wait_field(p,MP_CMU,DIV_BUSY,UINT32_MAX,0);if(e)goto fail;e=roots(p);if(e)goto fail;
- if(p->io.exclusive(p->io.cookie)||(rd(p,MP_CMU,SOURCE)&SOURCE_MASK)||
+ e=p->io.exclusive(p->io.cookie);if(e==I9100_MP_BUSY)goto out;
+ if(e||(rd(p,MP_CMU,SOURCE)&SOURCE_MASK)||
     (rd(p,MP_CMU,DIV)&DIV_MASK)!=p->divider-1U){e=I9100_MP_OWNER;goto fail;}
  p->ready=1;goto out;
 fail:e=error(p,e);
@@ -144,14 +145,14 @@ int i9100_mfc_power_validate(struct i9100_mfc_power *p)
 {
  int e=enter(p);if(e)return e;
  if(!p->owned||!p->ready||p->closing)e=I9100_MP_OWNER;
- else if(p->io.exclusive(p->io.cookie))e=I9100_MP_OWNER;
+ else if((e=p->io.exclusive(p->io.cookie))!=0){if(e!=I9100_MP_BUSY)e=I9100_MP_OWNER;}
  else if((e=powered(p))==0&&(e=roots(p))==0){
   if(rd(p,MP_CMU,SOURCE)==UINT32_MAX||rd(p,MP_CMU,DIV)==UINT32_MAX||
      rd(p,MP_CMU,SOURCE)&SOURCE_MASK||(rd(p,MP_CMU,DIV)&DIV_MASK)!=p->divider-1U||rd(p,MP_CMU,DIV_BUSY)||
-     rd(p,MP_GIC,0x10c)&IRQ_BIT||rd(p,MP_GIC,0x30c)&IRQ_BIT)e=I9100_MP_OWNER;
+     (!p->io.irq_owned(p->io.cookie)&&(rd(p,MP_GIC,0x10c)&IRQ_BIT||rd(p,MP_GIC,0x30c)&IRQ_BIT)))e=I9100_MP_OWNER;
   for(unsigned unit=MP_MMU_L;unit<=MP_MMU_R&&!e;unit++)if(rd(p,unit,0)||rd(p,unit,0x18))e=I9100_MP_OWNER;
  }
- if(e&&p->owned)error(p,e);p->io.unlock(p->io.cookie);return e;
+ if(e&&e!=I9100_MP_BUSY&&p->owned)error(p,e);p->io.unlock(p->io.cookie);return e;
 }
 static int restore(struct i9100_mfc_power *p,unsigned region,unsigned off,uint32_t mask,uint32_t saved,uint32_t own)
 {
@@ -162,7 +163,7 @@ int i9100_mfc_power_release(struct i9100_mfc_power *p)
 {
  int e=enter(p);if(e)return e;
  if(!p->owned){e=I9100_MP_OWNER;goto out;}
- if(p->io.exclusive(p->io.cookie)){e=I9100_MP_OWNER;goto out;}
+ e=p->io.exclusive(p->io.cookie);if(e==I9100_MP_BUSY)goto out;if(e){e=I9100_MP_OWNER;goto out;}
  if(p->io.consumers_idle(p->io.cookie)){e=I9100_MP_BUSY;goto out;}
  p->closing=1;
  uint32_t config=rd(p,MP_PMU,POWER),status=rd(p,MP_PMU,STATUS);

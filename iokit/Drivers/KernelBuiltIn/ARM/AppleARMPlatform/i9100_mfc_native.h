@@ -28,6 +28,7 @@ struct i9100_mfc_native_status {
  uint32_t decode_enabled,frame_submitted,frame_completed,display_ready,leased,input_bytes,input_start,draining,drained;
  uint32_t raw_display,raw_decoded,raw_type,raw_display_type,raw_consumed;
  int error,cleanup_error;
+ uint32_t stop_stage;
 };
 int i9100_mfc_native_open(int enabled,struct i9100_peripheral_native *,const struct i9100_mfc_supply *,struct i9100_mfc_native **);
 int i9100_mfc_native_open_decode(int enabled,struct i9100_peripheral_native *,const struct i9100_mfc_supply *,
@@ -41,6 +42,16 @@ int i9100_mfc_native_acquire(struct i9100_mfc_native *,struct i9100_mfc_frame_le
 int i9100_mfc_native_release(struct i9100_mfc_native *,struct i9100_mfc_frame_lease *);
 int i9100_mfc_native_copy_nv12(struct i9100_mfc_native *,const struct i9100_mfc_frame_lease *,
  void *,uint32_t capacity_y,uint32_t stride_y,void *,uint32_t capacity_c,uint32_t stride_c);
+int i9100_mfc_native_hold_get(struct i9100_mfc_native *,uintptr_t token);
+int i9100_mfc_native_hold_put(struct i9100_mfc_native *,uintptr_t token);
+int i9100_mfc_native_control_bind(struct i9100_mfc_native *,uintptr_t control);
+int i9100_mfc_native_control_drop(struct i9100_mfc_native *,uintptr_t control);
+int i9100_mfc_native_start_ctl(struct i9100_mfc_native *,const struct i9100_mfc_firmware_profile *,const void *,uint32_t,
+                         const void *annexb_stream,uint32_t stream_bytes,uintptr_t control);
+int i9100_mfc_native_poll_ctl(struct i9100_mfc_native *,uintptr_t control);
+int i9100_mfc_native_frame_ctl(struct i9100_mfc_native *,const void *,uint32_t bytes,uint32_t tag,int last,uintptr_t control);
+int i9100_mfc_native_acquire_ctl(struct i9100_mfc_native *,struct i9100_mfc_frame_lease *,uintptr_t control);
+int i9100_mfc_native_shutdown_ctl(struct i9100_mfc_native *,uintptr_t control);
 int i9100_mfc_native_close(struct i9100_mfc_native **);
 /* Default OFF, MFCv5.1 only: one reservation, actual MMIO, private aligned
  * bankA8MiB/bankB1MiB, captured kernel crypto provider, explicit firmware
@@ -56,7 +67,15 @@ int i9100_mfc_native_close(struct i9100_mfc_native **);
  * not claim an IOMMU-isolated mapping. Production supply is not registered
  * yet: callback constants and fixture provenance cannot authorize it.
  * Caller serializes API entry against final close; failures retain all
- * required allocations/maps/provider until safe explicit shutdown. */
+ * required allocations/maps/provider until safe explicit shutdown. An
+ * exact-token control hold keeps the context alive for a deferred worker;
+ * close refuses outstanding holds, and an armed GIC126 line is only
+ * accepted while a control lease proves the worker's masked-I/O window.
+ * One exclusive control lease pairs the native context, board IRQ-owner
+ * token and supply generation: while bound, raw start/poll/frame/acquire
+ * transitions and close are refused; frame return stays open so the owner
+ * can always finish its own leases. A plain hold never grants command or
+ * IRQ-armed rights. */
 #ifdef __cplusplus
 }
 #endif

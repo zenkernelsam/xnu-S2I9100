@@ -159,7 +159,10 @@ int i9100_mfc_decoder_complete_locked(struct i9100_mfc *m,unsigned reply)
 {
  int e=valid(m);if(e)return e;struct i9100_mfc_decoder *d=m->decoder;
  if(!m->pending||m->expected!=reply||d->closed||d->stopping)return I9100_MFC_REPLY;
- if(rd(m,0x510)&3U||d->io.normal_nc(d->io.cookie,m->bank_a,m->bank_b))return fail(m,I9100_MFC_OWNER);
+ if(rd(m,0x510)&3U)return fail(m,I9100_MFC_OWNER);
+ {int nc=d->io.normal_nc(d->io.cookie,m->bank_a,m->bank_b);
+  if(nc==I9100_MFC_BUSY)return I9100_MFC_BUSY; /* gate contention: leave the reply for a retry */
+  if(nc)return fail(m,I9100_MFC_OWNER);}
  if(reply==15U){
   if(!d->configured||d->ready||rd(m,0x2000)!=m->instance)return fail(m,I9100_MFC_REPLY);
   d->ready=1;d->available=(1U<<d->layout.count)-1U;return 0;
@@ -203,7 +206,10 @@ int i9100_mfc_decoder_complete_locked(struct i9100_mfc *m,unsigned reply)
   f->display_sequence=++d->displayed;d->display_ready|=1U<<shown;}
  if(display!=2U)d->input_start+=raw[4];
  if(decoded>=0||shown>=0||raw[4]||display==3U)d->no_progress=0;else d->no_progress++;
- if(display==3U)d->drained=1;d->frame_completed++;m->consumed_bytes=raw[4];return 0;
+ /* consumed_bytes mirrors the accumulated stream position (decoder open
+  * resumes input_start from it); raw_consumed already reports this reply's
+  * delta separately. */
+ if(display==3U)d->drained=1;d->frame_completed++;m->consumed_bytes=d->input_start;return 0;
 }
 static int lease_valid(struct i9100_mfc *m,const struct i9100_mfc_frame_lease *l)
 {

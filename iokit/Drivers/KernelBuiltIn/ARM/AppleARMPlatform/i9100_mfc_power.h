@@ -15,6 +15,7 @@ struct i9100_mfc_power_io {
  int (*lock)(void *);void (*unlock)(void *);uint64_t (*now_ns)(void *);int (*delay_us)(void *,uint32_t);void (*barrier)(void *);
  int (*exclusive)(void *); /* actual native reservation + exact masked IRQ lease */
  int (*consumers_idle)(void *); /* actual engine/allocations/caller leases, no guessed idle */
+ int (*irq_owned)(void *); /* IRQ126 enable/active accounted by an exact bound board IRQ lease */
 };
 struct i9100_mfc_power_config {uint32_t board_data_reviewed,xxti_hz,maximum_clock_hz;};
 struct i9100_mfc_power {

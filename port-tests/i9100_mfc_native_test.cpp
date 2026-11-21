@@ -10,7 +10,13 @@
 #include <mach/vm_param.h>
 #include <vm/pmap.h>
 #include "i9100_mfc_native.h"
+#include "i9100_mfc_board_native.h"
 #include "i9100_dma_native.h"
+/* This model has no board provider: no IRQ-owner token can ever be issued,
+ * so provider verification honestly refuses every candidate as foreign
+ * before any hardware path. The raw (unbound) entries never reach it. */
+int i9100_mfc_board_irq_verify(i9100_mfc_board *,uintptr_t,unsigned *)
+{return I9100_MP_OWNER;}
 enum {MFC,MMU_L,MMU_R,CMU,PMU,GIC,MAPS};
 static uint32_t regs[MAPS][65536/4];
 static const uint32_t addresses[MAPS]={0x13400000U,0x13620000U,0x13630000U,0x10030000U,0x10020000U,0x10490000U};

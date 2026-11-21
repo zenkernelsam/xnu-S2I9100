@@ -6,7 +6,7 @@
 #include "i9100_mfc_power.h"
 #include "i9100_mfc_host.h"
 static struct model {
- uint32_t regs[MP_REGIONS][0x20000/4],locked,writes,reads,engine_reads,exclusive,borrowers;
+ uint32_t regs[MP_REGIONS][0x20000/4],locked,writes,reads,engine_reads,exclusive,borrowers,irq_leased;
  uint32_t drop_region,drop_offset,drop_count,drop_write,stuck_power,stuck_div,delay_error,freeze,flip_root;
  uint32_t log_region[48],log_offset[48];uint64_t ns;
 } m;
@@ -37,6 +37,7 @@ static int delay(void *c,uint32_t us){(void)c;assert(us==1U);if(!m.freeze)m.ns+=
 static void barrier(void *c){(void)c;}
 static int exclusive(void *c){(void)c;return m.exclusive?-1:0;}
 static int consumers(void *c){(void)c;return m.borrowers?-1:0;}
+static int irq_owned(void *c){(void)c;return m.irq_leased?1:0;}
 static void setup(unsigned warm)
 {
  assert(!p.owned);memset(&p,0,sizeof(p));memset(&m,0,sizeof(m));m.ns=1000000;
@@ -44,7 +45,7 @@ static void setup(unsigned warm)
  m.regs[MP_CMU][0x14108/4]=0xa0640301U; /* 24MHz*100/(3<<(1-1))=800MHz */
  m.regs[MP_CMU][0xc928/4]=0x80000000U|warm;m.regs[MP_CMU][0xc228/4]=0x8101U;m.regs[MP_CMU][0xc528/4]=0x3007U;
  m.regs[MP_PMU][0x3c40/4]=0x900U|(warm?7:0);m.regs[MP_PMU][0x3c44/4]=0x100U|(warm?7:0);
- struct i9100_mfc_power_io io={&m,rd,wr,lock,unlock,now,delay,barrier,exclusive,consumers};
+ struct i9100_mfc_power_io io={&m,rd,wr,lock,unlock,now,delay,barrier,exclusive,consumers,irq_owned};
  struct i9100_mfc_power_config cfg={1,24000000,200000000};assert(!i9100_mfc_power_init(&p,&io,&cfg));
  assert(!m.reads&&!m.writes);assert(i9100_mfc_power_acquire(&p)==I9100_MP_DISABLED);assert(!i9100_mfc_power_enable(&p,1));
 }
@@ -92,6 +93,9 @@ static void failures(void)
  setup(0);assert(!i9100_mfc_power_acquire(&p));m.drop_region=MP_PMU;m.drop_offset=0x3c40;m.drop_count=1;
  assert(i9100_mfc_power_release(&p)==I9100_MP_IO&&p.owned);done();
  setup(0);m.stuck_div=1;assert(i9100_mfc_power_acquire(&p)==I9100_MP_TIMEOUT&&p.owned);m.stuck_div=0;m.regs[MP_CMU][0xc628/4]=0;done();
+ setup(0);assert(!i9100_mfc_power_acquire(&p));m.regs[MP_GIC][0x10c/4]=1U<<30;m.regs[MP_GIC][0x30c/4]=1U<<30;
+ assert(i9100_mfc_power_validate(&p)==I9100_MP_OWNER&&p.fault);m.irq_leased=1;
+ assert(!i9100_mfc_power_validate(&p));m.irq_leased=0;done();
 }
 static void owners(void)
 {
