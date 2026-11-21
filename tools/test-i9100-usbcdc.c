@@ -28,6 +28,7 @@ static unsigned fake_panic_seconds = 180, fake_panic_calls;
 #define I9100_SIM_PANIC_TRIGGER() (++fake_panic_calls)
 #define UCTL_TIMEBASE_READY() fake_timebase_ready
 static unsigned wait_calls, reset_calls, fail_wait;
+static uint32_t i9100_ram_start = 0x40000000U, i9100_ram_bytes;
 static int fake_wait(volatile unsigned int *, unsigned int, unsigned int);
 #define UWAIT(r, m, v) fake_wait((r), (m), (v))
 #define UPMU_WRITE(off, value) do { pmu_offsets[pmu_count] = off; pmu_values[pmu_count++] = value; } while (0)
@@ -208,6 +209,7 @@ static void readmem_tests(void)
     for (unsigned i = 0; i < sizeof(fake_dram); i++)
         fake_dram[i] = (unsigned char)(i * 7u);
     uctl_sim_mem = fake_dram;
+    i9100_ram_bytes = sizeof(fake_dram);
     command("I9CTL1 00000001 read-memory 40000010 80\n");
     CHECK(uctl_dlen == 0x80 && uctl_doff == 0);
     CHECK(strstr(uctl_reply, "OK DATA 40000010 00000080"));
@@ -250,6 +252,30 @@ static void readmem_tests(void)
     uctl_complete(UEPINT_XFC); i9100_usb_busy1 = 0;
     command("I9CTL1 00000008 read-memory 40000000 10\n");
     CHECK(strstr(uctl_reply, "ERR busy"));
+    uctl_cancel();
+
+    command("I9CTL1 00000009 read-memory 4003ffff 1\n");
+    CHECK(uctl_dlen == 1 && uctl_data[0] == fake_dram[sizeof(fake_dram) - 1]);
+    uctl_cancel();
+    command("I9CTL1 0000000a read-memory 4003ffff 2\n");
+    CHECK(strstr(uctl_reply, "ERR addr") && !uctl_dlen);
+    uctl_cancel();
+    command("I9CTL1 0000000b read-memory 40040000 1\n");
+    CHECK(strstr(uctl_reply, "ERR addr") && !uctl_dlen);
+    uctl_cancel();
+    command("I9CTL1 0000000c read-memory 400000001 1\n");
+    CHECK(strstr(uctl_reply, "ERR addr") && !uctl_dlen);
+    uctl_cancel();
+    command("I9CTL1 0000000d read-memory 40000000 000000011\n");
+    CHECK(strstr(uctl_reply, "ERR len") && !uctl_dlen);
+    uctl_cancel();
+    i9100_ram_bytes = 0x3fe00000U;
+    command("I9CTL1 0000000e read-memory 7ffe0300 80\n");
+    CHECK(strstr(uctl_reply, "ERR addr") && !uctl_dlen);
+    uctl_cancel();
+    i9100_ram_bytes = 0;
+    command("I9CTL1 0000000f read-memory 40000000 1\n");
+    CHECK(strstr(uctl_reply, "ERR addr") && !uctl_dlen);
     uctl_cancel();
 }
 

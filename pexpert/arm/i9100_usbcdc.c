@@ -256,8 +256,9 @@ static void uctl_hex8(char *out, unsigned int v)
 #ifdef I9100_USB_SIM
 static const unsigned char *uctl_sim_mem; /* test supplies a DRAM stand-in */
 #define UCTL_PREAD(pa, dst, n) \
-	memcpy(dst, uctl_sim_mem + ((pa) - 0x40000000U), n)
+	memcpy(dst, uctl_sim_mem + ((pa) - i9100_ram_start), n)
 #else
+extern uint32_t i9100_ram_start, i9100_ram_bytes;
 /* Direct map via the platform physmap: VA = PA - gPhysBase + gVirtBase. */
 #define UCTL_PREAD(pa, dst, n) \
 	memcpy(dst, (const void *)phystokv(pa), n)
@@ -386,18 +387,20 @@ static void uctl_command(void)
                     result==3?"ERR busy":result==4?"ERR input-not-ready":"ERR disabled";
             }
 		} else if (!strncmp(verb, "read-memory ", 12)) {
-			/* read-memory <pa> <len>: snapshot DRAM [0x40000000,0x80000000)
-			 * into uctl_data, then stream raw bytes after the DATA header.
-			 * PA range only: no MMIO side effects, direct map always valid. */
+			/* Snapshot only the DRAM mapped by arm_vm_init. The loader
+			 * reserves top-of-RAM pages outside that mapping. */
 			const char *p = verb + 12;
-			unsigned int addr = uctl_hex(&p), len;
+			unsigned int addr = uctl_hex(&p);
+			int has_addr = p != verb + 12 && *p == ' ';
 			while (*p == ' ') p++;
-			len = uctl_hex(&p);
+			unsigned int len = uctl_hex(&p);
 			if (!uctl_enabled) answer = "ERR disabled";
 			else if (uctl_doff < uctl_dlen) answer = "ERR busy";
-			else if (!len || len > sizeof(uctl_data)) answer = "ERR len";
-			else if (addr < 0x40000000U || addr + len > 0x80000000U ||
-			         addr + len < addr) answer = "ERR addr";
+			else if (!has_addr) answer = "ERR addr";
+			else if (*p || !len || len > sizeof(uctl_data)) answer = "ERR len";
+			else if (addr < i9100_ram_start || len > i9100_ram_bytes ||
+			         addr - i9100_ram_start > i9100_ram_bytes - len)
+				answer = "ERR addr";
 			else {
 				static char hdr[26];
 				UCTL_PREAD(addr, uctl_data, len);
