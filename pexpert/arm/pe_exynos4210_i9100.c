@@ -599,7 +599,7 @@ void ios7i9100_panic_text_end(void)
     if(i9100_fimd_map)*(volatile unsigned int *)(i9100_fimd_map+0x1a4)=3;
 }
 
-/* Compact runtime overlay: GPU, BAT and LIVE IRQ only. i9100perf=0 hides it.
+/* Compact runtime overlay for GPU, BAT and LIVE IRQ. Enable with i9100perf=1.
  * Keep RAM observations and the working trace/input path independently of
  * what is displayed. Fatal reporting still owns its separate console. */
 extern unsigned char iso_font[];
@@ -608,7 +608,7 @@ extern volatile uint32_t i9100_perf_sd_div, i9100_perf_sd_errors;
 extern volatile uint32_t i9100_power_valid,i9100_power_percent,i9100_power_mv;
 extern volatile uint32_t i9100_power_connected,i9100_power_charging,i9100_power_revision_value;
 extern volatile int32_t i9100_power_temp,i9100_power_reason;
-static int i9100_perf_strip = 1;
+static int i9100_perf_strip = 0;
 static uint64_t i9100_perf_last_ticks;
 static volatile uint32_t i9100_irq_frame_tick,i9100_irq_frame_seen;
 static uint32_t i9100_perf_last_irqs;
