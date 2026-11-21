@@ -21,7 +21,7 @@ C_SOURCES = [
     "i9100_i2c_samsung.c", "i9100_irq_cascade.c", "i9100_audss.c",
     "i9100_sensors.c", "i9100_vibrator.c", "i9100_pl330.c", "i9100_i2s.c",
     "i9100_mc1n2.c", "i9100_pcm_stream.c", "i9100_sdio.c", "i9100_bcm4330.c", "i9100_bluetooth_h4.c",
-    "i9100_camera_protocol.c", "i9100_mfc.c", "i9100_mfc_layout.c", "i9100_video_layout.c",
+    "i9100_camera_protocol.c", "i9100_mfc.c", "i9100_mfc_decode.c", "i9100_mfc_layout.c", "i9100_video_layout.c",
     "i9100_camera_engine_io.c", "i9100_csis.c", "i9100_fimc.c",
     "i9100_sysmmu.c", "i9100_modem_sipc4.c", "i9100_emmc.c", "i9100_emmc_layout.c", "i9100_emmc_writer.c",
     "i9100_uart_bluetooth.c", "i9100_pwm_haptic.c",
@@ -71,8 +71,9 @@ TESTS = [
     ("i9100_emmc_worker_test.cpp",["i9100_emmc.c","i9100_emmc_idmac.c","i9100_dma_guard.c","i9100_emmc_layout.c",
       "i9100_emmc_writer.c","i9100_emmc_host.c","i9100_emmc_clock.c","i9100_emmc_native.cpp","i9100_emmc_worker.cpp",
       "i9100_dma_native.cpp","i9100_camera_mmio.cpp","IOS6I9100EMMCStorage.cpp","IOS6I9100EMMCRaw.cpp","IOS6I9100EMMCBlockDriver.cpp","i9100_emmc_alias.cpp"]),
-    ("i9100_mfc_native_test.cpp", ["i9100_mfc.c","i9100_mfc_layout.c","i9100_dma_guard.c",
-        "i9100_mfc_native.cpp","i9100_camera_mmio.cpp"]),
+    ("i9100_mfc_native_test.cpp", ["i9100_mfc.c","i9100_mfc_decode.c","i9100_mfc_layout.c","i9100_dma_guard.c",
+        "i9100_mfc_native.cpp","i9100_camera_mmio.cpp","i9100_dma_native.cpp"]),
+    ("i9100_mfc_decode_test.c", ["i9100_mfc.c","i9100_mfc_decode.c","i9100_mfc_layout.c","i9100_dma_guard.c"]),
     ("i9100_camera_capture_test.c", ["i9100_camera_engine_io.c","i9100_csis.c","i9100_fimc.c",
         "i9100_video_layout.c","i9100_dma_guard.c"]),
     ("i9100_camera_native_test.cpp", ["i9100_camera_engine_io.c","i9100_csis.c","i9100_fimc.c",
@@ -124,7 +125,7 @@ TESTS = [
     ("i9100_audio_transport_test.c", ["i9100_dma_guard.c", "i9100_pl330.c", "i9100_i2s.c", "i9100_mc1n2.c", "i9100_pcm_stream.c"]),
     ("i9100_audio_output_test.c", ["i9100_dma_guard.c", "i9100_pl330.c", "i9100_i2s.c", "i9100_mc1n2.c", "i9100_pcm_stream.c"]),
     ("i9100_wifi_bluetooth_test.c", ["i9100_sdio.c", "i9100_bcm4330.c", "i9100_bluetooth_h4.c"]),
-    ("i9100_camera_mfc_test.c", ["i9100_camera_protocol.c", "i9100_mfc.c", "i9100_mfc_layout.c", "i9100_video_layout.c", "i9100_sysmmu.c", "i9100_dma_guard.c"]),
+    ("i9100_camera_mfc_test.c", ["i9100_camera_protocol.c", "i9100_mfc.c", "i9100_mfc_decode.c", "i9100_mfc_layout.c", "i9100_video_layout.c", "i9100_sysmmu.c", "i9100_dma_guard.c"]),
     ("i9100_modem_test.c", ["i9100_modem_sipc4.c"]),
     ("i9100_uart_pwm_test.c", ["i9100_uart_bluetooth.c", "i9100_pwm_haptic.c"]),
     ("i9100_bcm_f2_test.c", ["i9100_bcm_f2.c"]),
@@ -259,6 +260,9 @@ def main():
                         from check_i9100_emmc_matching import prepare as prepare_matching
                         test_override,_,_=prepare_matching(e);host_defines=('I9100_EMMC_MATCH_ENGINE=1',)
                         (test_override.parent/'i9100_emmc_dma_facade.inc').write_bytes((REPO/'port-tests/i9100_emmc_dma_facade.inc').read_bytes())
+                if test=='i9100_mfc_native_test.cpp':
+                    from i9100_mfc_dma_model import prepare as prepare_mfc_dma
+                    overrides=prepare_mfc_dma(e);host_defines=('I9100_MFC_ACTUAL_ALLOCATOR=1',)
                 e.model_cpp(test, [name for name in sources if name.endswith(".c")]+extra,
                             [name for name in sources if name.endswith(".cpp")],
                             libraries=["crypto"] if test in ("i9100_bcm_worker_test.cpp","i9100_bt_worker_test.cpp","i9100_bt_control_test.cpp","i9100_mfc_native_test.cpp") else ["pthread"] if test in emmc_native or test in ("i9100_power_shared_test.cpp","i9100_power_haptic_test.cpp","i9100_haptic_worker_test.cpp","i9100_emmc_clock_native_test.cpp") else (),
@@ -275,7 +279,8 @@ def main():
                             ("i9100_pl330_ring_native_test.cpp","i9100_audio_gated_pipeline_test.cpp","i9100_audio_gated_user_test.cpp") else (),
                             extra_sdk=REPO/'port-tests/bt-control-sdk' if test=='i9100_bt_control_test.cpp' else
                             REPO/'port-tests/emmc-storage-sdk' if test in ('i9100_emmc_storage_test.cpp','i9100_emmc_boot_test.cpp','i9100_emmc_matching_test.cpp','i9100_emmc_clock_native_test.cpp','i9100_emmc_worker_test.cpp') else
-                            REPO/'port-tests/emmc-native-sdk' if test in ('i9100_emmc_native_test.cpp','i9100_emmc_sdr_native_test.cpp','i9100_emmc_idmac_native_test.cpp') else None,
+                            REPO/'port-tests/emmc-native-sdk' if test in ('i9100_emmc_native_test.cpp','i9100_emmc_sdr_native_test.cpp','i9100_emmc_idmac_native_test.cpp') else
+                            REPO/'port-tests/dma-native-sdk' if test=='i9100_mfc_native_test.cpp' else None,
                             test_override=test_override,extra_defines=host_defines)
                 if test=="i9100_power_shared_test.cpp":
                     for n in range(1,4):e.run([str(e.out/"models"),str(n)],"shared-prepare-failure-"+str(n)+"-tests")
@@ -310,7 +315,7 @@ def main():
                     e.run([str(folder/"models"),str(historical)],"writer-model-tests")
                     e.result["writer_historical_primary_sha256"]=digest
                 else:
-                    e.model(test, sources, libraries=["crypto"] if test in ("i9100_bcm_firmware_test.c","i9100_bcm_core_download_test.c","i9100_bcm_boot_test.c","i9100_bcm_pump_test.c","i9100_bt_boot_test.c","i9100_bt_probe_test.c","i9100_bt_host_reset_test.c","i9100_bt_baud_test.c","i9100_camera_mfc_test.c") else ())
+                    e.model(test, sources, libraries=["crypto"] if test in ("i9100_bcm_firmware_test.c","i9100_bcm_core_download_test.c","i9100_bcm_boot_test.c","i9100_bcm_pump_test.c","i9100_bt_boot_test.c","i9100_bt_probe_test.c","i9100_bt_host_reset_test.c","i9100_bt_baud_test.c","i9100_camera_mfc_test.c","i9100_mfc_decode_test.c") else ())
             e.out = previous
         e.result["model_suites"] = [name for name, _ in selected]
         e.result["audio_model_fixtures_sha256"] = {

@@ -7,7 +7,7 @@ from i9100_offline_build import Evidence
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument("--cross-compile",action="store_true")
 a=p.parse_args()
-sources=["i9100_camera_protocol.c","i9100_mfc.c","i9100_mfc_layout.c","i9100_video_layout.c","i9100_sysmmu.c","i9100_dma_guard.c"]
+sources=["i9100_camera_protocol.c","i9100_mfc.c","i9100_mfc_decode.c","i9100_mfc_layout.c","i9100_video_layout.c","i9100_sysmmu.c","i9100_dma_guard.c"]
 e=Evidence("camera-mfc-offline")
 os.environ["I9100_MFC_CORE_OUTPUT"]=str(e.out/"mfc-core.json")
 e.wait_idle_seconds=60

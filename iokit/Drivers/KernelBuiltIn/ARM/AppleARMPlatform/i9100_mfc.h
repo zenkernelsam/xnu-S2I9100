@@ -19,6 +19,7 @@ struct i9100_mfc_io {
  int (*delay_us)(void *,uint32_t);void (*barrier)(void *);
  int (*sha256)(void *,const void *,uint32_t,uint8_t[32]);
 };
+struct i9100_mfc_decoder;
 struct i9100_mfc {
  struct i9100_mfc_io io;
  struct i9100_dma_buffer *bank_a,*bank_b;
@@ -34,6 +35,7 @@ struct i9100_mfc {
  uint32_t banks_written,channels_written,last_channel0;
  uint8_t stream_sha256[32];
  int first_error,cleanup_error;
+ struct i9100_mfc_decoder *decoder;
 };
 int i9100_mfc_init(struct i9100_mfc *,const struct i9100_mfc_io *);
 int i9100_mfc_enable(struct i9100_mfc *,int enabled,int exclusive_power_clock_identity_sysmmu_verified);
@@ -48,13 +50,15 @@ int i9100_mfc_close(struct i9100_mfc *);
 int i9100_mfc_poll(struct i9100_mfc *);
 int i9100_mfc_stop(struct i9100_mfc *);
 int i9100_mfc_idle(void *);
+/* Internal decoder/core boundary; caller must already hold engine lock. */
+int i9100_mfc_fail_locked(struct i9100_mfc *,int);
 /* Exynos4210 MFCv5.1 only. Two private,128KiB-aligned DMA32 arenas; firmware
  * source and landed bytes both SHA-authenticated before RISC launch.
  * Explicit reviewed profile chooses 384/512KiB system reservation, NOT file
  * length. H264 context600KiB/descriptor/CPB/shared use the validated plan.
  * Baselines aren't inferred from RISC_ON/-1 v6 definitions. Arenas remain
  * device-owned until RISC reset + MC idle are both proved. No decode/encode
- * frame submission until DPB/tiled formats/SYSMMU mappings are implemented.
+ * frame submission without the separate checked DPB/lease/tiled adapter.
  * Boot/sysinit/open/header/close are true firmware operations, not media
  * stubs. Poll deadline applies even if a late reply is present; raw response
  * and cleanup error are kept. Failed stop retains held allocations. All

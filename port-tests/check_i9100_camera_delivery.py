@@ -78,6 +78,21 @@ def main():
             for name,expected in m['fixture_sources'].items():
                 if sha(REPO/name)!=expected:raise RuntimeError('RTC/shared-power fixture drift')
             if sha(folder/'models')!=m['model_artifact_sha256']:raise RuntimeError('RTC/shared-power model changed')
+        if m.get('mfc_dpb_references'):
+            found=True
+            if not m.get('source_reference_only'):raise RuntimeError('Reference evidence became production')
+            for name,proof in m['mfc_dpb_references'].items():
+                reference=ROOT/name
+                if not reference.resolve().is_relative_to(ROOT/'research')or sha(reference)!=proof['sha256']:
+                    raise RuntimeError('Original MFC/tiling reference changed')
+                if proof.get('git_blob'):
+                    raw=reference.read_bytes()
+                    if hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()!=proof['git_blob']:
+                        raise RuntimeError('Original MFC Git blob changed')
+            for name,expected in m['fixtures'].items():
+                if sha(REPO/name)!=expected:raise RuntimeError('Independent tile-reference fixture changed')
+            if sha(folder/'tile-reference')!=m['reference_executable_sha256']:
+                raise RuntimeError('Original reference executable changed')
         if not found:
             raise RuntimeError("Not a model proof")
         if m.get('native_model_source_override'):
@@ -139,6 +154,10 @@ def main():
             raise RuntimeError('Actual IDMAC native clock capture changed')
         if m.get('dma_facade_sha256')and sha(REPO/'port-tests/i9100_emmc_dma_facade.inc')!=m['dma_facade_sha256']:
             raise RuntimeError('Original DMA IOKit/PTE facade changed')
+        if m.get('mfc_dma_facade_sha256')and sha(REPO/'port-tests/i9100_mfc_dma_facade.inc')!=m['mfc_dma_facade_sha256']:
+            raise RuntimeError('MFC original allocator facade changed')
+        if m.get('model_preparer_sha256')and sha(REPO/'port-tests/i9100_mfc_dma_model.py')!=m['model_preparer_sha256']:
+            raise RuntimeError('MFC host-only allocator preparation changed')
         if m.get('workloop_facade_sha256')and sha(REPO/'port-tests/i9100_emmc_workloop_facade.inc')!=m['workloop_facade_sha256']:
             raise RuntimeError('Actual eMMC threaded scheduler facade changed')
         if m.get("host_source_override"):
@@ -214,6 +233,10 @@ def main():
         if name in ('i9100_emmc_worker.cpp','IOS6I9100EMMCStorage.cpp','IOS6I9100EMMCRaw.cpp'):
             dep=Path(ROOT/chosen['object']).with_suffix('.d')
             if not dep.is_file()or 'i9100_emmc_worker.h'not in dep.read_text():raise RuntimeError('Async storage ABI was not consumed by paired ARM compile')
+        if name in ('i9100_mfc.c','i9100_mfc_native.cpp','i9100_mfc_decode.c'):
+            dep=Path(ROOT/chosen['object']).with_suffix('.d')
+            if not dep.is_file()or 'i9100_mfc_decode.h'not in dep.read_text():
+                raise RuntimeError('MFC DPB ABI was not consumed by paired ARM compile')
         kind = ".cpo" if name.endswith(".cpp") else ".o"
         matching = [path for path in inputs if object_name(path) in (name + kind, Path(name).stem + kind)]
         if len(matching) != 1 or sha(matching[0]) != sha(ROOT / chosen["object"]):

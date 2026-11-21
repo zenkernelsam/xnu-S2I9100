@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "i9100_mfc.h"
+#include "i9100_mfc_decode.h"
 #include <string.h>
 enum {RESET=0,HOST_INTERRUPT=8,H2R=0x30,H2ARG=0x34,R2H=0x44,R2ARG=0x48,FW_VERSION=0x58,
  BANK_A=0x508,BANK_B=0x50c,MC_STATUS=0x510,STATE_FW=1,STATE_INITIALIZED=2,STATE_HEADER=3};
@@ -43,6 +44,14 @@ static int stop_locked(struct i9100_mfc *m)
   if(!e)e=m->io.delay_us(m->io.cookie,10000)?I9100_MFC_IO:mc_idle(m);
   if(!e)e=exact(m,RESET,0);if(!e)m->risc_running=0;
  }
+ /* Reset stops new DMA, but a displayed surface still pins both arenas.
+  * Do not abort/unhold its backing allocations before the exact lease is
+  * returned. Cleanup errors retain the decoder and its release authority. */
+ if(!e&&m->decoder)e=i9100_mfc_decoder_cleanup_locked(m);
+ if(e&&m->decoder){
+  if(m->risc_running){if(m->bank_a)i9100_dma_quarantine(m->bank_a);if(m->bank_b)i9100_dma_quarantine(m->bank_b);}
+  m->cleanup_error=e;m->fault=1;return e;
+ }
  struct i9100_dma_buffer *buffers[2]={m->bank_a,m->bank_b};
  for(unsigned n=0;n<2;n++)if((m->held_mask&(1U<<n))&&buffers[n]&&
      (buffers[n]->state==I9100_DMA_DEVICE||buffers[n]->state==I9100_DMA_QUARANTINED)){
@@ -64,6 +73,7 @@ static int stop_locked(struct i9100_mfc *m)
 }
 static int failed(struct i9100_mfc *m,int e)
 {note(m,e);m->fault=1;m->cleanup_error=stop_locked(m);m->fault=1;return e;}
+int i9100_mfc_fail_locked(struct i9100_mfc *m,int e){return failed(m,e);}
 int i9100_mfc_init(struct i9100_mfc *m,const struct i9100_mfc_io *io)
 {
  if(!m||m->initialized||!io||!io->read32||!io->write32||!io->lock||!io->unlock||!io->now_ns||!io->delay_us||!io->barrier)
@@ -209,7 +219,7 @@ done:m->io.unlock(m->io.cookie);return e;
 int i9100_mfc_close(struct i9100_mfc *m)
 {
  int e=valid(m);if(e)return e;if(m->io.lock(m->io.cookie))return I9100_MFC_BUSY;
- uint32_t args[4]={m->instance,0,0,0};e=m->instance_open?request(m,2,2,args):I9100_MFC_BUSY;
+ uint32_t args[4]={m->instance,0,0,0};e=m->instance_open&&!m->decoder?request(m,2,2,args):I9100_MFC_BUSY;
  m->io.unlock(m->io.cookie);return e;
 }
 int i9100_mfc_poll(struct i9100_mfc *m)
@@ -240,6 +250,8 @@ int i9100_mfc_poll(struct i9100_mfc *m)
   if(channel!=m->instance||width!=rd(m,0x2008)||height!=rd(m,0x2004)||count!=rd(m,0x200c)||
      m->consumed_bytes>m->plan.stream_bytes||i9100_mfc_h264_sizes(width,height,count,&m->sequence))
    {e=I9100_MFC_REPLY;goto fail;}m->state=STATE_HEADER;
+ }else if(reply==15U||reply==5U){
+  e=i9100_mfc_decoder_complete_locked(m,reply);if(e){if(m->fault)goto done;goto fail;}
  }
  e=exact(m,0x2000,0xffffU);if(!e)e=exact(m,R2H,0);if(!e)e=exact(m,HOST_INTERRUPT,0);
  if(e)goto fail;m->pending=0;goto done;

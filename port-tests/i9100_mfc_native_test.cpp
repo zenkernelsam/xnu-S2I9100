@@ -7,6 +7,8 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOMemoryDescriptor.h>
+#include <mach/vm_param.h>
+#include <vm/pmap.h>
 #include "i9100_mfc_native.h"
 #include "i9100_dma_native.h"
 enum {MFC,MMU_L,MMU_R,CMU,PMU,GIC,MAPS};
@@ -15,7 +17,7 @@ static const uint32_t addresses[MAPS]={0x13400000U,0x13620000U,0x13630000U,0x100
 static struct model {
  unsigned allocations,fail_at,contexts,locks,maps,descriptors,dma,parent_put_error;
  unsigned supply_owned,generation,acquire_error,release_error,verify_error,reset_stuck,freeze;
- unsigned writes,hash_error,syncs,sync_fail,drop_offset,drop_count,h2r_command,ch_command;
+ unsigned writes,hash_error,syncs,sync_fail,drop_offset,drop_count,h2r_command,ch_command,nc_bad,nc_checks;
  uint64_t ns;bool interrupts;
 } m;
 struct i9100_peripheral_native {unsigned holds;};
@@ -67,9 +69,10 @@ int i9100_peripheral_native_hold_get(i9100_peripheral_native *p,i9100_native_par
 {assert(!h->owned);p->holds++;h->context=p;h->self=(uintptr_t)h;h->owned=1;return 0;}
 int i9100_peripheral_native_hold_put(i9100_native_parent_hold *h)
 {assert(h->self==(uintptr_t)h&&h->owned&&h->context->holds);if(m.parent_put_error)return -1;h->context->holds--;h->owned=0;return 0;}
-struct i9100_dma_native {i9100_dma_buffer b;void *engine;int (*idle)(void *);bool locked;unsigned index;};
-static uint8_t bank_a[8388608] __attribute__((aligned(64))),bank_b[1048576] __attribute__((aligned(64)));
+static uint8_t bank_a[8388608] __attribute__((aligned(131072))),bank_b[8388608] __attribute__((aligned(131072)));
 static bool dma_slots[2];
+#if !defined(I9100_MFC_ACTUAL_ALLOCATOR)
+struct i9100_dma_native {i9100_dma_buffer b;void *engine;int (*idle)(void *);bool locked;unsigned index;};
 static int d_lock(void *p){auto *d=(i9100_dma_native *)p;if(d->locked)return -1;d->locked=true;return 0;}
 static void d_unlock(void *p){auto *d=(i9100_dma_native *)p;assert(d->locked);d->locked=false;}
 static int d_idle(void *p){auto *d=(i9100_dma_native *)p;return d->idle(d->engine);}
@@ -80,7 +83,7 @@ static void d_free(void *p,uintptr_t,uint32_t,uint32_t){assert(!d_idle(p));}
 int i9100_dma_native_allocate_aligned(int enabled,uint32_t bytes,uint32_t alignment,void *engine,int (*idle)(void *),i9100_dma_native **out)
 {
  assert(enabled==1&&alignment==131072U&&out&&!*out);if(fail())return I9100_DMA_IO;
- unsigned index=bytes==sizeof(bank_a)?0U:1U;assert(!dma_slots[index]);auto *d=new i9100_dma_native{};
+ unsigned index=dma_slots[0]?1U:0U;assert(!dma_slots[index]);auto *d=new i9100_dma_native{};
  d->index=index;d->engine=engine;d->idle=idle;
  i9100_dma_io io={d,d_lock,d_unlock,d_sync,d_idle,d_free};
  assert(!i9100_dma_bind(&d->b,&io,(uintptr_t)(index?bank_b:bank_a),index?0x48000000U:0x46000000U,bytes));
@@ -91,6 +94,32 @@ int i9100_dma_native_destroy(i9100_dma_native **out)
 {
  assert(out&&*out);auto *d=*out;int e=i9100_dma_release(&d->b);if(e)return e;
  assert(dma_slots[d->index]&&m.dma);m.dma--;dma_slots[d->index]=false;delete d;*out=nullptr;return 0;
+}
+#else
+#include "i9100_mfc_dma_facade.inc"
+#endif
+static uint32_t cpu_ptes[2][2048],linear_ptes[2][2048];
+extern "C" {
+unsigned long gPhysBase=0x40000000U,gVirtBase=0x80000000U;
+pmap_t kernel_pmap=(void *)1;
+#if defined(I9100_MFC_ACTUAL_ALLOCATOR)
+void pmap_set_cache_attributes(ppnum_t page,unsigned flags)
+{
+ assert(flags==(VM_MEM_COHERENT|VM_MEM_NOT_CACHEABLE|VM_MEM_GUARDED));
+ unsigned k=page>=(0x48000000U>>12)?1U:0U,index=page-((k?0x48000000U:0x46000000U)>>12);assert(index<2048);
+ cpu_ptes[k][index]=(page<<12)|2U|0x40U;linear_ptes[k][index]=(page<<12)|2U|0x40U;
+}
+#endif
+vm_offset_t pmap_pte(pmap_t map,vm_offset_t va)
+{
+ assert(map==kernel_pmap);m.nc_checks++;
+ for(unsigned k=0;k<2;k++){
+  uintptr_t lo=(uintptr_t)(k?bank_b:bank_a);uint32_t linear=k?0x88000000U:0x86000000U;
+  if(va>=lo&&va<lo+8388608U){unsigned i=(unsigned)((va-lo)/4096U);return (uintptr_t)&cpu_ptes[k][i];}
+  if(va>=linear&&va<linear+8388608U){unsigned i=(unsigned)((va-linear)/4096U);
+   if(m.nc_bad)linear_ptes[k][i]&=~0x40U;return (uintptr_t)&linear_ptes[k][i];}
+ }return 0;
+}
 }
 static int acquire(void *,i9100_mfc_supply_lease *l)
 {
@@ -117,6 +146,7 @@ static void setup()
 {
  assert(!m.contexts&&!m.locks&&!m.maps&&!m.descriptors&&!m.dma&&!m.supply_owned&&!parent.holds&&!dma_slots[0]&&!dma_slots[1]);
  memset(&m,0,sizeof(m));memset(regs,0,sizeof(regs));m.ns=1000000ULL;m.interrupts=true;
+ for(unsigned k=0;k<2;k++)for(unsigned i=0;i<2048;i++)cpu_ptes[k][i]=linear_ptes[k][i]=(k?0x48000000U:0x46000000U)+i*4096U+0x42U;
 }
 static void reply(unsigned response,unsigned arg0)
 {regs[MFC][0x44/4]=response;regs[MFC][0x48/4]=arg0;regs[MFC][0x4c/4]=regs[MFC][0x50/4]=regs[MFC][0x54/4]=0;
@@ -141,7 +171,7 @@ int main()
  reply(4,0);assert(!i9100_mfc_native_poll(n));struct i9100_mfc_native_status s={};assert(!i9100_mfc_native_status(n,&s));
  assert(s.phase==I9100_MFC_N_READY&&s.width==640&&s.height==480&&s.dpb_count==4&&s.firmware_version==0x211116&&
   s.bank_a_state==I9100_DMA_DEVICE&&s.bank_b_state==I9100_DMA_DEVICE&&s.held_mask==3U);finish(&n);
- for(unsigned k=1;k<=17;k++){
+ for(unsigned k=1;k<=23;k++){
   setup();m.fail_at=k;int e=i9100_mfc_native_open(1,&parent,&supply,&n);
   if(e)assert(!n&&!m.contexts&&!m.locks&&!m.maps&&!m.descriptors&&!m.dma&&!m.supply_owned&&!parent.holds);else finish(&n);
  }
@@ -159,12 +189,42 @@ int main()
  assert(i9100_mfc_native_close(&n)!=0&&n&&m.dma==2&&m.maps==6);m.reset_stuck=0;finish(&n);
  setup();assert(!i9100_mfc_native_open(1,&parent,&supply,&n));m.release_error=1;
  assert(i9100_mfc_native_close(&n)==-124&&n&&!m.dma&&m.maps==6);m.release_error=0;finish(&n);
+ #if !defined(I9100_MFC_ACTUAL_ALLOCATOR)
  setup();assert(!i9100_mfc_native_open(1,&parent,&supply,&n));m.sync_fail=m.syncs+1U;
  assert(i9100_mfc_native_close(&n)==I9100_DMA_IO&&n&&m.dma==2);m.sync_fail=0;finish(&n);
+ #endif
  setup();assert(!i9100_mfc_native_open(1,&parent,&supply,&n));m.parent_put_error=1;
  assert(i9100_mfc_native_close(&n)==-1&&n&&!m.maps&&!m.dma&&parent.holds==1);m.parent_put_error=0;finish(&n);
  setup();assert(!i9100_mfc_native_open(1,&parent,&supply,&n));p=profile();uint8_t invalid[8]={1};
  assert(i9100_mfc_native_start(n,&p,firmware,sizeof(firmware),invalid,sizeof(invalid))==I9100_MFC_ARGUMENT);
  assert(!i9100_mfc_native_status(n,&s)&&s.phase==I9100_MFC_N_FAILED&&!s.held_mask);finish(&n);
+ /* Same real native/decoder path, with explicit firmware response injection.
+  * CPU aliases are rechecked through actual page-table callback on access. */
+ setup();struct i9100_mfc_decode_config cfg={1,8388608,2097152};
+ cfg.bank_b_bytes=9U*1024U*1024U;
+ assert(i9100_mfc_native_open_decode(1,&parent,&supply,&cfg,&n)==I9100_MFC_ARGUMENT&&!m.allocations);
+ cfg.bank_b_bytes=2097152;assert(!i9100_mfc_native_open_decode(1,&parent,&supply,&cfg,&n));
+ p=profile();assert(i9100_mfc_native_start(n,&p,firmware,sizeof(firmware),nullptr,0)==I9100_MFC_ARGUMENT);
+ assert(!i9100_mfc_native_start(n,&p,firmware,sizeof(firmware),stream,sizeof(stream)));
+ reply(9,0);assert(i9100_mfc_native_poll(n)==I9100_MFC_BUSY);reply(8,0x60000);assert(i9100_mfc_native_poll(n)==I9100_MFC_BUSY);
+ reply(1,2);assert(i9100_mfc_native_poll(n)==I9100_MFC_BUSY);
+ regs[MFC][0x2000/4]=2;regs[MFC][0x2008/4]=640;regs[MFC][0x2004/4]=480;regs[MFC][0x200c/4]=4;regs[MFC][0x2018/4]=sizeof(stream);
+ reply(4,0);assert(i9100_mfc_native_poll(n)==I9100_MFC_BUSY&&m.ch_command==0x40002U&&m.nc_checks);
+ regs[MFC][0x2000/4]=2;reply(15,0);assert(!i9100_mfc_native_poll(n));assert(!i9100_mfc_native_status(n,&s)&&s.decode_enabled);
+ writes=m.writes;m.nc_bad=1;assert(i9100_mfc_native_frame(n,stream,sizeof(stream),1,0)==I9100_MFC_OWNER&&m.writes==writes);
+ m.nc_bad=0;for(unsigned k=0;k<2;k++)for(unsigned i=0;i<2048;i++)linear_ptes[k][i]=(k?0x48000000U:0x46000000U)+i*4096U+0x42U;
+ assert(!i9100_mfc_native_frame(n,stream,sizeof(stream),1,0));struct i9100_mfc_frame_lease lease={};
+ assert(i9100_mfc_native_acquire(n,&lease)==I9100_MFC_BUSY&&!lease.owned);
+ regs[MFC][0x2000/4]=2;regs[MFC][0x201c/4]=1;regs[MFC][0x202c/4]=0;regs[MFC][0x2020/4]=1;regs[MFC][0x2018/4]=sizeof(stream);
+ regs[MFC][0x2010/4]=regs[MFC][0x2024/4]=0x48000000U>>11;
+ regs[MFC][0x2014/4]=regs[MFC][0x2028/4]=(0x46000000U>>11)+regs[MFC][0x600/4];
+ uint32_t *sh=(uint32_t *)(bank_a+0x116000U);sh[8/4]=1;sh[0xc0/4]=4;reply(5,0);
+ assert(!i9100_mfc_native_poll(n));assert(!i9100_mfc_native_acquire(n,&lease)&&lease.frame.tag==1&&lease.frame.width==640);
+ static uint8_t y[640*480],c[640*240];assert(!i9100_mfc_native_copy_nv12(n,&lease,y,sizeof(y),640,c,sizeof(c),640));
+ assert(i9100_mfc_native_close(&n)==I9100_MFC_BUSY&&n&&m.maps==6&&m.dma==2);
+ assert(i9100_mfc_native_copy_nv12(n,&lease,y,sizeof(y),640,c,sizeof(c),640)==I9100_MFC_BUSY);
+ struct i9100_mfc_frame_lease clone=lease;assert(i9100_mfc_native_release(n,&clone)==I9100_MFC_OWNER);
+ m.verify_error=1;assert(!i9100_mfc_native_release(n,&lease));assert(i9100_mfc_native_close(&n)==I9100_MFC_OWNER&&n);
+ m.verify_error=0;finish(&n);
  puts("PASS actual native MFCv5.1/crypto/2 banks with explicit MMIO/DMA/IOKit/provider facades: original mailbox bytes, 128KiB alignment, real header fields, pinning, stale/timeout/failure cleanup and single owner");return 0;
 }

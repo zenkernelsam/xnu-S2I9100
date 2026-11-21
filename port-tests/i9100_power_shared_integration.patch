@@ -6,9 +6,9 @@
  #include "i9100_power.h"
 +#include "i9100_power_shared.h"
  #include "i9100_rtc_time.h"
+ #include <string.h>
  struct bus {
-  struct i9100_power_hw *hw;
-@@ -61,6 +62,9 @@
+@@ -62,6 +63,9 @@
   if(!hw || !data || reg>255 || !count ||
      (count>2 && !(count==7 && !fuel && slave==0x06U && reg==0x10U && !writing)) ||
      (fuel && writing) || slave>127)return 0;
@@ -18,7 +18,7 @@
   struct bus b={hw,fuel?1U:0U,fuel?0x1a0U:0x40U,fuel?0U:6U,fuel?1U:7U,0,0,0};
   hw->enter(hw->cookie);
   b.con=rd(&b,0);b.dat=rd(&b,4);b.pull=rd(&b,8);
-@@ -85,12 +89,16 @@
+@@ -86,12 +90,16 @@
   wr(&b,4,(rd(&b,4)&~pins)|(b.dat&pins));
   wr(&b,8,(rd(&b,8)&~pulls)|(b.pull&pulls));
   wr(&b,0,(rd(&b,0)&~mux)|(b.con&mux));

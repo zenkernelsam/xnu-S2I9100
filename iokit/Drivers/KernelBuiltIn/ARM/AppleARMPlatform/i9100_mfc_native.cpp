@@ -5,10 +5,14 @@
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <machine/machine_routines.h>
+#include <mach/vm_param.h>
 #include <string.h>
 #undef mach_absolute_time
 #undef absolutetime_to_nanoseconds
 extern "C" {
+#include <vm/pmap.h>
+vm_offset_t pmap_pte(pmap_t,vm_offset_t);
+extern unsigned long gPhysBase,gVirtBase;
 #include <mach/mach_time.h>
 void absolutetime_to_nanoseconds(uint64_t,uint64_t *);
 uint32_t i9100_camera_mmio_read(volatile uint8_t *,unsigned);
@@ -22,8 +26,8 @@ struct i9100_mfc_native {
  i9100_mfc_supply supply;i9100_mfc_supply_lease supply_lease;
  IOLock *lifecycle,*engine;
  IOMemoryDescriptor *memory[MN_MAPS];IOMemoryMap *mapping[MN_MAPS];volatile uint8_t *regs[MN_MAPS];
- i9100_dma_native *allocation[2];i9100_mfc core;
- uint32_t phase,reserved,source,divider,stream_supplied;int error,cleanup_error;
+ i9100_dma_native *allocation[2];i9100_mfc core; i9100_mfc_decoder decoder;
+ uint32_t phase,reserved,source,divider,stream_supplied,decode_enabled;int error,cleanup_error;
 };
 static int take(IOLock *l){return l&&ml_get_interrupts_enabled()&&IOLockTryLock(l)?0:-1;}
 static uint32_t rd(i9100_mfc_native *n,unsigned map,unsigned off)
@@ -54,6 +58,25 @@ static int resources(i9100_mfc_native *n)
 }
 static int idle(void *p)
 {i9100_mfc_native *n=(i9100_mfc_native *)p;return resources(n)||!n->core.initialized?-1:i9100_mfc_idle(&n->core);}
+static int normal_nc(void *p,const i9100_dma_buffer *a,const i9100_dma_buffer *b)
+{
+ i9100_mfc_native *n=(i9100_mfc_native *)p;
+ if(resources(n)||a!=i9100_dma_native_buffer(n->allocation[0])||b!=i9100_dma_native_buffer(n->allocation[1]))return -1;
+ const i9100_dma_buffer *banks[2]={a,b};
+ for(unsigned k=0;k<2;k++){
+  const i9100_dma_buffer *v=banks[k];
+  if(!v||v->self!=(uintptr_t)v||!v->holds||!v->cpu||!v->bytes||(v->bytes&4095U)||
+     v->bytes>8U*1024U*1024U||v->physical<gPhysBase||(uint64_t)v->physical+v->bytes>0x80000000ULL||
+     v->cpu>~(uintptr_t)0-v->bytes)return -1;
+  for(unsigned off=0;off<v->bytes;off+=4096U){
+   vm_offset_t cpu=pmap_pte(kernel_pmap,(vm_offset_t)v->cpu+off);
+   vm_offset_t linear=pmap_pte(kernel_pmap,((vm_offset_t)v->physical+off-gPhysBase)+gVirtBase);
+   uint32_t pa=v->physical+off,cv=cpu?*(volatile uint32_t *)cpu:0,lv=linear?*(volatile uint32_t *)linear:0;
+   if(!(cv&2U)||!(lv&2U)||(cv&0xfffff000U)!=pa||(lv&0xfffff000U)!=pa||
+      (cv&0x1ccU)!=0x40U||(lv&0x1ccU)!=0x40U)return -1;
+  }
+ }OSSynchronizeIO();return 0;
+}
 static int cleanup(i9100_mfc_native *n)
 {
  if(n->core.enabled||n->core.staged||n->allocation[0]||n->allocation[1]){
@@ -79,15 +102,20 @@ static void dispose(i9100_mfc_native *n)
 static int fault(i9100_mfc_native *n,int e)
 {
  if(!n->error)n->error=e;n->phase=I9100_MFC_N_FAILED;
- if(!resources(n))n->cleanup_error=i9100_mfc_stop(&n->core);return e;
+ if(n->core.fault)n->cleanup_error=n->core.cleanup_error;
+ else if(!resources(n))n->cleanup_error=i9100_mfc_stop(&n->core);return e;
 }
-int i9100_mfc_native_open(int enabled,i9100_peripheral_native *parent,const i9100_mfc_supply *supply,i9100_mfc_native **out)
+static int open_native(int enabled,i9100_peripheral_native *parent,const i9100_mfc_supply *supply,
+ const i9100_mfc_decode_config *config,i9100_mfc_native **out)
 {
  if(!out||*out||(enabled!=0&&enabled!=1))return I9100_MFC_ARGUMENT;if(!enabled)return I9100_MFC_DISABLED;
+ if(config&&(config->board_data_reviewed!=1U||config->bank_a_bytes<1024U*1024U||config->bank_a_bytes>8U*1024U*1024U||
+    config->bank_b_bytes<1024U*1024U||config->bank_b_bytes>8U*1024U*1024U||
+    ((config->bank_a_bytes|config->bank_b_bytes)&4095U)))return I9100_MFC_ARGUMENT;
  if(!parent||!supply||!supply->acquire||!supply->validate||!supply->release||!ml_get_interrupts_enabled())return I9100_MFC_ARGUMENT;
  if(!__sync_bool_compare_and_swap(&mfc_reserved,0U,1U))return I9100_MFC_BUSY;
  i9100_mfc_native *n=(i9100_mfc_native *)IOMalloc(sizeof(*n));if(!n){__sync_lock_release(&mfc_reserved);return I9100_MFC_IO;}
- memset(n,0,sizeof(*n));n->reserved=1;n->parent=parent;n->supply=*supply;n->phase=I9100_MFC_N_BUILDING;
+ memset(n,0,sizeof(*n));n->reserved=1;n->parent=parent;n->supply=*supply;n->phase=I9100_MFC_N_BUILDING;n->decode_enabled=config!=0;
  int e=i9100_peripheral_native_hold_get(parent,&n->parent_hold);if(e){__sync_lock_release(&mfc_reserved);dispose(n);return e;}*out=n;
  n->lifecycle=IOLockAlloc();n->engine=IOLockAlloc();if(!n->lifecycle||!n->engine){e=I9100_MFC_IO;goto fail;}
  e=n->supply.acquire(n->supply.cookie,&n->supply_lease);if(e)goto fail;if(!supply_valid(n)){e=I9100_MFC_OWNER;goto fail;}
@@ -104,7 +132,7 @@ int i9100_mfc_native_open(int enabled,i9100_peripheral_native *parent,const i910
  {
   i9100_mfc_io io={n,engine_read,engine_write,engine_take,engine_drop,now,delay,barrier,hash};
   e=i9100_mfc_init(&n->core,&io);if(!e)e=i9100_mfc_enable(&n->core,1,1);if(e)goto fail;
-  const uint32_t sizes[2]={8U*1024U*1024U,1024U*1024U};
+  const uint32_t sizes[2]={config?config->bank_a_bytes:8U*1024U*1024U,config?config->bank_b_bytes:1024U*1024U};
   for(unsigned k=0;k<2;k++){
    e=i9100_dma_native_allocate_aligned(1,sizes[k],I9100_MFC_BASE_ALIGNMENT,n,idle,&n->allocation[k]);if(e)goto fail;
    e=i9100_dma_enable(i9100_dma_native_buffer(n->allocation[k]),1);if(e)goto fail;
@@ -114,10 +142,15 @@ int i9100_mfc_native_open(int enabled,i9100_peripheral_native *parent,const i910
 fail:n->error=e;n->phase=I9100_MFC_N_CLOSING;
  {int off=cleanup(n);n->cleanup_error=off;if(!off){dispose(n);*out=0;}}return e;
 }
+int i9100_mfc_native_open(int enabled,i9100_peripheral_native *parent,const i9100_mfc_supply *supply,i9100_mfc_native **out)
+{return open_native(enabled,parent,supply,0,out);}
+int i9100_mfc_native_open_decode(int enabled,i9100_peripheral_native *parent,const i9100_mfc_supply *supply,
+ const i9100_mfc_decode_config *config,i9100_mfc_native **out)
+{if(!config&&enabled)return I9100_MFC_ARGUMENT;return open_native(enabled,parent,supply,config,out);}
 int i9100_mfc_native_start(i9100_mfc_native *n,const i9100_mfc_firmware_profile *profile,const void *firmware,uint32_t bytes,
  const void *stream,uint32_t stream_bytes)
 {
- if(!n||(stream==0)!=(stream_bytes==0U))return I9100_MFC_ARGUMENT;if(take(n->lifecycle))return I9100_MFC_BUSY;
+ if(!n||(stream==0)!=(stream_bytes==0U)||(n->decode_enabled&&!stream_bytes))return I9100_MFC_ARGUMENT;if(take(n->lifecycle))return I9100_MFC_BUSY;
  int e=n->phase!=I9100_MFC_N_PREPARED?I9100_MFC_BUSY:resources(n);
  if(!e)e=i9100_mfc_stage_firmware(&n->core,i9100_dma_native_buffer(n->allocation[0]),i9100_dma_native_buffer(n->allocation[1]),profile,firmware,bytes);
  if(!e&&stream_bytes)e=i9100_mfc_stage_h264(&n->core,stream,stream_bytes);
@@ -131,14 +164,20 @@ int i9100_mfc_native_poll(i9100_mfc_native *n)
  if(!n)return I9100_MFC_ARGUMENT;if(take(n->lifecycle))return I9100_MFC_BUSY;
  int e=n->error?n->error:resources(n);
  if(!e&&n->phase==I9100_MFC_N_READY)goto out;
- if(!e&&(n->phase<I9100_MFC_N_BOOT||n->phase>I9100_MFC_N_HEADER)){e=I9100_MFC_BUSY;goto out;}
+ if(!e&&(n->phase<I9100_MFC_N_BOOT||n->phase>I9100_MFC_N_HEADER)&&
+    n->phase!=I9100_MFC_N_BUFFERS&&n->phase!=I9100_MFC_N_FRAME){e=I9100_MFC_BUSY;goto out;}
  if(!e)e=i9100_mfc_poll(&n->core);
  if(!e&&!n->core.pending){
   if(n->phase==I9100_MFC_N_BOOT){e=i9100_mfc_sys_init(&n->core);if(!e)n->phase=I9100_MFC_N_SYSINIT;}
   else if(n->phase==I9100_MFC_N_SYSINIT){
    if(n->stream_supplied){e=i9100_mfc_open_h264(&n->core);if(!e)n->phase=I9100_MFC_N_OPEN;}else n->phase=I9100_MFC_N_READY;
   }else if(n->phase==I9100_MFC_N_OPEN){e=i9100_mfc_parse_h264_header(&n->core);if(!e)n->phase=I9100_MFC_N_HEADER;}
-  else if(n->phase==I9100_MFC_N_HEADER)n->phase=I9100_MFC_N_READY;
+  else if(n->phase==I9100_MFC_N_HEADER){
+   if(n->decode_enabled){
+    i9100_mfc_decode_io io={n,normal_nc};e=i9100_mfc_decoder_bind(1,&n->core,&n->decoder,&io);
+    if(!e)e=i9100_mfc_decoder_init_buffers(&n->core);if(!e)n->phase=I9100_MFC_N_BUFFERS;
+   }else n->phase=I9100_MFC_N_READY;
+  }else if(n->phase==I9100_MFC_N_BUFFERS||n->phase==I9100_MFC_N_FRAME)n->phase=I9100_MFC_N_READY;
  }
  if(e&&e!=I9100_MFC_BUSY)fault(n,e);else if(!e&&n->phase!=I9100_MFC_N_READY)e=I9100_MFC_BUSY;
 out:IOLockUnlock(n->lifecycle);return e;
@@ -152,7 +191,48 @@ int i9100_mfc_native_status(i9100_mfc_native *n,struct i9100_mfc_native_status *
  out->width=n->core.sequence.width;out->height=n->core.sequence.height;out->dpb_count=n->core.sequence.dpb_count;out->consumed_bytes=n->core.consumed_bytes;
  out->bank_a_state=n->allocation[0]?i9100_dma_native_buffer(n->allocation[0])->state:0;
  out->bank_b_state=n->allocation[1]?i9100_dma_native_buffer(n->allocation[1])->state:0;
- out->held_mask=n->core.held_mask;out->error=n->error;out->cleanup_error=n->cleanup_error;IOLockUnlock(n->lifecycle);return 0;
+ out->held_mask=n->core.held_mask;out->error=n->error;out->cleanup_error=n->cleanup_error;
+ out->decode_enabled=n->decode_enabled;out->frame_submitted=n->decoder.frame_submitted;out->frame_completed=n->decoder.frame_completed;
+ out->display_ready=n->decoder.display_ready;out->leased=n->decoder.leased;out->input_bytes=n->decoder.input_bytes;
+ out->input_start=n->decoder.input_start;out->draining=n->decoder.draining;out->drained=n->decoder.drained;
+ out->raw_display=n->decoder.raw_display;out->raw_decoded=n->decoder.raw_decoded;out->raw_type=n->decoder.raw_type;
+ out->raw_display_type=n->decoder.raw_display_type;out->raw_consumed=n->decoder.raw_consumed;
+ IOLockUnlock(n->lifecycle);return 0;
+}
+static bool outside_context(i9100_mfc_native *n,const void *p,uint32_t bytes)
+{uintptr_t a=(uintptr_t)p,b=(uintptr_t)n;return p&&bytes&&a<=~(uintptr_t)0-bytes&&!(a<b+sizeof(*n)&&b<a+bytes);}
+static int decode_ready(i9100_mfc_native *n)
+{return !n->decode_enabled?I9100_MFC_DISABLED:n->error?n->error:n->phase!=I9100_MFC_N_READY?I9100_MFC_BUSY:resources(n);}
+int i9100_mfc_native_frame(i9100_mfc_native *n,const void *data,uint32_t bytes,uint32_t tag,int last)
+{
+ if(!n||(bytes&&!outside_context(n,data,bytes)))return I9100_MFC_ARGUMENT;
+ if(take(n->lifecycle))return I9100_MFC_BUSY;int e=decode_ready(n);
+ if(!e)e=i9100_mfc_decoder_frame(&n->core,data,bytes,tag,last);
+ if(!e)n->phase=I9100_MFC_N_FRAME;else if(n->core.fault)fault(n,e);
+ IOLockUnlock(n->lifecycle);return e;
+}
+int i9100_mfc_native_acquire(i9100_mfc_native *n,i9100_mfc_frame_lease *lease)
+{
+ if(!n||!outside_context(n,lease,sizeof(*lease)))return I9100_MFC_ARGUMENT;
+ if(take(n->lifecycle))return I9100_MFC_BUSY;int e=decode_ready(n);
+ if(!e)e=i9100_mfc_decoder_acquire(&n->core,lease);IOLockUnlock(n->lifecycle);return e;
+}
+int i9100_mfc_native_release(i9100_mfc_native *n,i9100_mfc_frame_lease *lease)
+{
+ if(!n||!outside_context(n,lease,sizeof(*lease)))return I9100_MFC_ARGUMENT;
+ if(take(n->lifecycle))return I9100_MFC_BUSY;
+ /* Release is a software ownership operation: no new hardware access and
+  * still available when reset, power validation or close has failed. */
+ int e=!n->decode_enabled?I9100_MFC_DISABLED:i9100_mfc_decoder_release(&n->core,lease);
+ IOLockUnlock(n->lifecycle);return e;
+}
+int i9100_mfc_native_copy_nv12(i9100_mfc_native *n,const i9100_mfc_frame_lease *lease,
+ void *y,uint32_t yc,uint32_t ys,void *c,uint32_t cc,uint32_t cs)
+{
+ if(!n||!outside_context(n,lease,sizeof(*lease))||!outside_context(n,y,yc)||!outside_context(n,c,cc))return I9100_MFC_ARGUMENT;
+ if(take(n->lifecycle))return I9100_MFC_BUSY;int e=decode_ready(n);
+ if(!e)e=i9100_mfc_decoder_copy_nv12(&n->core,lease,y,yc,ys,c,cc,cs);
+ IOLockUnlock(n->lifecycle);return e;
 }
 int i9100_mfc_native_close(i9100_mfc_native **owner)
 {
