@@ -11,7 +11,7 @@ cpp=['i9100_mfc_board_native.cpp','i9100_mfc_native.cpp','i9100_mfc_worker.cpp',
 e=Evidence('mfc-ownership-regression');e.wait_idle_seconds=60
 overrides=prepare(e)
 e.model_cpp('i9100_mfc_ownership_regression_test.cpp',c,cpp,libraries=('crypto','pthread'),source_overrides=overrides,
- wrapped_functions=('i9100_camera_mmio_read','i9100_camera_mmio_write'),extra_sdk=REPO/'port-tests/dma-native-sdk',
+ wrapped_functions=('i9100_camera_mmio_read','i9100_camera_mmio_write','i9100_mfc_native_freeze_ctl','i9100_mfc_irq_fault','i9100_mfc_native_status'),extra_sdk=REPO/'port-tests/dma-native-sdk',
  extra_defines=('I9100_MFC_WORKER_FACADE=1',))
 e.result['actual_mfc_ownership_regression']=True
 e.result['worker_facade_sha256']=hashlib.sha256((REPO/'port-tests/i9100_mfc_worker_facade.h').read_bytes()).hexdigest()

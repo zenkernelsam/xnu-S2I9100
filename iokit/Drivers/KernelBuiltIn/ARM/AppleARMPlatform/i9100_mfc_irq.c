@@ -77,6 +77,19 @@ int i9100_mfc_irq_status(i9100_mfc_irq *q,struct i9100_mfc_irq_status *out)
   if(e){if(!out->error)out->error=e;return e;}}
  return 0;
 }
+/* The board publishes a persistent ISR-observed domain fault keyed to this
+ * exact token self+generation; consume it before any poll/service path so
+ * a resource restored inside the dispatch-to-service window cannot launder
+ * the fault into a clean pass. Non-destructive: the record survives
+ * repeated queries and merged notifies until this binding's own
+ * release/cleanup retires it. */
+int i9100_mfc_irq_fault(i9100_mfc_irq *q,int *code)
+{
+ if(!q||q->self!=(uintptr_t)q||!code)return I9100_MFC_ARGUMENT;
+ *code=0;
+ if(!q->bound)return I9100_MFC_OWNER;
+ return i9100_mfc_board_irq_fault(q->board,&q->token,code);
+}
 int i9100_mfc_irq_close(i9100_mfc_irq **owner)
 {
  if(!owner||!*owner||(*owner)->self!=(uintptr_t)*owner)return I9100_MFC_ARGUMENT;

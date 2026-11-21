@@ -27,6 +27,14 @@ int i9100_mfc_board_irq_release(struct i9100_mfc_board *,struct i9100_mfc_board_
  * actually owns without ever dereferencing caller integers. Returns the
  * issuing generation when the identity matches. */
 int i9100_mfc_board_irq_verify(struct i9100_mfc_board *,uintptr_t token_self,unsigned *generation);
+/* Lock-free consume of the ISR-published persistent domain fault: the upper
+ * half records a dead CMU/PMU domain under a sequence lock, keyed to the
+ * exact bound token self and generation, before masking and notifying. The
+ * record outlives resource restoration, repeated queries and merged
+ * notifies; only the accused binding's own release or faulted cleanup
+ * retires it. Returns 0 with *code==0 for no pending accusation, 0 with
+ * *code set to the published fault for the matching owner. */
+int i9100_mfc_board_irq_fault(struct i9100_mfc_board *,const struct i9100_mfc_board_irq_token *,int *code);
 /* Owner-only repair for a faulted registry slot: the exact bound owner
  * proves the line masked and the dispatch/EOI window quiet, resolving the
  * latched recorded-vs-actual mismatch so normal teardown paths serve again.
@@ -50,8 +58,17 @@ int i9100_mfc_board_close(struct i9100_mfc_board **);
  * Consumer APIs serialize entry against final close; no stale callback may
  * outlive a successfully destroyed board. IRQ stays masked for the polling
  * path. An exact single irq-owner token may bind one notify-only sink and
- * mask/unmask the leased line; the ISR verifies its own MFC source latch,
- * deasserts it, masks the line and notifies, never IAR/EOI. Board close
+ * mask/unmask the leased line; the ISR first qualifies the MFC domain
+ * through the always-on CMU/PMU maps, then verifies its own source latch —
+ * which stays asserted for the deferred poll path to consume — masks the
+ * line and notifies, never IAR/EOI. A dead domain still masks and notifies,
+ * and additionally publishes a persistent fault record keyed to the exact
+ * token self+generation under a sequence lock: the deferred side consumes
+ * it before any poll/status/client outcome, so a resource restored inside
+ * the dispatch-to-service window cannot launder the fault away. The record
+ * survives merged notifies and repeated reads; only the accused binding's
+ * own release or faulted cleanup retires it. Unmask re-proves the same
+ * domain, and a latched owner fault keeps the mask held. Board close
  * refuses a bound irq owner. No GIC reset, IRQ EOI, arbitrary MMIO mapping
  * or gain/RF writes. */
 #ifdef __cplusplus

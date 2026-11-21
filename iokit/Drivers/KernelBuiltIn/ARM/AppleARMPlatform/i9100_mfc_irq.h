@@ -24,6 +24,12 @@ int i9100_mfc_irq_disarm(struct i9100_mfc_irq *);
 int i9100_mfc_irq_repair(struct i9100_mfc_irq *);
 int i9100_mfc_irq_ack(struct i9100_mfc_irq *);
 int i9100_mfc_irq_status(struct i9100_mfc_irq *,struct i9100_mfc_irq_status *);
+/* Consume the board's ISR-published persistent domain fault, keyed to this
+ * binding's exact token self+generation: returns 0 and sets *code to the
+ * published fault while an accusation is pending, or leaves it 0. The read
+ * is non-destructive — the record outlives resource restoration, repeated
+ * queries and merged notifies until the binding's own release/cleanup. */
+int i9100_mfc_irq_fault(struct i9100_mfc_irq *,int *code);
 int i9100_mfc_irq_close(struct i9100_mfc_irq **);
 /* Exact single notification owner for the board-held masked IRQ126 lease.
  * Acquires the board irq-owner token so only this controller may bind a

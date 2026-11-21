@@ -40,7 +40,7 @@ static uint32_t mfc_regs[MF_MAPS][131072/4];
 static const uint32_t mfc_addresses[MF_MAPS]={0x13400000U,0x13620000U,0x13630000U,0x10030000U,0x10020000U,0x10000000U,0x10490000U};
 static struct mfc_model {
  unsigned contexts,locks,maps,descriptors,dma,prepared,barriers,objects,parent_fail;
- unsigned reads,writes,gic_writes,eois,illegal_reads,illegal_writes,in_irq;
+ unsigned reads,writes,gic_writes,eois,illegal_reads,illegal_writes,in_irq,cmd_writes,ch_writes,mbx_writes;
  std::atomic<uint64_t> ns;bool interrupts;
 } m;
 static unsigned mfc_fail_count,mfc_fail_at;
@@ -228,6 +228,13 @@ extern "C" uint32_t __wrap_i9100_camera_mmio_read(volatile uint8_t *base,unsigne
 extern "C" void __wrap_i9100_camera_mmio_write(volatile uint8_t *base,unsigned off,uint32_t v)
 {
  unsigned n=mfc_region(base);m.writes++;
+ /* Command-traffic accounting: the H2R register and both channel registers
+  * issue codec commands, the argument mailbox feeds them. Drain/ack traffic
+  * only clears R2H/HOST_INTERRUPT/0x2000 and never touches these offsets. */
+ if(n==MF_MFC){
+  if(off==0x30)m.cmd_writes++;else if(off==0x2040||off==0x2080)m.ch_writes++;
+  else if(off>=0x34&&off<0x44)m.mbx_writes++;
+ }
  /* Symmetric to the read side: a write into a clock-gated or powered-down
   * MFC/MMU domain is an illegal access, never a silent drop. */
  if(n==MF_MFC||n==MF_MMUL||n==MF_MMUR){
@@ -336,7 +343,7 @@ static void mfc_setup()
  mfc_fail_count=mfc_fail_at=0;mfc_gic_mask_fail=mfc_gic_unmask_fail=mfc_remove_fail=false;mfc_eoi_deferred=false;mfc_in_irq=0;mfc_mc_stuck=false;
  memset(&mfc_parent,0,sizeof(mfc_parent));memset(mfc_regs,0,sizeof(mfc_regs));
  m.contexts=m.locks=m.maps=m.descriptors=m.dma=m.prepared=m.barriers=m.objects=m.parent_fail=0;
- m.reads=m.writes=m.gic_writes=m.eois=m.illegal_reads=m.illegal_writes=m.in_irq=0;
+ m.reads=m.writes=m.gic_writes=m.eois=m.illegal_reads=m.illegal_writes=m.in_irq=m.cmd_writes=m.ch_writes=m.mbx_writes=0;
  m.ns=1000000;m.interrupts=true;
  assert(mfc_loops.empty()&&mfc_timer_deadline.empty());
  mfc_regs[MF_CHIP][0]=0x43210011;mfc_regs[MF_CMU][0x14200/4]=256;mfc_regs[MF_CMU][0x14108/4]=0xa0640301;

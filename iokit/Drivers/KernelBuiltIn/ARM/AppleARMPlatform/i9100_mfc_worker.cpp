@@ -14,10 +14,10 @@ extern "C" {
 #include <mach/mach_time.h>
 void absolutetime_to_nanoseconds(uint64_t,uint64_t *);
 }
-enum {DEFER_US=2000,CMD_TIMEOUT_NS=500000000U,RETIRE_NS=6000000000ULL,RETIRE_SHUTDOWN_TRIES=64U};
+enum {DEFER_US=2000,CMD_TIMEOUT_NS=500000000U,RETIRE_NS=6000000000ULL,RETIRE_SHUTDOWN_TRIES=64U,FREEZE_TRIES=64U};
 struct mfc_request {
  mfc_request *next;void *owner;uint64_t token;unsigned op,bytes,tag,last;
- i9100_mfc_worker_done done;bool cancelled,finished,waited,timed_out,retire_stuck;int result;
+ i9100_mfc_worker_done done;bool cancelled,waited,timed_out,retire_stuck;int result;
  uint8_t *input,*stream;uint32_t stream_bytes;i9100_mfc_firmware_profile profile;
  uint32_t baseline,defers,shutdown_tries;uint64_t deadline;
 };
@@ -51,12 +51,13 @@ public:
  I9100MFCLoop *loop;I9100MFCEvents *event;IOTimerEventSource *timer;IOLock *guard;
  mfc_request *head,*tail,*active,*issuing,*cancelled_head;
  volatile uint32_t irq_pending,timer_pending;
- bool added,timer_added,held,stopping,fault,closed,retained,armed,ctl_bound;
- uintptr_t ctl;unsigned queued,callbacks,cancel_pending;
+ bool added,timer_added,held,stopping,fault,closed,retained,armed,ctl_bound,freeze_needed,freeze_done;
+ uintptr_t ctl;unsigned queued,callbacks,cancel_pending,freeze_tries;
  uint64_t submitted,completed,cancelled,interrupts,defers,late_irq,timeouts;
- int error,cleanup_error;
+ int error,cleanup_error,freeze_refused;
  bool initialize(){native=0;board=0;irq=0;irq_storage=0;loop=0;event=0;timer=0;guard=0;head=tail=active=issuing=cancelled_head=0;
-  irq_pending=timer_pending=0;added=timer_added=held=stopping=fault=closed=retained=armed=ctl_bound=false;ctl=0;
+  irq_pending=timer_pending=0;added=timer_added=held=stopping=fault=closed=retained=armed=ctl_bound=false;
+  freeze_needed=freeze_done=false;freeze_refused=0;freeze_tries=0;ctl=0;
   queued=callbacks=cancel_pending=0;submitted=completed=cancelled=interrupts=defers=late_irq=timeouts=0;error=cleanup_error=0;
   return OSObject::init();}
  void free() override;
@@ -96,9 +97,28 @@ static void free_request(mfc_request *r)
 /* Board/token APIs report the power-domain error range; contention there is
  * recoverable by a bounded defer, not a request fault. */
 static bool gate_busy(int e){return e==I9100_MFC_BUSY||e==I9100_MP_BUSY;}
+/* The exact-owner codec freeze is a precondition for every codec-path call
+ * once an ISR-published fault — or a refused fault query — was consumed:
+ * until it lands, poll/frame paths that could issue the next command are
+ * never entered. freeze_needed then stays set until the freeze lands or a
+ * permanent refusal was diagnosed, so a refused freeze can never silently
+ * ungate codec work. */
+static bool codec_gate(i9100_mfc_worker *w){return w->freeze_needed&&!w->freeze_done;}
+static bool freeze_retry(i9100_mfc_worker *w)
+{return w->freeze_needed&&!w->freeze_done&&!w->freeze_refused&&w->freeze_tries<FREEZE_TRIES;}
+static int line_disarm(i9100_mfc_worker *w);
 static int line_arm(i9100_mfc_worker *w)
 {
- if(w->armed||!w->irq)return 0;int e=i9100_mfc_irq_arm(w->irq);
+ if(!w->irq)return 0;
+ IOLockLock(w->guard);bool armed=w->armed,fault=w->fault;IOLockUnlock(w->guard);
+ /* A latched engine or domain fault keeps the leased line masked: the
+  * retained command is retired by the real poll/deadline/shutdown path and
+  * explicit cleanup, never by dispatching more interrupts into a damaged
+  * owner. Disarm is itself a probe of actual line state, and its refusal
+  * stays defer/error shaped for the caller. */
+ if(fault)return line_disarm(w);
+ if(armed)return 0;
+ int e=i9100_mfc_irq_arm(w->irq);
  if(!e){IOLockLock(w->guard);w->armed=true;IOLockUnlock(w->guard);}
  else if(gate_busy(e))return e; /* board gate held elsewhere: bounded defer */
  else{IOLockLock(w->guard);w->fault=true;if(!w->error)w->error=e;IOLockUnlock(w->guard);}
@@ -186,6 +206,13 @@ static void finish(i9100_mfc_worker *w,mfc_request *r)
  * latched and only the same owner's explicit cleanup can prove quiescence. */
 static int defer(i9100_mfc_worker *w,mfc_request *r)
 {
+ /* A wedged retained command is released only by proven-quiet evidence
+  * (the !st.pending pass in service_active after the owner's explicit
+  * shutdown) or that same owner's cleanup — never by unknown state.
+  * A refused/BUSY status, a repeated same-owner cancel, a late notifier
+  * or a timer window must not finish it, free its input/arena/control or
+  * re-arm a retirement clock on an already-failed retention. */
+ if(r->retire_stuck)return 2;
  if(++r->defers>I9100_MFC_WORKER_DEFERS||now_ns()>=r->deadline){
   inc(&w->timeouts);
   if(w->active==r&&!r->timed_out){
@@ -198,6 +225,12 @@ static int defer(i9100_mfc_worker *w,mfc_request *r)
    return 1;
   }
   if(w->active==r&&!r->retire_stuck){
+   /* codec_gate still owes the exact-owner freeze: the automatic
+    * retirement shutdown is codec-path service too, so an unqualified
+    * reset must never run — the wedge latches as honest retained state
+    * and only the same owner's explicit cleanup (worker_stop) may prove
+    * quiescence. Never an unqualified shutdown, never an infinite spin. */
+   if(codec_gate(w)){r->retire_stuck=true;return 2;}
    /* The retirement bound outlived the firmware's own deadline and the
     * engine still could not retire the command: the exact owner performs
     * the real shutdown now. A proven-quiet engine retires the request; a
@@ -227,6 +260,16 @@ static int defer(i9100_mfc_worker *w,mfc_request *r)
 static int terminal(i9100_mfc_worker *w,mfc_request *r,int e)
 {
  struct i9100_mfc_native_status st;int se=i9100_mfc_native_status(w->native,&st);
+ if(r->retire_stuck){
+  /* A wedged retained command is released only by proven-quiet evidence —
+   * a successful status whose mailbox shows the command gone — or the same
+   * owner's explicit cleanup. A refused status (BUSY or a hard negative:
+   * the output was zero-initialised, so !st.pending would be unknown, not
+   * quiet) and a still-pending mailbox both keep the retention; no fresh
+   * retirement clock is re-armed on an already-failed retention. */
+  if(!se&&!st.pending){r->result=e;return -1;}
+  return 2;
+ }
  if(se==I9100_MFC_BUSY||(!se&&st.pending))
  {retire_begin(w,r,e);w->timer->setTimeoutUS(DEFER_US);return 1;} /* keep the retirement clock live: the next service goes through the bounded deadline/shutdown path */
  r->result=e;return -1;
@@ -253,8 +296,11 @@ static int service_active(i9100_mfc_worker *w,mfc_request *r)
   if(st.error){IOLockLock(w->guard);w->fault=true;if(!w->error)w->error=st.error;IOLockUnlock(w->guard);return defer(w,r);}
   /* The poll service must still run: only it consumes a real late reply
    * and only it fires the firmware's own deadline — skipping it would
-   * leave the issued command unread until the forced shutdown. */
-  e=i9100_mfc_native_poll_ctl(w->native,w->ctl);
+   * leave the issued command unread until the forced shutdown. While the
+   * owner freeze is still owed, codec_gate keeps this call closed: the
+   * deadline machinery below then retires the command through the proven
+   * owner shutdown instead of an unqualified continuation. */
+  e=codec_gate(w)?0:i9100_mfc_native_poll_ctl(w->native,w->ctl);
   if(e==I9100_MFC_BUSY)return defer(w,r);
   if(e){IOLockLock(w->guard);w->fault=true;if(!w->error)w->error=e;IOLockUnlock(w->guard);return defer(w,r);}
   e=i9100_mfc_native_status(w->native,&st);
@@ -270,14 +316,14 @@ static int service_active(i9100_mfc_worker *w,mfc_request *r)
  if(r->op==I9100_MFC_WORK_BOOT){
   if(st.phase==I9100_MFC_N_READY)return 0;
   if(st.phase==I9100_MFC_N_FAILED){e=st.error?st.error:I9100_MFC_IO;IOLockLock(w->guard);w->fault=true;if(!w->error)w->error=e;IOLockUnlock(w->guard);return terminal(w,r,e);}
-  e=i9100_mfc_native_poll_ctl(w->native,w->ctl);
+  e=codec_gate(w)?0:i9100_mfc_native_poll_ctl(w->native,w->ctl);
   if(e==I9100_MFC_BUSY)return defer(w,r);
   if(e){IOLockLock(w->guard);w->fault=true;if(!w->error)w->error=e;IOLockUnlock(w->guard);return terminal(w,r,e);}
   e=i9100_mfc_native_status(w->native,&st);if(e==I9100_MFC_BUSY)return defer(w,r);
   if(e){IOLockLock(w->guard);w->fault=true;if(!w->error)w->error=e;IOLockUnlock(w->guard);return terminal(w,r,e);}return st.phase==I9100_MFC_N_READY?0:defer(w,r);
  }
  if((st.frame_completed>r->baseline&&!r->last)||(r->last&&st.drained))return 0;
- e=i9100_mfc_native_poll_ctl(w->native,w->ctl);
+ e=codec_gate(w)?0:i9100_mfc_native_poll_ctl(w->native,w->ctl);
  if(e==I9100_MFC_BUSY)return defer(w,r);
  /* A terminal engine error is real damage on the owner's path: latch the
   * worker fault too so later submissions are refused by admission, not
@@ -287,8 +333,10 @@ static int service_active(i9100_mfc_worker *w,mfc_request *r)
  if(e){IOLockLock(w->guard);w->fault=true;if(!w->error)w->error=e;IOLockUnlock(w->guard);return terminal(w,r,e);}
  if((st.frame_completed>r->baseline&&!r->last)||(r->last&&st.drained))return 0;
  /* LAST: mailbox quiet but EMPTY not reported; issue the real drain
-  * continuation instead of fabricating a completion. */
- if(r->last&&!st.pending){
+  * continuation instead of fabricating a completion. The drain is itself
+  * a codec command, so codec_gate holds it too — a still-owed freeze
+  * retires through the bounded deadline/shutdown instead. */
+ if(r->last&&!st.pending&&!codec_gate(w)){
   e=i9100_mfc_native_frame_ctl(w->native,0,0,0,1,w->ctl);
   if(e&&e!=I9100_MFC_BUSY)return terminal(w,r,e);
  }
@@ -307,6 +355,42 @@ static bool process(i9100_mfc_worker *w)
  }
  bool notified=__sync_lock_test_and_set(&w->irq_pending,0)!=0;
  bool timer_fired=__sync_lock_test_and_set(&w->timer_pending,0)!=0;
+ /* A dead domain observed inside a real dispatch is published by the upper
+  * half under this binding's exact token+generation before it notifies —
+  * and it stays published until the binding's own cleanup. Consume that
+  * record before any normal poll, status, ack or client outcome: a clock
+  * or power resource restored inside the dispatch-to-service window must
+  * never launder the fault into a clean deferred pass. */
+ int isr_fault=0;bool fresh_fault=false;
+ int qe=w->irq?i9100_mfc_irq_fault(w->irq,&isr_fault):0;
+ /* A refused fault query is owner-path damage itself — never read as a
+  * clean record. The real diagnosis code becomes the latched fault and the
+  * codec freeze is required exactly like a published domain loss. */
+ if(qe<0)isr_fault=qe;
+ if(isr_fault){
+  IOLockLock(w->guard);
+  /* The record stays published until owner cleanup, so every later pass
+   * re-reads it: only the first consumption is the handoff — afterwards the
+   * latched worker fault is the consumed state and the ordinary timed-out
+   * retirement path keeps consuming the real mailbox. */
+  if(!w->fault){w->fault=true;if(!w->error)w->error=isr_fault;fresh_fault=true;}
+  if(!w->freeze_done)w->freeze_needed=true;
+  IOLockUnlock(w->guard);}
+ /* Retry the explicit owner freeze once per real service window while it is
+  * still owed — the return value is part of the control flow: until it
+  * lands, codec_gate keeps every poll/frame path that could issue the next
+  * command closed, and the request, arena, private input and masked IRQ are
+  * retained. A transient BUSY gate stays retryable inside FREEZE_TRIES
+  * under the real bounded timer below; a hard refusal is permanent owner
+  * diagnosis — the gate then never reopens and retirement completes only
+  * through the proven owner shutdown or explicit cleanup. */
+ if(freeze_retry(w)&&w->ctl_bound){
+  int fe=i9100_mfc_native_freeze_ctl(w->native,w->ctl);
+  IOLockLock(w->guard);w->freeze_tries++;
+  if(!fe){w->freeze_done=true;w->freeze_needed=false;}
+  else if(!gate_busy(fe))w->freeze_refused=fe;
+  IOLockUnlock(w->guard);}
+ if(freeze_retry(w)&&w->ctl_bound)w->timer->setTimeoutUS(DEFER_US);
  IOLockLock(w->guard);mfc_request *r=w->active;bool stopping=w->stopping;
  /* A delivered notify means the upper half masked the leased line; the local
   * armed bookkeeping must not suppress the re-arm below. */
@@ -318,14 +402,17 @@ static bool process(i9100_mfc_worker *w)
    * evidence), then ack the residue or the source latch stays raised and
    * quiet() rejects every later command issue. */
   bool late=notified||timer_fired;
-  int pe=i9100_mfc_native_poll_ctl(w->native,w->ctl);
+  int pe=codec_gate(w)?0:i9100_mfc_native_poll_ctl(w->native,w->ctl);
   /* Mailbox residue keeps a bounded drain service alive: a command whose
    * worker request already retired can still hold a pending firmware
    * transaction, and only a real reply, poll consumption or the poll's own
-   * deadline may retire it — never a fabricated wake. */
+   * deadline may retire it — never a fabricated wake. While codec_gate is
+   * closed the residue stays retained as evidence; the freeze-retry timer
+   * above supplies the bounded cadence, and a permanently gated residue
+   * simply waits for explicit owner cleanup rather than arming forever. */
   struct i9100_mfc_native_status st;
   int se=i9100_mfc_native_status(w->native,&st);
-  if(!se&&st.pending&&!st.error)w->timer->setTimeoutUS(DEFER_US);
+  if(!se&&st.pending&&!st.error&&!codec_gate(w))w->timer->setTimeoutUS(DEFER_US);
   int ae=w->irq?i9100_mfc_irq_ack(w->irq):0;
   if(ae>0)late=true;
   /* Poll, status and ack negatives are real owner-path damage — a lost
@@ -335,12 +422,16 @@ static bool process(i9100_mfc_worker *w)
   int lost=pe<0&&!gate_busy(pe)?pe:se<0&&!gate_busy(se)?se:ae<0&&!gate_busy(ae)?ae:(!se?st.error:0);
   if(lost){IOLockLock(w->guard);w->fault=true;if(!w->error)w->error=lost;IOLockUnlock(w->guard);}
   if(late)w->late_irq++;}
- if(r&&(notified||timer_fired||stopping||r->cancelled)){
+ if(r&&(fresh_fault||notified||timer_fired||stopping||r->cancelled)){
   /* A cancelled-but-issued request keeps its real retirement path: the
    * command stays active and is retired by an actual IRQ notify, polling
    * window or the command deadline / proven reset, never by an early abort
-   * while the engine still reports it pending. */
-  int s=service_active(w,r);
+   * while the engine still reports it pending. An ISR-published domain
+   * fault bypasses the normal poll entirely — the command goes straight to
+   * the terminal path so a restored domain can never be reread as success:
+   * the client hears the real error exactly once and the request keeps its
+   * internal retirement owner until poll/deadline/shutdown/cleanup. */
+  int s=fresh_fault?terminal(w,r,r->cancelled?I9100_MFC_ABORTED:isr_fault):service_active(w,r);
   if(s!=1&&s!=2)finish(w,r); /* 0 complete / terminal error, exactly once */
   IOLockLock(w->guard);r=w->active;IOLockUnlock(w->guard);
   if(r){int ae=line_arm(w);
@@ -625,6 +716,6 @@ int i9100_mfc_worker_snapshot(i9100_mfc_worker *w,struct i9100_mfc_worker_status
  if(!w||!w->guard||!out||!thread_context())return I9100_MFC_ARGUMENT;IOLockLock(w->guard);
  struct i9100_mfc_worker_status s={w->submitted,w->completed,w->cancelled,w->interrupts,w->defers,w->late_irq,w->timeouts,
   w->queued,(unsigned)(w->active!=0),w->armed,w->callbacks,w->stopping,w->fault,w->closed,w->held,(unsigned)(w->irq!=0),
-  w->ctl_bound,w->cancel_pending,w->error,w->cleanup_error};
+  w->ctl_bound,w->cancel_pending,(unsigned)(w->freeze_needed&&!w->freeze_done),w->error,w->cleanup_error,w->freeze_refused};
  *out=s;IOLockUnlock(w->guard);return 0;
 }

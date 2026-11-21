@@ -13,8 +13,8 @@ enum {I9100_MFC_WORK_BOOT=1,I9100_MFC_WORK_FRAME=2};
 typedef void (*i9100_mfc_worker_done)(void *owner,uint64_t token,int result);
 struct i9100_mfc_worker_status {
  uint64_t submitted,completed,cancelled,interrupts,defers,late_irq,timeouts;
- uint32_t queued,in_flight,armed,callbacks,stopping,fault,closed,held,irq_bound,ctl_bound,cancel_pending;
- int error,cleanup_error;
+ uint32_t queued,in_flight,armed,callbacks,stopping,fault,closed,held,irq_bound,ctl_bound,cancel_pending,freeze_pending;
+ int error,cleanup_error,freeze_refused;
 };
 int i9100_mfc_worker_create(int enabled,struct i9100_mfc_native *,struct i9100_mfc_board *,struct i9100_mfc_worker **);
 int i9100_mfc_worker_boot(struct i9100_mfc_worker *,void *owner,uint64_t token,
@@ -45,8 +45,27 @@ int i9100_mfc_worker_snapshot(struct i9100_mfc_worker *,struct i9100_mfc_worker_
  * keeps an exact native control lease bound to the board-issued IRQ token
  * plus live supply generation; raw command entry is refused while it lives,
  * a clock/power domain loss is latched as a real fault instead of reading
- * the dead domain, and a failed stop/removal retains all ownership for the
- * caller's explicit same-stage retry. Offline models exercise this control
+ * the dead domain, a latched fault keeps the leased line masked until the
+ * retained work retires through poll/deadline/shutdown, and a failed
+ * stop/removal retains all ownership for the caller's explicit same-stage
+ * retry. An ISR that observes a dead domain inside a real dispatch
+ * publishes that fault against this binding's exact token+generation
+ * before notifying; the loop consumes the persistent record before any
+ * poll, status or client outcome, so a resource restored inside the
+ * dispatch-to-service window can never launder it into a clean pass.
+ * Consumption also requires the codec freeze through the bound control
+ * lease, and the freeze return value is part of the control flow: until
+ * the explicit freeze lands, every poll/frame path that could issue the
+ * next command stays closed under codec_gate — request, arena, private
+ * input and masked IRQ are retained while a real bounded timer retries
+ * the freeze; a hard refusal is permanent owner diagnosis, after which
+ * retirement completes only through the proven owner shutdown or
+ * explicit cleanup. A refused fault query is owner-path damage itself
+ * and is latched, never read as a clean record. Once the freeze lands,
+ * the mailbox may drain in-flight replies and shutdown still proves
+ * quiescence, but no BOOT/SYS_INIT/OPEN/HEADER/INIT_BUFFERS/FRAME/LAST
+ * continuation can issue.
+ * Offline models exercise this control
  * flow but are not IRQ delivery proof. */
 #ifdef __cplusplus
 }

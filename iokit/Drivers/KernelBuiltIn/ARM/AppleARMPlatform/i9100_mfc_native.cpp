@@ -30,7 +30,7 @@ struct i9100_mfc_native {
  IOLock *lifecycle,*engine;
  IOMemoryDescriptor *memory[MN_MAPS];IOMemoryMap *mapping[MN_MAPS];volatile uint8_t *regs[MN_MAPS];
  i9100_dma_native *allocation[2];i9100_mfc core; i9100_mfc_decoder decoder;
- uint32_t phase,reserved,source,divider,stream_supplied,decode_enabled;int error,cleanup_error;
+ uint32_t phase,reserved,source,divider,stream_supplied,decode_enabled,codec_frozen;int error,cleanup_error;
  uint32_t holds;uintptr_t hold_tokens[4];
  struct {uintptr_t token;struct i9100_mfc_board *board;uint32_t generation,irq_generation,bound;} ctl;
 };
@@ -217,7 +217,7 @@ static int start_impl(i9100_mfc_native *n,const i9100_mfc_firmware_profile *prof
   * damage to the legal owner and still latches. */
  int e=control(n,ctl,I9100_MFC_OWNER);
  if(e){IOLockUnlock(n->lifecycle);return e;}
- e=n->phase!=I9100_MFC_N_PREPARED?I9100_MFC_BUSY:resources(n);
+ e=n->phase!=I9100_MFC_N_PREPARED?I9100_MFC_BUSY:n->codec_frozen?I9100_MFC_OWNER:resources(n);
  if(!e)e=i9100_mfc_stage_firmware(&n->core,i9100_dma_native_buffer(n->allocation[0]),i9100_dma_native_buffer(n->allocation[1]),profile,firmware,bytes);
  if(!e&&stream_bytes)e=i9100_mfc_stage_h264(&n->core,stream,stream_bytes);
  if(!e)e=i9100_mfc_boot(&n->core);
@@ -248,7 +248,10 @@ static int poll_impl(i9100_mfc_native *n,uintptr_t ctl)
  if(!e&&!n->core.pending&&(n->phase<I9100_MFC_N_BOOT||n->phase>I9100_MFC_N_HEADER)&&
     n->phase!=I9100_MFC_N_BUFFERS&&n->phase!=I9100_MFC_N_FRAME){e=I9100_MFC_BUSY;goto out;}
  if(!e)e=i9100_mfc_poll(&n->core);
- if(!e&&!n->core.pending){
+ /* A frozen codec drains an in-flight reply for mailbox evidence but never
+  * advances the command ladder: BOOT/SYS_INIT/OPEN/HEADER/INIT_BUFFERS
+  * issue is refused here and FRAME/LAST is refused in decode_ready. */
+ if(!e&&!n->core.pending&&!n->codec_frozen){
   if(n->phase==I9100_MFC_N_BOOT){e=i9100_mfc_sys_init(&n->core);if(!e)n->phase=I9100_MFC_N_SYSINIT;}
   else if(n->phase==I9100_MFC_N_SYSINIT){
    if(n->stream_supplied){e=i9100_mfc_open_h264(&n->core);if(!e)n->phase=I9100_MFC_N_OPEN;}else n->phase=I9100_MFC_N_READY;
@@ -260,7 +263,10 @@ static int poll_impl(i9100_mfc_native *n,uintptr_t ctl)
    }else n->phase=I9100_MFC_N_READY;
   }else if(n->phase==I9100_MFC_N_BUFFERS||n->phase==I9100_MFC_N_FRAME)n->phase=I9100_MFC_N_READY;
  }
- if(e&&e!=I9100_MFC_BUSY)fault(n,e);else if(!e&&n->phase!=I9100_MFC_N_READY)e=I9100_MFC_BUSY;
+ /* Frozen mid-pipeline is the reported end state, not a continuation in
+  * progress: mailbox quiescence returns cleanly while the phase stays
+  * exactly where the fault declaration caught it. */
+ if(e&&e!=I9100_MFC_BUSY)fault(n,e);else if(!e&&n->phase!=I9100_MFC_N_READY&&!n->codec_frozen)e=I9100_MFC_BUSY;
 out:IOLockUnlock(n->lifecycle);return e;
 }
 int i9100_mfc_native_poll(i9100_mfc_native *n){return poll_impl(n,0);}
@@ -280,6 +286,7 @@ int i9100_mfc_native_status(i9100_mfc_native *n,struct i9100_mfc_native_status *
  out->input_start=n->decoder.input_start;out->draining=n->decoder.draining;out->drained=n->decoder.drained;
  out->raw_display=n->decoder.raw_display;out->raw_decoded=n->decoder.raw_decoded;out->raw_type=n->decoder.raw_type;
  out->raw_display_type=n->decoder.raw_display_type;out->raw_consumed=n->decoder.raw_consumed;
+ out->codec_frozen=n->codec_frozen;
  IOLockUnlock(n->lifecycle);return 0;
 }
 static bool outside_context(i9100_mfc_native *n,const void *p,uint32_t bytes)
@@ -287,6 +294,7 @@ static bool outside_context(i9100_mfc_native *n,const void *p,uint32_t bytes)
 static int decode_ready(i9100_mfc_native *n)
 {
  if(!n->decode_enabled)return I9100_MFC_DISABLED;if(n->error)return n->error;
+ if(n->codec_frozen)return I9100_MFC_OWNER;
  if(n->phase!=I9100_MFC_N_READY)return I9100_MFC_BUSY;
  int e=resources(n);if(e&&e!=I9100_MFC_BUSY)fault(n,e);return e;
 }
@@ -371,6 +379,21 @@ int i9100_mfc_native_shutdown_ctl(i9100_mfc_native *n,uintptr_t ctl)
   else for(unsigned unit=MN_MMU_L;unit<=MN_MMU_R;unit++)if(rd(n,unit,0)||rd(n,unit,0x18)){e=I9100_MFC_BUSY;break;}
  }
  if(e)n->cleanup_error=e;
+ IOLockUnlock(n->lifecycle);return e;
+}
+/* The exact bound owner's declared fault freezes codec stepping: the
+ * mailbox may still drain in-flight replies for retirement evidence and
+ * the shutdown/stop/close path still proves quiescence, but the command
+ * ladder, decode issue and boot entry all refuse from this point on.
+ * Pure bookkeeping after the same control() identity proof every other
+ * ctl entry uses — idempotent, callable while the domain is dead or
+ * restored, and a refused foreign token changes nothing. */
+int i9100_mfc_native_freeze_ctl(i9100_mfc_native *n,uintptr_t ctl)
+{
+ if(!n||!ctl)return I9100_MFC_ARGUMENT;
+ if(take(n->lifecycle))return I9100_MFC_BUSY;
+ int e=control(n,ctl,I9100_MFC_OWNER);
+ if(!e)n->codec_frozen=1;
  IOLockUnlock(n->lifecycle);return e;
 }
 int i9100_mfc_native_close(i9100_mfc_native **owner)

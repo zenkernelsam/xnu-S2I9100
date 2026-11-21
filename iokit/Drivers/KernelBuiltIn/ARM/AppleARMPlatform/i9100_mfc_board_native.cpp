@@ -20,7 +20,17 @@ struct i9100_mfc_board {
  i9100_mfc_power power;i9100_mfc_supply_lease *borrower;uint32_t closing,ready,attempted;int error,cleanup_error;
  void (*irq_notify)(void *);void *irq_cookie;i9100_mfc_board_irq_token *irq_owner;
  uint32_t irq_generation,irq_notified,irq_spurious,irq_mask_failed;
+ /* ISR-published persistent domain fault: the upper half claims the empty
+  * record with a single CAS, writes the payload exactly once and closes
+  * the odd section, so a nonzero-even sequence can only mean a complete,
+  * immutable first-fault record — no writer serialization or atomic
+  * multi-field payload is assumed. seq==0 is empty, odd is
+  * publish-in-flight, nonzero-even is the stable record. The exact
+  * owner+generation it accuses is the only consumer; the accused
+  * binding's own release/cleanup is the only clear. */
+ struct {volatile uint32_t seq;uintptr_t owner;uint32_t generation;int code;} irq_fault;
 };
+static void irq_fault_release(i9100_mfc_board *,const i9100_mfc_board_irq_token *);
 static bool thread(){return ml_get_interrupts_enabled()&&!ml_at_interrupt_context();}
 static int take(IOLock *l){return l&&thread()&&IOLockTryLock(l)?0:-1;}
 static bool outside(i9100_mfc_board *b,const void *p,size_t bytes)
@@ -34,17 +44,47 @@ static void power_drop(void *p){IOLockUnlock(((i9100_mfc_board *)p)->power_lock)
 static uint64_t now(void *){uint64_t ns=0;absolutetime_to_nanoseconds(mach_absolute_time(),&ns);return ns;}
 static int delay(void *,uint32_t us){if(!thread()||us>1000U)return -1;IODelay(us);return 0;}
 static void barrier(void *){OSSynchronizeIO();}
-/* Interrupt upper half: verify only our own MFC source latch, mask the
- * leased level source and notify the bound sink. The latch itself stays
- * asserted for the deferred worker to consume through the normal poll path,
- * which deasserts it. No thread locks, allocation, codec polling, IAR or
- * EOI; the provider that dispatched retains the complete acknowledge token
- * and performs exactly one EOI. */
+/* Interrupt upper half: qualify the MFC clock/power domain through the
+ * always-on CMU/PMU maps before verifying our own source latch — a gated or
+ * unpowered domain makes the latch itself unreachable, so probing it would
+ * fault. On a dead domain the leased line is still masked and the bound
+ * sink still notified: the deferred thread owns the real fault diagnosis
+ * through its domain-qualified poll/ack path, and the dispatch/EOI pair
+ * completes normally. On a live domain the latch alone decides: raised
+ * means mask + notify, quiet means spurious. The latch itself stays
+ * asserted for the deferred worker to consume through the normal poll
+ * path, which deasserts it. No thread locks, allocation, codec polling,
+ * IAR or EOI; the provider that dispatched retains the complete
+ * acknowledge token and performs exactly one EOI. On a dead domain the
+ * real observation is also published into the CAS-claimed fault record —
+ * keyed to the exact bound owner and its generation, written once and
+ * then immutable — before the line is masked and the sink notified, so a
+ * resource restored inside the dispatch-to-service window can never
+ * launder the fault into a clean deferred pass. */
 static int masked_irq(void *p,uint32_t)
 {
  i9100_mfc_board *b=(i9100_mfc_board *)p;
- if(!b->regs[MP_MFC]||!(i9100_camera_mmio_read(b->regs[MP_MFC],8)&1U)){b->irq_spurious++;return 0;}
- if(i9100_irq_mask(&b->irq))b->irq_mask_failed++;b->irq_notified++;
+ uint32_t gate=read32(b,MP_CMU,0xc928);
+ uint32_t config=read32(b,MP_PMU,0x3c40);
+ uint32_t status=read32(b,MP_PMU,0x3c44);
+ bool dead=!b->regs[MP_MFC]||gate==0xffffffffU||config==0xffffffffU||status==0xffffffffU||
+  (gate&7U)!=7U||(config&7U)!=7U||(status&7U)!=7U;
+ if(!dead&&!(read32(b,MP_MFC,8)&1U)){b->irq_spurious++;return 0;}
+ if(dead){
+  /* Publish-once: the CAS claims the empty record for this dispatch, the
+   * winner writes the payload exactly once and closes with the barriered
+   * increment. Losing publishers never touch seq or payload, so the first
+   * observed fault stays immutable; readers only treat a nonzero-even
+   * sequence as a complete record. */
+  if(__sync_bool_compare_and_swap(&b->irq_fault.seq,0U,1U)){
+   i9100_mfc_board_irq_token *t=b->irq_owner;
+   b->irq_fault.owner=t?t->self:0;b->irq_fault.generation=t?t->generation:0;
+   b->irq_fault.code=I9100_MP_OWNER;
+   __sync_fetch_and_add(&b->irq_fault.seq,1);
+  }
+ }
+ if(i9100_irq_mask(&b->irq))b->irq_mask_failed++;
+ if(!dead)b->irq_notified++;
  if(b->irq_notify)b->irq_notify(b->irq_cookie);
  return 0;
 }
@@ -208,7 +248,21 @@ static int token_gate(i9100_mfc_board *b,const i9100_mfc_board_irq_token *t)
 int i9100_mfc_board_irq_mask(i9100_mfc_board *b,const i9100_mfc_board_irq_token *t)
 {int e=token_gate(b,t);if(e)return e;e=i9100_irq_mask(&b->irq);IOLockUnlock(b->lifecycle);return e;}
 int i9100_mfc_board_irq_unmask(i9100_mfc_board *b,const i9100_mfc_board_irq_token *t)
-{int e=token_gate(b,t);if(e)return e;e=i9100_irq_unmask(&b->irq);IOLockUnlock(b->lifecycle);return e;}
+{
+ int e=token_gate(b,t);if(e)return e;
+ /* Re-arming exposes the upper half to the MFC source latch: re-prove the
+  * clock/power domain under the same always-on CMU/PMU evidence the ISR
+  * consults, so a dead domain keeps the mask instead of feeding the
+  * handler faulting MMIO. CMU/PMU are read inline under this lock — the
+  * supply validate would retake the same lifecycle gate. */
+ uint32_t gate=b->regs[MP_CMU]?read32(b,MP_CMU,0xc928):0xffffffffU;
+ uint32_t config=b->regs[MP_PMU]?read32(b,MP_PMU,0x3c40):0xffffffffU;
+ uint32_t status=b->regs[MP_PMU]?read32(b,MP_PMU,0x3c44):0xffffffffU;
+ if(gate==0xffffffffU||config==0xffffffffU||status==0xffffffffU||
+    (gate&7U)!=7U||(config&7U)!=7U||(status&7U)!=7U)e=I9100_MP_OWNER;
+ else e=i9100_irq_unmask(&b->irq);
+ IOLockUnlock(b->lifecycle);return e;
+}
 int i9100_mfc_board_irq_enabled(i9100_mfc_board *b,const i9100_mfc_board_irq_token *t)
 {
  int e=token_gate(b,t);if(e)return e;
@@ -259,7 +313,9 @@ int i9100_mfc_board_irq_release(i9100_mfc_board *b,i9100_mfc_board_irq_token *t)
  enabled=r->slots[b->irq.slot].busy||(r->io.read_dist(r->io.cookie,0x30c)&(1U<<30));
  r->io.leave(r->io.cookie,saved);
  if(enabled){IOLockUnlock(b->lifecycle);return I9100_MP_BUSY;}
- b->irq_notify=0;b->irq_cookie=0;b->irq_owner=0;t->owned=0;IOLockUnlock(b->lifecycle);return 0;
+ b->irq_notify=0;b->irq_cookie=0;b->irq_owner=0;t->owned=0;
+ irq_fault_release(b,t); /* the accused binding retires its own record */
+ IOLockUnlock(b->lifecycle);return 0;
 }
 int i9100_mfc_board_irq_verify(i9100_mfc_board *b,uintptr_t token_self,unsigned *generation)
 {
@@ -271,6 +327,44 @@ int i9100_mfc_board_irq_verify(i9100_mfc_board *b,uintptr_t token_self,unsigned 
  int e=!t||(uintptr_t)t!=token_self||t->self!=token_self||t->board!=(uintptr_t)b||t->owned!=1U?I9100_MP_OWNER:0;
  if(!e&&generation)*generation=t->generation;
  IOLockUnlock(b->lifecycle);return e;
+}
+/* Lock-free consume of the ISR-published domain fault. The record survives
+ * resource restoration, repeated queries and merged notifies; only the
+ * exact owner+generation it was published against may read a verdict —
+ * foreign, stale or copied tokens observe an empty record and change
+ * nothing. The binding's own release/cleanup is the only place that
+ * retires it. */
+int i9100_mfc_board_irq_fault(i9100_mfc_board *b,const struct i9100_mfc_board_irq_token *t,int *code)
+{
+ if(!b||b->self!=(uintptr_t)b||!t||t->self!=(uintptr_t)t||!code)return I9100_MP_ARGUMENT;
+ *code=0;
+ for(unsigned i=0;i<64U;i++){
+  uint32_t s=*(volatile uint32_t *)&b->irq_fault.seq;
+  if(!s)return 0;                       /* nothing ever published */
+  if(s&1U)continue;                     /* publish in flight: retry */
+  __sync_synchronize();                 /* fields are read after the sequence */
+  uintptr_t o=b->irq_fault.owner;uint32_t g=b->irq_fault.generation;int c=b->irq_fault.code;
+  __sync_synchronize();                 /* and the sequence is re-proved after */
+  if(*(volatile uint32_t *)&b->irq_fault.seq!=s)continue;
+  if(o!=t->self||g!=t->generation)return 0; /* another binding's accusation */
+  *code=c;return 0;
+ }
+ /* Still odd after a bounded spin: a publish is genuinely in flight —
+  * dead-domain evidence in itself, reported conservatively. */
+ *code=I9100_MP_OWNER;return 0;
+}
+/* The accused binding retires its own record on a proven release/cleanup:
+ * a CAS clears only while the record still names this exact token, so a
+ * concurrent republish or a different owner's accusation is never lost. */
+static void irq_fault_release(i9100_mfc_board *b,const i9100_mfc_board_irq_token *t)
+{
+ for(unsigned i=0;i<64U;i++){
+  uint32_t s=*(volatile uint32_t *)&b->irq_fault.seq;
+  if(!s)return;
+  if(s&1U)continue;
+  if(b->irq_fault.owner!=t->self||b->irq_fault.generation!=t->generation)return;
+  if(__sync_val_compare_and_swap(&b->irq_fault.seq,s,0)==s)return;
+ }
 }
 /* Faulted-slot owner sequence, runnable only by the exact bound token:
  * mask is retried once (a still-lost write stays an error and keeps the
@@ -297,7 +391,7 @@ static int faulted_owner_cleanup(i9100_mfc_board *b,i9100_mfc_board_irq_token *t
   int quiet=!s->busy&&!(r->io.read_dist(r->io.cookie,0x30c)&(1U<<30));
   if(!ours)e=I9100_MP_OWNER;
   else if(!quiet)e=I9100_MP_BUSY;
-  else{s->fault=0;if(release){b->irq_notify=0;b->irq_cookie=0;b->irq_owner=0;t->owned=0;}}
+  else{s->fault=0;if(release){b->irq_notify=0;b->irq_cookie=0;b->irq_owner=0;t->owned=0;irq_fault_release(b,t);}}
   r->io.leave(r->io.cookie,saved);
  }
  IOLockUnlock(b->lifecycle);return e;

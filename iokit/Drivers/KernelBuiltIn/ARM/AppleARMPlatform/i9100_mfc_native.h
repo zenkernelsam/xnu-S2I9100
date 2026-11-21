@@ -28,7 +28,7 @@ struct i9100_mfc_native_status {
  uint32_t decode_enabled,frame_submitted,frame_completed,display_ready,leased,input_bytes,input_start,draining,drained;
  uint32_t raw_display,raw_decoded,raw_type,raw_display_type,raw_consumed;
  int error,cleanup_error;
- uint32_t stop_stage;
+ uint32_t stop_stage,codec_frozen;
 };
 int i9100_mfc_native_open(int enabled,struct i9100_peripheral_native *,const struct i9100_mfc_supply *,struct i9100_mfc_native **);
 int i9100_mfc_native_open_decode(int enabled,struct i9100_peripheral_native *,const struct i9100_mfc_supply *,
@@ -52,6 +52,7 @@ int i9100_mfc_native_poll_ctl(struct i9100_mfc_native *,uintptr_t control);
 int i9100_mfc_native_frame_ctl(struct i9100_mfc_native *,const void *,uint32_t bytes,uint32_t tag,int last,uintptr_t control);
 int i9100_mfc_native_acquire_ctl(struct i9100_mfc_native *,struct i9100_mfc_frame_lease *,uintptr_t control);
 int i9100_mfc_native_shutdown_ctl(struct i9100_mfc_native *,uintptr_t control);
+int i9100_mfc_native_freeze_ctl(struct i9100_mfc_native *,uintptr_t control);
 int i9100_mfc_native_close(struct i9100_mfc_native **);
 /* Default OFF, MFCv5.1 only: one reservation, actual MMIO, private aligned
  * bankA8MiB/bankB1MiB, captured kernel crypto provider, explicit firmware
@@ -75,7 +76,11 @@ int i9100_mfc_native_close(struct i9100_mfc_native **);
  * token and supply generation: while bound, raw start/poll/frame/acquire
  * transitions and close are refused; frame return stays open so the owner
  * can always finish its own leases. A plain hold never grants command or
- * IRQ-armed rights. */
+ * IRQ-armed rights. The exact owner's declared fault freezes codec
+ * stepping through freeze_ctl: the mailbox may still drain in-flight
+ * replies and shutdown/close still prove quiescence, but
+ * BOOT/SYS_INIT/OPEN/HEADER/INIT_BUFFERS/FRAME/LAST continuation can
+ * never issue again; refusal poisons nothing and cleanup is unaffected. */
 #ifdef __cplusplus
 }
 #endif
