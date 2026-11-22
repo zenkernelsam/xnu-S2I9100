@@ -67,7 +67,7 @@ static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
     if(!i9100_audio_property_range(slide))return;
     volatile uint32_t *diag=i9100_audio_property_lock_diag;
     uint32_t status=diag[0],attempt=diag[11];
-    if(status==1 || attempt>=8 || (status && diag[1]==(uint32_t)p->p_pid &&
+    if(status==1 || (status && diag[1]==(uint32_t)p->p_pid &&
        diag[2]==(uint32_t)(uintptr_t)p->task))return;
     unsigned char original[24];
     uint32_t site=0x3169e848U+slide;
@@ -75,7 +75,7 @@ static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
        memcmp(original,i9100_audio_property_original,sizeof(original)))return;
     if(!OSCompareAndSwap(status,1U,&diag[0]))return;
     for(unsigned n=1;n<12;n++)diag[n]=0;
-    diag[11]=attempt+1;
+    diag[11]=attempt==UINT32_MAX?attempt:attempt+1;
     /* ANYWHERE uses this as a lower bound; avoid the private vm_map_min
      * macro that is absent from BSD's exported vm_map.h. Keep page zero. */
     vm_map_t map=current_map();vm_map_offset_t address=4096;
@@ -130,12 +130,20 @@ static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
 restore:
     result=i9100_audio_property_rx(map,site&~4095U);diag[9]=(uint32_t)result;
     diag[10]=8;
-    OSMemoryBarrier();diag[0]=diag[8] && result==KERN_SUCCESS?2U:3U;
+    status=diag[8] && result==KERN_SUCCESS?2U:3U;
     goto record;
 failed:
-    OSMemoryBarrier();diag[0]=3U;
+    status=3U;
 record:
-    for(unsigned n=0;n<12;n++)i9100_audio_property_lock_history[1+attempt*12+n]=diag[n];
-    OSMemoryBarrier();i9100_audio_property_lock_history[0]=attempt+1;
+    /* Keep the first eight outcomes for forensics. The repair must still
+     * cover each later launch, and publication must finish before releasing
+     * the installer claim in diag[0]. */
+    if(attempt<8){
+        volatile uint32_t *row=&i9100_audio_property_lock_history[1+attempt*12];
+        row[0]=status;
+        for(unsigned n=1;n<12;n++)row[n]=diag[n];
+        OSMemoryBarrier();i9100_audio_property_lock_history[0]=attempt+1;
+    }
+    OSMemoryBarrier();diag[0]=status;
 }
 #endif

@@ -77,7 +77,19 @@ int main(void){struct task t={1};struct proc p={"mediaserverd",33,&t};arm_saved_
  memcpy(site,i9100_audio_property_original,24);site_cur=site_max=5;p.p_pid=78;
  i9100_audio_property_lock_prepare(&p,372,&s);
  check(i9100_audio_property_lock_diag[0]==2 && i9100_audio_property_lock_diag[1]==78 && i9100_audio_property_lock_history[0]==2,"new process gets its own installation");
- check(i9100_audio_property_lock_history[2]==33 && i9100_audio_property_lock_history[14]==78,"old and new owners retained separately");p.p_pid=33;
+ check(i9100_audio_property_lock_history[2]==33 && i9100_audio_property_lock_history[14]==78,"old and new owners retained separately");
+ for(unsigned n=2;n<8;n++){
+  memcpy(site,i9100_audio_property_original,24);site_cur=site_max=5;p.p_pid=79+n;
+  i9100_audio_property_lock_prepare(&p,372,&s);
+ }
+ check(i9100_audio_property_lock_history[0]==8 && i9100_audio_property_lock_history[85]==2,"history retains eight completed outcomes");
+ uint32_t history[1+8*12];memcpy(history,(const void*)i9100_audio_property_lock_history,sizeof(history));
+ memcpy(site,i9100_audio_property_original,24);site_cur=site_max=5;p.p_pid=33515;
+ i9100_audio_property_lock_prepare(&p,372,&s);
+ check(i9100_audio_property_lock_diag[0]==2 && i9100_audio_property_lock_diag[11]==9 && i9100_audio_property_runtime[1]==33515,"ninth process gets its own installation");
+ check(!memcmp(history,(const void*)i9100_audio_property_lock_history,sizeof(history)),"full history is preserved");
+ saved=writes;i9100_audio_property_lock_prepare(&p,372,&s);check(writes==saved,"ninth process installs only once");
+ p.p_pid=33;
  reset();p.p_comm="SpringBoard";i9100_audio_property_lock_prepare(&p,372,&s);check(!reads&&!writes,"process scope");p.p_comm="mediaserverd";
  reset();t.thread_count=2;i9100_audio_property_lock_prepare(&p,372,&s);check(!reads&&!writes,"only before worker creation");t.thread_count=1;
  reset();abi=7;i9100_audio_property_lock_prepare(&p,372,&s);check(!writes,"ABI scope");abi=6;
