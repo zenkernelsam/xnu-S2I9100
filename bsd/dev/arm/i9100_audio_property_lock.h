@@ -66,7 +66,7 @@ static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
     uint32_t slide=(state->pc&~1U)-0x392cdc34U;
     if(!i9100_audio_property_range(slide))return;
     volatile uint32_t *diag=i9100_audio_property_lock_diag;
-    uint32_t status=diag[0],attempt=diag[11];
+    uint32_t status=diag[0];
     if(status==1 || (status && diag[1]==(uint32_t)p->p_pid &&
        diag[2]==(uint32_t)(uintptr_t)p->task))return;
     unsigned char original[24];
@@ -74,6 +74,8 @@ static void i9100_audio_property_lock_prepare(proc_t p,unsigned code,
     if(copyin((user_addr_t)site,original,sizeof(original)) ||
        memcmp(original,i9100_audio_property_original,sizeof(original)))return;
     if(!OSCompareAndSwap(status,1U,&diag[0]))return;
+    /* copyin may block while another media process finishes an install. */
+    uint32_t attempt=diag[11];
     for(unsigned n=1;n<12;n++)diag[n]=0;
     diag[11]=attempt==UINT32_MAX?attempt:attempt+1;
     /* ANYWHERE uses this as a lower bound; avoid the private vm_map_min
