@@ -1,6 +1,6 @@
 --- a/iokit/conf/files.arm
 +++ b/iokit/conf/files.arm
-@@ -58,6 +58,99 @@
+@@ -58,6 +58,101 @@
  # i9100 Exynos4210 SDMMC (SDHCI PIO) block device
  iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/IOS7I9100SDMMC.cpp optional iokitcpp
  iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_sdmmc.c standard
@@ -52,6 +52,8 @@
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_video_layout.c standard
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_sysmmu.c standard
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_modem_sipc4.c standard
++iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_modem_cp.c standard
++iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_modem_cp_native.cpp optional iokitcpp
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_emmc_writer.c standard
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_emmc_host.c standard
 +iokit/Drivers/KernelBuiltIn/ARM/AppleARMPlatform/i9100_emmc_native.cpp optional iokitcpp

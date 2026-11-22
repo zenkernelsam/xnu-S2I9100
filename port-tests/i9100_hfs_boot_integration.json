@@ -4,7 +4,7 @@
     "bsd/hfs/hfs_vfsops.c": "b9167eed59a6033752c6fd18eb702135212795731c3d84a82285f95b8d2a7066",
     "bsd/kern/bsd_init.c": "29d05b9d119f99b42070528229bcb62859dcc72a9b44ee8720bad72008eb106c",
     "bsd/kern/kern_shutdown.c": "e5dbefc4fa61b51570dc90e97227da5e80a13c2016e569d9ef834c12349f5a9f",
-    "pexpert/arm/i9100_usbcdc.c": "1904be85a1b2d790f27f6c68b0f102f2590a837f1a9be6de33c3ae5aef25373c"
+    "pexpert/arm/i9100_usbcdc.c": "8ad3770d92bee074570d64f4f160e61f4807d7e5f43de5a9908c00446af5e276"
   },
   "companions": {
     "bsd/hfs/i9100_hfs_kernel_args.h": "17f835752f8a25c3a5ebd851852b9555a3fdeba4107d50015e6844b623cb3d90",

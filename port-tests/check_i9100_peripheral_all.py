@@ -39,9 +39,10 @@ C_SOURCES = [
     "i9100_bt_boot.c",
     "i9100_bt_probe.c", "i9100_bt_acl.c", "i9100_bt_stream.c",
     "i9100_emmc_host.c", "i9100_emmc_boot_contract.c", "i9100_emmc_clock.c", "i9100_emmc_idmac.c",
+    "i9100_modem_cp.c",
 ]
 CPP_SOURCES = ["i9100_dma_native.cpp", "i9100_peripheral_native.cpp", "i9100_emmc_boot.cpp", "i9100_emmc_clock_native.cpp", "i9100_emmc_worker.cpp",
-               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_sensor_worker.cpp", "i9100_haptic_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp", "IOS6I9100AudioPCM.cpp", "i9100_pl330_ring_native.cpp", "i9100_pl330_ring_mmio.cpp", "i9100_audio_gated.cpp", "i9100_sensor_hid.cpp", "i9100_sensor_hid_endpoint.cpp", "i9100_bt_worker.cpp", "i9100_bt_control.cpp", "i9100_camera_native.cpp", "i9100_camera_mmio.cpp", "i9100_mfc_native.cpp", "i9100_mfc_board_native.cpp", "i9100_mfc_worker.cpp", "i9100_emmc_native.cpp", "IOS6I9100EMMCStorage.cpp", "IOS6I9100EMMCRaw.cpp", "IOS6I9100EMMCBlockDriver.cpp", "i9100_emmc_alias.cpp", "i9100_emmc_publication.cpp"]
+               "IOS7I9100EMMC.cpp", "IOS7I9100GPT.cpp", "i9100_audio_native.cpp", "i9100_audio_board_native.cpp", "i9100_audio_worker.cpp", "i9100_sensor_worker.cpp", "i9100_haptic_worker.cpp", "i9100_radio_native.cpp", "i9100_bcm_worker.cpp", "i9100_bcm_irq.cpp", "i9100_power_shared.cpp", "IOS6I9100AudioPCM.cpp", "i9100_pl330_ring_native.cpp", "i9100_pl330_ring_mmio.cpp", "i9100_audio_gated.cpp", "i9100_sensor_hid.cpp", "i9100_sensor_hid_endpoint.cpp", "i9100_bt_worker.cpp", "i9100_bt_control.cpp", "i9100_camera_native.cpp", "i9100_camera_mmio.cpp", "i9100_mfc_native.cpp", "i9100_mfc_board_native.cpp", "i9100_mfc_worker.cpp", "i9100_emmc_native.cpp", "IOS6I9100EMMCStorage.cpp", "IOS6I9100EMMCRaw.cpp", "IOS6I9100EMMCBlockDriver.cpp", "i9100_emmc_alias.cpp", "i9100_emmc_publication.cpp", "i9100_modem_cp_native.cpp"]
 TESTS = [
     ("i9100_emmc_clock_test.c", ["i9100_emmc_clock.c"]),
     ("i9100_emmc_clock_native_test.cpp", ["i9100_emmc_clock.c","i9100_emmc_host.c","i9100_emmc.c",
@@ -134,6 +135,10 @@ TESTS = [
     ("i9100_wifi_bluetooth_test.c", ["i9100_sdio.c", "i9100_bcm4330.c", "i9100_bluetooth_h4.c"]),
     ("i9100_camera_mfc_test.c", ["i9100_camera_protocol.c", "i9100_mfc.c", "i9100_mfc_decode.c", "i9100_mfc_layout.c", "i9100_video_layout.c", "i9100_sysmmu.c", "i9100_dma_guard.c"]),
     ("i9100_modem_test.c", ["i9100_modem_sipc4.c"]),
+    ("i9100_modem_cp_test.c", ["i9100_gpio_broker.c", "i9100_peripheral_board.c", "i9100_modem_cp.c"]),
+    ("i9100_modem_cp_native_test.cpp", ["i9100_gpio_broker.c", "i9100_clock_gates.c", "i9100_irq_registry.c",
+        "i9100_peripheral_board.c", "i9100_i2c_samsung.c", "i9100_uart_bluetooth.c", "i9100_sdio.c",
+        "i9100_irq_cascade.c", "i9100_modem_cp.c", "i9100_modem_cp_native.cpp"]),
     ("i9100_uart_pwm_test.c", ["i9100_uart_bluetooth.c", "i9100_pwm_haptic.c"]),
     ("i9100_bcm_f2_test.c", ["i9100_bcm_f2.c"]),
     ("i9100_audio_native_test.cpp", ["i9100_dma_guard.c", "i9100_pl330.c", "i9100_i2s.c",
@@ -275,7 +280,8 @@ def main():
                             [name for name in sources if name.endswith(".cpp")],
                             libraries=["crypto","pthread"] if test in ("i9100_mfc_worker_test.cpp","i9100_mfc_ownership_regression_test.cpp") else ["crypto"] if test in ("i9100_bcm_worker_test.cpp","i9100_bt_worker_test.cpp","i9100_bt_control_test.cpp","i9100_mfc_native_test.cpp","i9100_mfc_board_native_test.cpp") else ["pthread"] if test in emmc_native or test in ("i9100_power_shared_test.cpp","i9100_power_haptic_test.cpp","i9100_haptic_worker_test.cpp","i9100_emmc_clock_native_test.cpp") else (),
                             source_overrides=overrides,
-                            wrapped_functions=("i9100_sdio_init",) if test=="i9100_native_sdio_success_test.cpp" else
+                            wrapped_functions=("i9100_gpio_output","i9100_gpio_release") if test=="i9100_modem_cp_native_test.cpp" else
+                            ("i9100_sdio_init",) if test=="i9100_native_sdio_success_test.cpp" else
                             ("i9100_uart_bt_init","i9100_bt_worker_stream_open") if test=="i9100_bt_control_test.cpp" else
                             ("i9100_uart_bt_init",) if test=="i9100_bt_worker_test.cpp" else
                             ("i9100_i2c_samsung_init",) if test in ("i9100_native_i2c_test.cpp","i9100_sensor_worker_test.cpp",
